@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Courier Offer Capture</string>
+    <string name="accessibility_description">Watches an armed Wolt/Bolt offer screen and saves a screenshot to Pictures/CourierOffers.</string>
+</resources>
