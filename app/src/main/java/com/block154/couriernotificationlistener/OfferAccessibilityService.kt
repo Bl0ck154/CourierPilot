@@ -1,6 +1,8 @@
 package com.block154.couriernotificationlistener
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityService.ScreenshotResult
+import android.accessibilityservice.AccessibilityService.TakeScreenshotCallback
 import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
@@ -69,23 +71,27 @@ class OfferAccessibilityService : AccessibilityService() {
             mainExecutor,
             object : TakeScreenshotCallback {
                 override fun onSuccess(screenshot: ScreenshotResult) {
+                    val buffer = screenshot.hardwareBuffer
                     try {
-                        val buffer = screenshot.hardwareBuffer
                         val hardwareBitmap = Bitmap.wrapHardwareBuffer(buffer, screenshot.colorSpace)
                             ?: error("Could not wrap screenshot HardwareBuffer")
-                        val bitmap = hardwareBitmap.copy(Bitmap.Config.ARGB_8888, false)
-                            ?: error("Could not copy screenshot bitmap")
                         try {
-                            val filename = ScreenshotStore.save(
-                                this@OfferAccessibilityService,
-                                bitmap,
-                                pending.sourceName,
-                            )
-                            OfferState.markCapture(this@OfferAccessibilityService, filename)
-                            OfferState.clear(this@OfferAccessibilityService)
-                            armedAtBeingHandled = 0L
+                            val bitmap = hardwareBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                                ?: error("Could not copy screenshot bitmap")
+                            try {
+                                val filename = ScreenshotStore.save(
+                                    this@OfferAccessibilityService,
+                                    bitmap,
+                                    pending.sourceName,
+                                )
+                                OfferState.markCapture(this@OfferAccessibilityService, filename)
+                                OfferState.clear(this@OfferAccessibilityService)
+                                armedAtBeingHandled = 0L
+                            } finally {
+                                bitmap.recycle()
+                            }
                         } finally {
-                            bitmap.recycle()
+                            hardwareBitmap.recycle()
                         }
                     } catch (t: Throwable) {
                         OfferState.markError(
@@ -95,7 +101,7 @@ class OfferAccessibilityService : AccessibilityService() {
                         OfferState.clear(this@OfferAccessibilityService)
                         armedAtBeingHandled = 0L
                     } finally {
-                        screenshot.hardwareBuffer.close()
+                        buffer.close()
                         captureInFlight = false
                     }
                 }
