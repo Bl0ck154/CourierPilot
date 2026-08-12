@@ -1,0 +1,68 @@
+package com.block154.couriernotificationlistener
+
+import android.app.Notification
+import android.app.PendingIntent
+import android.service.notification.NotificationListenerService
+import android.service.notification.StatusBarNotification
+import java.util.Locale
+
+class CourierNotificationListener : NotificationListenerService() {
+
+    override fun onNotificationPosted(sbn: StatusBarNotification) {
+        if (sbn.packageName == packageName) return
+
+        val sourceName = resolveAppName(sbn.packageName)
+        if (!isCourierSource(sbn.packageName, sourceName)) return
+        if (!looksLikeOfferNotification(sbn.notification)) return
+
+        OfferState.arm(this, sbn.packageName, sourceName)
+
+        if (OfferState.autoOpen(this)) {
+            try {
+                sbn.notification.contentIntent?.send()
+            } catch (_: PendingIntent.CanceledException) {
+                OfferState.markError(this, "Could not open $sourceName from its notification")
+            } catch (t: Throwable) {
+                OfferState.markError(this, "Could not open $sourceName: ${t.javaClass.simpleName}")
+            }
+        }
+    }
+
+    private fun resolveAppName(pkg: String): String {
+        return try {
+            val info = packageManager.getApplicationInfo(pkg, 0)
+            packageManager.getApplicationLabel(info).toString()
+        } catch (_: Throwable) {
+            pkg
+        }
+    }
+
+    private fun isCourierSource(pkg: String, appName: String): Boolean {
+        val identity = "$pkg $appName".lowercase(Locale.ROOT)
+        return identity.contains("wolt") || identity.contains("bolt")
+    }
+
+    private fun looksLikeOfferNotification(notification: Notification): Boolean {
+        val e = notification.extras
+        val text = buildString {
+            append(e.getCharSequence(Notification.EXTRA_TITLE).orEmpty())
+            append(' ')
+            append(e.getCharSequence(Notification.EXTRA_TEXT).orEmpty())
+            append(' ')
+            append(e.getCharSequence(Notification.EXTRA_BIG_TEXT).orEmpty())
+            append(' ')
+            append(e.getCharSequence(Notification.EXTRA_SUB_TEXT).orEmpty())
+            append(' ')
+            append(notification.tickerText.orEmpty())
+        }.lowercase(Locale.ROOT)
+
+        // Wolt/Bolt localize these strings. Stems are intentional so the listener
+        // survives small wording changes and Lithuanian/Ukrainian/Russian variants.
+        val offerWords = listOf(
+            "task", "order", "delivery", "offer",
+            "užduot", "uzduot", "užsak", "uzsak", "pristat",
+            "задан", "заказ", "достав", "замов", "завдан"
+        )
+        return offerWords.any(text::contains)
+    }
+}
