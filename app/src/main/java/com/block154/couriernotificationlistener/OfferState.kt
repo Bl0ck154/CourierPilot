@@ -17,7 +17,7 @@ internal object OfferState {
     private const val KEY_LAST_UI_TEXT = "last_ui_text"
     private const val KEY_LAST_ERROR = "last_error"
     private const val KEY_AUTO_OPEN = "auto_open"
-    private const val MAX_PENDING_AGE_MS = 20_000L
+    private const val MAX_PENDING_AGE_MS = 180_000L
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -36,6 +36,7 @@ internal object OfferState {
         val armedAt = p.getLong(KEY_ARMED_AT, 0L)
         if (armedAt == 0L || System.currentTimeMillis() - armedAt > MAX_PENDING_AGE_MS) {
             clear(context)
+            markError(context, "Offer expired before a price was detected; no screenshot was saved")
             return null
         }
         return PendingOffer(
@@ -54,7 +55,7 @@ internal object OfferState {
     }
 
     fun saveUiText(context: Context, text: String) {
-        prefs(context).edit().putString(KEY_LAST_UI_TEXT, text.take(4000)).apply()
+        prefs(context).edit().putString(KEY_LAST_UI_TEXT, text.take(12000)).apply()
     }
 
     fun markCapture(context: Context, filename: String) {
@@ -72,8 +73,8 @@ internal object OfferState {
         prefs(context).getString(KEY_LAST_CAPTURE, "No screenshots yet") ?: "No screenshots yet"
 
     fun lastUiText(context: Context): String =
-        prefs(context).getString(KEY_LAST_UI_TEXT, "No offer UI text captured yet")
-            ?: "No offer UI text captured yet"
+        prefs(context).getString(KEY_LAST_UI_TEXT, "No offer UI/OCR text captured yet")
+            ?: "No offer UI/OCR text captured yet"
 
     fun lastError(context: Context): String =
         prefs(context).getString(KEY_LAST_ERROR, "") ?: ""
