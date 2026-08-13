@@ -40,7 +40,7 @@ class OfferAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
-        if (::recognizer.isInitializedCompat()) recognizer.close()
+        recognizer.close()
         super.onDestroy()
     }
 
@@ -241,8 +241,6 @@ class OfferAccessibilityService : AccessibilityService() {
             .distinct()
             .joinToString("\n")
     }
-
-    private fun <T> Lazy<T>.isInitializedCompat(): Boolean = isInitialized()
 
     companion object {
         private const val OCR_RETRY_MS = 1_100L
