@@ -6,6 +6,7 @@ internal data class PendingOffer(
     val packageName: String,
     val sourceName: String,
     val armedAt: Long,
+    val notificationKey: String = "",
 )
 
 internal object OfferState {
@@ -13,6 +14,11 @@ internal object OfferState {
     private const val KEY_PACKAGE = "pending_package"
     private const val KEY_SOURCE = "pending_source"
     private const val KEY_ARMED_AT = "pending_armed_at"
+    private const val KEY_NOTIFICATION = "pending_notification_key"
+    private const val KEY_QUEUED_PACKAGE = "queued_package"
+    private const val KEY_QUEUED_SOURCE = "queued_source"
+    private const val KEY_QUEUED_ARMED_AT = "queued_armed_at"
+    private const val KEY_QUEUED_NOTIFICATION = "queued_notification_key"
     private const val KEY_LAST_CAPTURE = "last_capture"
     private const val KEY_LAST_UI_TEXT = "last_ui_text"
     private const val KEY_LAST_ERROR = "last_error"
@@ -21,54 +27,102 @@ internal object OfferState {
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    /**
-     * Keep one capture transaction active at a time. Repeated notification updates and
-     * a second platform notification cannot overwrite a capture whose OCR callback may
-     * still be running. Once the current offer completes or expires, a later notification
-     * can arm the next capture normally.
-     */
-    fun arm(context: Context, packageName: String, sourceName: String) {
+    fun arm(context: Context, packageName: String, sourceName: String, notificationKey: String = "") {
         val existing = pending(context)
-        if (existing != null) {
-            if (existing.packageName != packageName) {
-                markError(
-                    context,
-                    "${platformLabel(packageName)} offer arrived while ${platformLabel(existing.packageName)} capture was active; active capture was kept",
-                )
-            }
+        if (existing == null) {
+            writePending(context, packageName, sourceName, notificationKey, System.currentTimeMillis())
             return
         }
 
+        if (notificationKey.isNotBlank() && existing.notificationKey == notificationKey) {
+            return // update of the same notification, do not reset the 3-minute timer
+        }
+
+        if (existing.packageName == packageName) {
+            // A genuinely new notification from the same courier app supersedes stale pending state.
+            writePending(context, packageName, sourceName, notificationKey, System.currentTimeMillis())
+            return
+        }
+
+        // Keep the active capture stable, but remember one overlapping offer from the other app.
         prefs(context).edit()
-            .putString(KEY_PACKAGE, packageName)
-            .putString(KEY_SOURCE, sourceName)
-            .putLong(KEY_ARMED_AT, System.currentTimeMillis())
-            .putString(KEY_LAST_ERROR, "")
+            .putString(KEY_QUEUED_PACKAGE, packageName)
+            .putString(KEY_QUEUED_SOURCE, sourceName)
+            .putString(KEY_QUEUED_NOTIFICATION, notificationKey)
+            .putLong(KEY_QUEUED_ARMED_AT, System.currentTimeMillis())
+            .putString(KEY_LAST_ERROR, "${platformLabel(packageName)} offer queued while ${platformLabel(existing.packageName)} capture is active")
             .apply()
     }
 
     fun pending(context: Context): PendingOffer? {
         val p = prefs(context)
-        val packageName = p.getString(KEY_PACKAGE, null) ?: return null
+        val packageName = p.getString(KEY_PACKAGE, null)
+        if (packageName == null) {
+            promoteQueued(context)
+            return readPending(context)
+        }
         val armedAt = p.getLong(KEY_ARMED_AT, 0L)
         if (armedAt == 0L || System.currentTimeMillis() - armedAt > MAX_PENDING_AGE_MS) {
-            clear(context)
+            clearCurrent(context)
             markError(context, "Offer expired before a price was detected; no screenshot was saved")
-            return null
+            promoteQueued(context)
+            return readPending(context)
         }
+        return readPending(context)
+    }
+
+    fun clear(context: Context) {
+        clearCurrent(context)
+        promoteQueued(context)
+    }
+
+    private fun readPending(context: Context): PendingOffer? {
+        val p = prefs(context)
+        val packageName = p.getString(KEY_PACKAGE, null) ?: return null
+        val armedAt = p.getLong(KEY_ARMED_AT, 0L)
+        if (armedAt == 0L) return null
         return PendingOffer(
             packageName = packageName,
             sourceName = p.getString(KEY_SOURCE, packageName) ?: packageName,
             armedAt = armedAt,
+            notificationKey = p.getString(KEY_NOTIFICATION, "") ?: "",
         )
     }
 
-    fun clear(context: Context) {
+    private fun writePending(context: Context, packageName: String, sourceName: String, notificationKey: String, armedAt: Long) {
+        prefs(context).edit()
+            .putString(KEY_PACKAGE, packageName)
+            .putString(KEY_SOURCE, sourceName)
+            .putLong(KEY_ARMED_AT, armedAt)
+            .putString(KEY_NOTIFICATION, notificationKey)
+            .putString(KEY_LAST_ERROR, "")
+            .apply()
+    }
+
+    private fun clearCurrent(context: Context) {
         prefs(context).edit()
             .remove(KEY_PACKAGE)
             .remove(KEY_SOURCE)
             .remove(KEY_ARMED_AT)
+            .remove(KEY_NOTIFICATION)
             .apply()
+    }
+
+    private fun promoteQueued(context: Context) {
+        val p = prefs(context)
+        val pkg = p.getString(KEY_QUEUED_PACKAGE, null) ?: return
+        val armed = p.getLong(KEY_QUEUED_ARMED_AT, 0L)
+        val source = p.getString(KEY_QUEUED_SOURCE, pkg) ?: pkg
+        val key = p.getString(KEY_QUEUED_NOTIFICATION, "") ?: ""
+        p.edit()
+            .remove(KEY_QUEUED_PACKAGE)
+            .remove(KEY_QUEUED_SOURCE)
+            .remove(KEY_QUEUED_ARMED_AT)
+            .remove(KEY_QUEUED_NOTIFICATION)
+            .apply()
+        if (armed != 0L && System.currentTimeMillis() - armed <= MAX_PENDING_AGE_MS) {
+            writePending(context, pkg, source, key, armed)
+        }
     }
 
     fun saveUiText(context: Context, text: String) {
