@@ -3,15 +3,21 @@ package com.block154.couriernotificationlistener
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+internal data class SavedScreenshot(
+    val filename: String,
+    val uri: Uri,
+)
+
 internal object ScreenshotStore {
 
-    fun save(context: Context, bitmap: Bitmap, sourceName: String): String {
+    fun save(context: Context, bitmap: Bitmap, sourceName: String): SavedScreenshot {
         val safeSource = sourceName
             .replace(Regex("[^A-Za-z0-9_-]+"), "_")
             .trim('_')
@@ -40,7 +46,7 @@ internal object ScreenshotStore {
             values.clear()
             values.put(MediaStore.Images.Media.IS_PENDING, 0)
             resolver.update(uri, values, null, null)
-            return filename
+            return SavedScreenshot(filename, uri)
         } catch (t: Throwable) {
             resolver.delete(uri, null, null)
             throw t
