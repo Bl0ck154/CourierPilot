@@ -1,8 +1,6 @@
 name: Build Android APK
 
 on:
-  push:
-    branches: [reliability-v0.4]
   pull_request:
     branches: [main]
     types: [opened, reopened, ready_for_review]
