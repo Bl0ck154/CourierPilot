@@ -16,6 +16,13 @@ data class OfferRecord(
     val screenshotUri: String,
     val screenshotFilename: String,
     val rawText: String,
+    val merchantNames: List<String> = emptyList(),
+    val pickupAddresses: List<String> = emptyList(),
+    val customerNames: List<String> = emptyList(),
+    val dropoffAddresses: List<String> = emptyList(),
+    val deliveryCount: Int? = null,
+    val estimatedMinutesMin: Int? = null,
+    val estimatedMinutesMax: Int? = null,
 )
 
 data class OfferSummary(
@@ -50,7 +57,14 @@ class OfferDatabase private constructor(context: Context) :
                 restaurant TEXT,
                 screenshot_uri TEXT NOT NULL,
                 screenshot_filename TEXT NOT NULL,
-                raw_text TEXT NOT NULL
+                raw_text TEXT NOT NULL,
+                merchant_names TEXT,
+                pickup_addresses TEXT,
+                customer_names TEXT,
+                dropoff_addresses TEXT,
+                delivery_count INTEGER,
+                estimated_min INTEGER,
+                estimated_max INTEGER
             )
             """.trimIndent()
         )
@@ -58,7 +72,17 @@ class OfferDatabase private constructor(context: Context) :
         db.execSQL("CREATE INDEX idx_offers_platform ON offers(platform)")
     }
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE offers ADD COLUMN merchant_names TEXT")
+            db.execSQL("ALTER TABLE offers ADD COLUMN pickup_addresses TEXT")
+            db.execSQL("ALTER TABLE offers ADD COLUMN customer_names TEXT")
+            db.execSQL("ALTER TABLE offers ADD COLUMN dropoff_addresses TEXT")
+            db.execSQL("ALTER TABLE offers ADD COLUMN delivery_count INTEGER")
+            db.execSQL("ALTER TABLE offers ADD COLUMN estimated_min INTEGER")
+            db.execSQL("ALTER TABLE offers ADD COLUMN estimated_max INTEGER")
+        }
+    }
 
     fun insert(record: OfferRecord): Long {
         val values = ContentValues().apply {
@@ -71,6 +95,13 @@ class OfferDatabase private constructor(context: Context) :
             put("screenshot_uri", record.screenshotUri)
             put("screenshot_filename", record.screenshotFilename)
             put("raw_text", record.rawText.take(12000))
+            put("merchant_names", encodeList(record.merchantNames))
+            put("pickup_addresses", encodeList(record.pickupAddresses))
+            put("customer_names", encodeList(record.customerNames))
+            put("dropoff_addresses", encodeList(record.dropoffAddresses))
+            record.deliveryCount?.let { put("delivery_count", it) }
+            record.estimatedMinutesMin?.let { put("estimated_min", it) }
+            record.estimatedMinutesMax?.let { put("estimated_max", it) }
         }
         return writableDatabase.insertOrThrow("offers", null, values)
     }
@@ -85,20 +116,29 @@ class OfferDatabase private constructor(context: Context) :
             null,
             null,
             "captured_at DESC",
-            limit.coerceIn(1, 200).toString(),
+            limit.coerceIn(1, 1000).toString(),
         ).use { c ->
             while (c.moveToNext()) {
+                fun nullableInt(name: String): Int? = c.getColumnIndexOrThrow(name).let { i -> if (c.isNull(i)) null else c.getInt(i) }
+                fun nullableString(name: String): String? = c.getColumnIndexOrThrow(name).let { i -> if (c.isNull(i)) null else c.getString(i) }
                 out += OfferRecord(
                     id = c.getLong(c.getColumnIndexOrThrow("id")),
                     capturedAt = c.getLong(c.getColumnIndexOrThrow("captured_at")),
                     platform = c.getString(c.getColumnIndexOrThrow("platform")),
                     packageName = c.getString(c.getColumnIndexOrThrow("package_name")),
                     priceCents = c.getInt(c.getColumnIndexOrThrow("price_cents")),
-                    distanceMeters = c.getColumnIndexOrThrow("distance_meters").let { i -> if (c.isNull(i)) null else c.getInt(i) },
-                    restaurant = c.getColumnIndexOrThrow("restaurant").let { i -> if (c.isNull(i)) null else c.getString(i) },
+                    distanceMeters = nullableInt("distance_meters"),
+                    restaurant = nullableString("restaurant"),
                     screenshotUri = c.getString(c.getColumnIndexOrThrow("screenshot_uri")),
                     screenshotFilename = c.getString(c.getColumnIndexOrThrow("screenshot_filename")),
                     rawText = c.getString(c.getColumnIndexOrThrow("raw_text")),
+                    merchantNames = decodeList(nullableString("merchant_names")),
+                    pickupAddresses = decodeList(nullableString("pickup_addresses")),
+                    customerNames = decodeList(nullableString("customer_names")),
+                    dropoffAddresses = decodeList(nullableString("dropoff_addresses")),
+                    deliveryCount = nullableInt("delivery_count"),
+                    estimatedMinutesMin = nullableInt("estimated_min"),
+                    estimatedMinutesMax = nullableInt("estimated_max"),
                 )
             }
         }
@@ -158,12 +198,19 @@ class OfferDatabase private constructor(context: Context) :
 
     companion object {
         private const val DB_NAME = "courier_offers.db"
-        private const val DB_VERSION = 1
+        private const val DB_VERSION = 2
+        private const val LIST_SEPARATOR = "\u001F"
 
         @Volatile private var instance: OfferDatabase? = null
 
         fun get(context: Context): OfferDatabase = instance ?: synchronized(this) {
             instance ?: OfferDatabase(context).also { instance = it }
         }
+
+        private fun encodeList(values: List<String>): String? =
+            values.map(String::trim).filter(String::isNotEmpty).distinct().takeIf { it.isNotEmpty() }?.joinToString(LIST_SEPARATOR)
+
+        private fun decodeList(value: String?): List<String> =
+            value?.split(LIST_SEPARATOR)?.map(String::trim)?.filter(String::isNotEmpty).orEmpty()
     }
 }
