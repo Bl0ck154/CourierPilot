@@ -5,13 +5,14 @@ Android companion app for automatically archiving incoming Wolt/Bolt courier off
 ## Core behavior
 
 1. `NotificationListenerService` watches Wolt/Bolt new-task notifications.
-2. A matching notification arms capture for that exact courier package.
+2. A matching notification arms capture for the courier app.
 3. `OfferAccessibilityService` waits until that courier app is the active window.
 4. Accessibility text is checked for a real `€ / EUR` price.
 5. If the courier UI does not expose the price to Accessibility, screenshots are taken **in memory only** and passed through on-device ML Kit OCR.
 6. No image is saved while the price is missing.
-7. As soon as the price is detected, that current frame is saved to `Pictures/CourierOffers` and added to the local offer database.
+7. As soon as a plausible non-zero price is detected, that current frame is saved to `Pictures/CourierOffers` and added to the local offer database.
 8. If no price appears, the pending offer can remain armed for up to **3 minutes**. An offer that expires without a detected price is not saved.
+9. Repeated notification updates do not reset an already active capture. While OCR/capture is active, another notification cannot overwrite that transaction.
 
 The Wolt/Bolt APKs are not modified. No root, Shizuku, ADB, Lucky Patcher or MediaProjection prompt is required.
 
@@ -83,12 +84,15 @@ Saved images are written to:
 - Requires Android 11 / API 30 or newer because the app uses `AccessibilityService.takeScreenshot()`.
 - If Wolt/Bolt marks the offer window as secure, Android can reject screenshot capture.
 - OCR uses the Google Play services ML Kit Latin text recognizer. On first use its model may need to become available before OCR succeeds; the capture loop keeps retrying while the offer remains armed.
+- Captures are currently **serialized**: if a second Wolt/Bolt offer notification arrives while another offer is actively waiting for price/OCR, the active capture is kept rather than being overwritten. True concurrent two-platform capture is a future improvement.
 - Restaurant extraction is intentionally best-effort until enough real Wolt/Bolt Accessibility/OCR samples are collected.
-- Notification wording is matched using English/Lithuanian/Ukrainian/Russian task/order/delivery stems. If either courier app changes the wording completely, update `CourierNotificationListener.kt`.
+- Price parsing rejects `€0.00` and values outside a broad courier-offer range, but screens containing multiple plausible euro amounts still require real-world tuning.
+- Distance extraction currently uses the first plausible distance shown by Accessibility/OCR; screens with multiple route distances require real-world tuning.
+- Notification wording is matched using English/Lithuanian/Ukrainian/Russian task/order/delivery stems. If either app changes the wording completely, update `CourierNotificationListener.kt`.
 - Auto-open depends on Android allowing the original notification `PendingIntent` to bring the courier app forward.
 
 ## Build
 
 Current app version: `0.2.0`.
 
-Open the project in Android Studio or build with Gradle/JDK 17. The repository also contains a GitHub Actions APK workflow, but Actions availability depends on the repository/account billing configuration.
+The debug APK was successfully built by GitHub Actions on 2026-08-13 with JDK 17 / Android 35. The workflow uploads it as the `app-debug` artifact.
