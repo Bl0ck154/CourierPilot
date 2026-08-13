@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityService.ScreenshotResult
 import android.accessibilityservice.AccessibilityService.TakeScreenshotCallback
 import android.graphics.Bitmap
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.Display
@@ -18,21 +19,24 @@ class OfferAccessibilityService : AccessibilityService() {
 
     private val handler = Handler(Looper.getMainLooper())
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
-    private var armedAtBeingHandled = 0L
     private var captureInFlight = false
+    private var lastHandledArmedAt = 0L
 
     private val attemptRunnable = Runnable { attemptCapture() }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        val eventPackage = event?.packageName?.toString() ?: return
-        val pending = OfferState.pending(this) ?: return
-        if (eventPackage != pending.packageName) return
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        // Lightweight watchdog: SharedPreferences can be armed by NotificationListener even
+        // when no useful Accessibility event follows (screen locked, shade interaction, OEM quirks).
+        handler.removeCallbacks(attemptRunnable)
+        handler.post(attemptRunnable)
+    }
 
-        if (armedAtBeingHandled != pending.armedAt) {
-            armedAtBeingHandled = pending.armedAt
-            captureInFlight = false
-            handler.removeCallbacks(attemptRunnable)
-            handler.postDelayed(attemptRunnable, 350L)
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        val pending = OfferState.pending(this) ?: return
+        val eventPackage = event?.packageName?.toString().orEmpty()
+        if (eventPackage == pending.packageName || eventPackage == "com.android.systemui") {
+            scheduleAttempt(100L)
         }
     }
 
@@ -46,37 +50,67 @@ class OfferAccessibilityService : AccessibilityService() {
 
     private fun attemptCapture() {
         if (captureInFlight) return
-        val pending = OfferState.pending(this) ?: return
-        if (pending.armedAt != armedAtBeingHandled) return
-
-        val root = rootInActiveWindow
-        if (root?.packageName?.toString() != pending.packageName) {
-            retrySoon()
+        val pending = OfferState.pending(this)
+        if (pending == null) {
+            scheduleAttempt(IDLE_WATCHDOG_MS)
             return
         }
 
-        val uiText = collectVisibleText(root)
+        if (pending.armedAt != lastHandledArmedAt) {
+            lastHandledArmedAt = pending.armedAt
+            OfferState.markError(this, "")
+        }
+
+        val target = findCourierWindow(pending)
+        if (target == null) {
+            scheduleAttempt(WINDOW_RETRY_MS)
+            return
+        }
+
+        val uiText = collectVisibleText(target.root)
         if (uiText.isNotBlank()) OfferState.saveUiText(this, uiText)
         val parsed = OfferParser.parse(uiText)
 
         if (parsed.priceCents != null) {
-            captureCurrentFrameAndPersist(pending, uiText, parsed)
+            captureCurrentFrameAndPersist(pending, target.windowId, uiText, parsed)
         } else {
-            captureCurrentFrameForOcr(pending, uiText)
+            captureCurrentFrameForOcr(pending, target.windowId, uiText)
         }
     }
 
-    private fun captureCurrentFrameForOcr(pending: PendingOffer, accessibilityText: String) {
+    private data class CourierWindow(val root: AccessibilityNodeInfo, val windowId: Int)
+
+    private fun findCourierWindow(pending: PendingOffer): CourierWindow? {
+        val active = rootInActiveWindow
+        if (active?.packageName?.toString() == pending.packageName) {
+            return CourierWindow(active, active.windowId)
+        }
+
+        // If the notification shade / another system surface is on top, the courier window can
+        // still remain in the interactive-windows list. This is especially useful on Android 14+.
+        windows.forEach { window ->
+            val root = runCatching { window.root }.getOrNull() ?: return@forEach
+            if (root.packageName?.toString() == pending.packageName) {
+                return CourierWindow(root, window.id)
+            }
+        }
+        return null
+    }
+
+    private fun captureCurrentFrameForOcr(
+        pending: PendingOffer,
+        windowId: Int,
+        accessibilityText: String,
+    ) {
         captureInFlight = true
-        takeScreenshot(
-            Display.DEFAULT_DISPLAY,
-            mainExecutor,
+        takeTargetScreenshot(
+            windowId,
             object : TakeScreenshotCallback {
                 override fun onSuccess(screenshot: ScreenshotResult) {
                     val bitmap = screenshotToBitmap(screenshot)
                     if (bitmap == null) {
                         captureInFlight = false
-                        retrySoon(OCR_RETRY_MS)
+                        scheduleAttempt(adaptiveOcrDelay(pending))
                         return
                     }
 
@@ -91,7 +125,7 @@ class OfferAccessibilityService : AccessibilityService() {
                             } else {
                                 bitmap.recycle()
                                 captureInFlight = false
-                                retrySoon(OCR_RETRY_MS)
+                                scheduleAttempt(adaptiveOcrDelay(pending))
                             }
                         }
                         .addOnFailureListener { error ->
@@ -101,13 +135,13 @@ class OfferAccessibilityService : AccessibilityService() {
                                 this@OfferAccessibilityService,
                                 "Waiting for price; OCR not ready: ${error.message ?: error.javaClass.simpleName}",
                             )
-                            retrySoon(1_500L)
+                            scheduleAttempt(adaptiveOcrDelay(pending).coerceAtLeast(1_500L))
                         }
                 }
 
                 override fun onFailure(errorCode: Int) {
                     captureInFlight = false
-                    handleScreenshotFailure(errorCode, retry = true)
+                    handleScreenshotFailure(errorCode, retry = true, pending = pending)
                 }
             },
         )
@@ -115,19 +149,19 @@ class OfferAccessibilityService : AccessibilityService() {
 
     private fun captureCurrentFrameAndPersist(
         pending: PendingOffer,
+        windowId: Int,
         text: String,
         parsed: ParsedOffer,
     ) {
         captureInFlight = true
-        takeScreenshot(
-            Display.DEFAULT_DISPLAY,
-            mainExecutor,
+        takeTargetScreenshot(
+            windowId,
             object : TakeScreenshotCallback {
                 override fun onSuccess(screenshot: ScreenshotResult) {
                     val bitmap = screenshotToBitmap(screenshot)
                     if (bitmap == null) {
                         captureInFlight = false
-                        retrySoon()
+                        scheduleAttempt(500L)
                         return
                     }
                     persistOffer(bitmap, pending, text, parsed)
@@ -135,10 +169,18 @@ class OfferAccessibilityService : AccessibilityService() {
 
                 override fun onFailure(errorCode: Int) {
                     captureInFlight = false
-                    handleScreenshotFailure(errorCode, retry = true)
+                    handleScreenshotFailure(errorCode, retry = true, pending = pending)
                 }
             },
         )
+    }
+
+    private fun takeTargetScreenshot(windowId: Int, callback: TakeScreenshotCallback) {
+        if (Build.VERSION.SDK_INT >= 34) {
+            takeScreenshotOfWindow(windowId, mainExecutor, callback)
+        } else {
+            takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, callback)
+        }
     }
 
     private fun persistOffer(
@@ -151,7 +193,7 @@ class OfferAccessibilityService : AccessibilityService() {
         if (priceCents == null) {
             bitmap.recycle()
             captureInFlight = false
-            retrySoon()
+            scheduleAttempt(adaptiveOcrDelay(pending))
             return
         }
 
@@ -168,16 +210,24 @@ class OfferAccessibilityService : AccessibilityService() {
                     screenshotUri = saved.uri.toString(),
                     screenshotFilename = saved.filename,
                     rawText = rawText,
+                    merchantNames = parsed.merchantNames,
+                    pickupAddresses = parsed.pickupAddresses,
+                    customerNames = parsed.customerNames,
+                    dropoffAddresses = parsed.dropoffAddresses,
+                    deliveryCount = parsed.deliveryCount,
+                    estimatedMinutesMin = parsed.estimatedMinutesMin,
+                    estimatedMinutesMax = parsed.estimatedMinutesMax,
                 )
             )
             OfferState.markCapture(this, saved.filename)
             OfferState.clear(this)
-            armedAtBeingHandled = 0L
+            lastHandledArmedAt = 0L
         } catch (t: Throwable) {
             OfferState.markError(this, "Offer save failed: ${t.message ?: t.javaClass.simpleName}")
         } finally {
             bitmap.recycle()
             captureInFlight = false
+            scheduleAttempt(IDLE_WATCHDOG_MS)
         }
     }
 
@@ -197,26 +247,37 @@ class OfferAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun handleScreenshotFailure(errorCode: Int, retry: Boolean) {
+    private fun handleScreenshotFailure(errorCode: Int, retry: Boolean, pending: PendingOffer) {
         if (errorCode == ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT) {
-            if (retry) retrySoon(600L)
+            if (retry) scheduleAttempt(700L)
             return
         }
         val reason = when (errorCode) {
             ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS -> "no accessibility access"
             ERROR_TAKE_SCREENSHOT_INVALID_DISPLAY -> "invalid display"
             ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR -> "internal Android error"
-            else -> "Android error $errorCode (secure window is possible)"
+            else -> if (Build.VERSION.SDK_INT >= 34 && errorCode == ERROR_TAKE_SCREENSHOT_SECURE_WINDOW) {
+                "secure courier window"
+            } else {
+                "Android error $errorCode"
+            }
         }
         OfferState.markError(this, "Screenshot failed: $reason")
-        if (retry) retrySoon(1_200L)
+        if (retry) scheduleAttempt(adaptiveOcrDelay(pending).coerceAtLeast(1_200L))
     }
 
-    private fun retrySoon(delayMs: Long = 400L) {
-        if (OfferState.pending(this) != null) {
-            handler.removeCallbacks(attemptRunnable)
-            handler.postDelayed(attemptRunnable, delayMs)
+    private fun adaptiveOcrDelay(pending: PendingOffer): Long {
+        val age = System.currentTimeMillis() - pending.armedAt
+        return when {
+            age < 15_000L -> 1_200L
+            age < 60_000L -> 2_500L
+            else -> 5_000L
         }
+    }
+
+    private fun scheduleAttempt(delayMs: Long) {
+        handler.removeCallbacks(attemptRunnable)
+        handler.postDelayed(attemptRunnable, delayMs)
     }
 
     private fun collectVisibleText(root: AccessibilityNodeInfo): String {
@@ -225,7 +286,7 @@ class OfferAccessibilityService : AccessibilityService() {
         queue.add(root)
         var visited = 0
 
-        while (queue.isNotEmpty() && visited < 400) {
+        while (queue.isNotEmpty() && visited < 700) {
             val node = queue.removeFirst()
             visited++
             node.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let(pieces::add)
@@ -243,6 +304,7 @@ class OfferAccessibilityService : AccessibilityService() {
     }
 
     companion object {
-        private const val OCR_RETRY_MS = 1_100L
+        private const val IDLE_WATCHDOG_MS = 2_000L
+        private const val WINDOW_RETRY_MS = 350L
     }
 }
