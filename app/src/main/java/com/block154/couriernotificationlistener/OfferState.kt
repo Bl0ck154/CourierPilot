@@ -6,116 +6,68 @@ internal data class PendingOffer(
     val packageName: String,
     val sourceName: String,
     val armedAt: Long,
-    val notificationKey: String = "",
 )
 
 internal object OfferState {
     private const val PREFS = "courier_offer_capture"
+    private const val KEY_PACKAGE = "pending_package"
+    private const val KEY_SOURCE = "pending_source"
+    private const val KEY_ARMED_AT = "pending_armed_at"
     private const val KEY_LAST_CAPTURE = "last_capture"
     private const val KEY_LAST_UI_TEXT = "last_ui_text"
     private const val KEY_LAST_ERROR = "last_error"
     private const val KEY_AUTO_OPEN = "auto_open"
     private const val MAX_PENDING_AGE_MS = 180_000L
 
-    private val courierPackages = listOf(
-        "com.wolt.courierapp",
-        "com.bolt.deliverycourier",
-    )
-
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    private fun slot(packageName: String): String = when {
-        packageName.contains("wolt", ignoreCase = true) -> "wolt"
-        packageName.contains("bolt", ignoreCase = true) -> "bolt"
-        else -> packageName.hashCode().toString()
-    }
-
-    private fun key(packageName: String, field: String): String = "pending_${slot(packageName)}_$field"
-
     /**
-     * Existing listener-compatible entry point. If this platform already has a live
-     * pending offer, notification updates do not restart its three-minute timer.
+     * Keep one capture transaction active at a time. Repeated notification updates and
+     * a second platform notification cannot overwrite a capture whose OCR callback may
+     * still be running. Once the current offer completes or expires, a later notification
+     * can arm the next capture normally.
      */
     fun arm(context: Context, packageName: String, sourceName: String) {
-        if (pending(context, packageName) != null) return
-        writePending(context, packageName, sourceName, "")
-    }
+        val existing = pending(context)
+        if (existing != null) {
+            if (existing.packageName != packageName) {
+                markError(
+                    context,
+                    "${platformLabel(packageName)} offer arrived while ${platformLabel(existing.packageName)} capture was active; active capture was kept",
+                )
+            }
+            return
+        }
 
-    fun arm(
-        context: Context,
-        packageName: String,
-        sourceName: String,
-        notificationKey: String,
-    ): Boolean {
-        val existing = pending(context, packageName)
-        if (existing != null && existing.notificationKey == notificationKey) return false
-        if (existing != null && existing.notificationKey.isBlank()) return false
-        writePending(context, packageName, sourceName, notificationKey)
-        return true
-    }
-
-    private fun writePending(
-        context: Context,
-        packageName: String,
-        sourceName: String,
-        notificationKey: String,
-    ) {
         prefs(context).edit()
-            .putString(key(packageName, "package"), packageName)
-            .putString(key(packageName, "source"), sourceName)
-            .putString(key(packageName, "notification_key"), notificationKey)
-            .putLong(key(packageName, "armed_at"), System.currentTimeMillis())
+            .putString(KEY_PACKAGE, packageName)
+            .putString(KEY_SOURCE, sourceName)
+            .putLong(KEY_ARMED_AT, System.currentTimeMillis())
             .putString(KEY_LAST_ERROR, "")
             .apply()
     }
 
-    fun pending(context: Context, packageName: String): PendingOffer? {
+    fun pending(context: Context): PendingOffer? {
         val p = prefs(context)
-        val storedPackage = p.getString(key(packageName, "package"), null) ?: return null
-        val armedAt = p.getLong(key(packageName, "armed_at"), 0L)
+        val packageName = p.getString(KEY_PACKAGE, null) ?: return null
+        val armedAt = p.getLong(KEY_ARMED_AT, 0L)
         if (armedAt == 0L || System.currentTimeMillis() - armedAt > MAX_PENDING_AGE_MS) {
-            clearPackage(context, packageName)
-            markError(context, "${platformLabel(packageName)} offer expired before a price was detected; no screenshot was saved")
+            clear(context)
+            markError(context, "Offer expired before a price was detected; no screenshot was saved")
             return null
         }
         return PendingOffer(
-            packageName = storedPackage,
-            sourceName = p.getString(key(packageName, "source"), storedPackage) ?: storedPackage,
+            packageName = packageName,
+            sourceName = p.getString(KEY_SOURCE, packageName) ?: packageName,
             armedAt = armedAt,
-            notificationKey = p.getString(key(packageName, "notification_key"), "") ?: "",
         )
     }
 
-    /** Compatibility helper for older callers; newest live pending offer wins. */
-    fun pending(context: Context): PendingOffer? = courierPackages
-        .mapNotNull { pending(context, it) }
-        .maxByOrNull { it.armedAt }
-
-    fun isCurrent(context: Context, offer: PendingOffer): Boolean {
-        val current = pending(context, offer.packageName) ?: return false
-        return current.armedAt == offer.armedAt &&
-            current.notificationKey == offer.notificationKey &&
-            current.packageName == offer.packageName
-    }
-
-    /** A stale async callback can never clear a newer pending offer. */
-    fun clearIfCurrent(context: Context, offer: PendingOffer): Boolean {
-        if (!isCurrent(context, offer)) return false
-        clearPackage(context, offer.packageName)
-        return true
-    }
-
-    /** Compatibility helper; clears only the newest pending offer, never both platforms. */
     fun clear(context: Context) {
-        pending(context)?.let { clearPackage(context, it.packageName) }
-    }
-
-    private fun clearPackage(context: Context, packageName: String) {
         prefs(context).edit()
-            .remove(key(packageName, "package"))
-            .remove(key(packageName, "source"))
-            .remove(key(packageName, "notification_key"))
-            .remove(key(packageName, "armed_at"))
+            .remove(KEY_PACKAGE)
+            .remove(KEY_SOURCE)
+            .remove(KEY_ARMED_AT)
             .apply()
     }
 
