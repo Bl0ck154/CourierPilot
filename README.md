@@ -16,6 +16,18 @@ Android companion app for automatically archiving incoming Wolt/Bolt courier off
 
 The Wolt/Bolt APKs are not modified. No root, Shizuku, ADB, Lucky Patcher or MediaProjection prompt is required.
 
+## 0.3.0 UI
+
+The app now has three main screens:
+
+- **Home** — capture health, today's offer metrics, 7-day summary, a contribution-style activity calendar and recent offers;
+- **History** — up to 200 recent captured offers grouped by day; tapping one opens its saved screenshot;
+- **Stats** — Today / 7 days / 30 days summaries, GitHub-style yearly contribution heatmap, recent offer activity by hour and Wolt/Bolt split.
+
+Settings moved out of the dashboard. When both Notification Access and Accessibility are healthy, setup controls stay hidden and Home only shows a small `Capture active` status. If either permission is lost, an `Action required` card appears with the exact fix button.
+
+Diagnostics are also hidden from the main screen and live under **Settings → Diagnostics**, where raw Accessibility/OCR text can be expanded only when needed.
+
 ## Offer history
 
 Every successfully captured priced offer stores:
@@ -28,25 +40,21 @@ Every successfully captured priced offer stores:
 - original screenshot filename and MediaStore URI;
 - raw Accessibility/OCR text for diagnostics and future parser improvements.
 
-Tap a recent offer in the app to open its original screenshot.
-
 ## Statistics
 
-The main screen currently shows:
+Available aggregates include:
 
-- **Today** — all offers plus separate Wolt/Bolt summaries;
-- **Last 7 days** — all offers plus separate Wolt/Bolt summaries;
-- **Last 30 days** — all offers plus separate Wolt/Bolt summaries;
 - offer count;
 - average offer price;
 - average detected distance;
 - average €/km when distance is available;
-- daily history for the last 30 days;
-- Wolt/Bolt offer count per day;
-- daily average price and €/km;
-- the 40 most recent offers.
+- Today / 7-day / 30-day periods;
+- Wolt vs Bolt split;
+- daily activity for up to 365 days;
+- contribution-style yearly heatmap;
+- hourly activity based on recent captured offers.
 
-The database is local SQLite and does not depend on the screenshots for aggregation, so statistics remain fast as the archive grows.
+Hourly activity is intentionally **not called work hours** because the app does not yet know exact shift start/end times.
 
 ## Setup
 
@@ -59,17 +67,7 @@ Enable:
 
 Optional:
 
-- Turn on **Automatically open Wolt/Bolt on offer notification**. The listener sends the courier notification's original `PendingIntent` when Android permits the background launch. Leave this off if you prefer to open the offer yourself.
-
-## Diagnostics
-
-The bottom of the main screen shows:
-
-- last saved screenshot;
-- last capture/OCR error or status;
-- last merged text seen by Accessibility and ML Kit OCR.
-
-This raw text is intentionally retained so restaurant/distance parsing can be tuned against real Wolt/Bolt screens without guessing their internal view IDs.
+- Turn on **Automatically open Wolt/Bolt on offer notification** in Settings. The listener sends the courier notification's original `PendingIntent` when Android permits the background launch.
 
 ## Screenshot storage
 
@@ -83,16 +81,14 @@ Saved images are written to:
 
 - Requires Android 11 / API 30 or newer because the app uses `AccessibilityService.takeScreenshot()`.
 - If Wolt/Bolt marks the offer window as secure, Android can reject screenshot capture.
-- OCR uses the Google Play services ML Kit Latin text recognizer. On first use its model may need to become available before OCR succeeds; the capture loop keeps retrying while the offer remains armed.
-- Captures are currently **serialized**: if a second Wolt/Bolt offer notification arrives while another offer is actively waiting for price/OCR, the active capture is kept rather than being overwritten. True concurrent two-platform capture is a future improvement.
-- Restaurant extraction is intentionally best-effort until enough real Wolt/Bolt Accessibility/OCR samples are collected.
+- OCR uses the Google Play services ML Kit Latin text recognizer.
+- Captures are currently **serialized**: if a second Wolt/Bolt offer notification arrives while another offer is actively waiting for price/OCR, the active capture is kept rather than overwritten.
+- Restaurant extraction is best-effort until more real Wolt/Bolt samples are collected. The UI filters obvious navigation labels such as `Close drawer` instead of presenting them as restaurants.
 - Price parsing rejects `€0.00` and values outside a broad courier-offer range, but screens containing multiple plausible euro amounts still require real-world tuning.
-- Distance extraction currently uses the first plausible distance shown by Accessibility/OCR; screens with multiple route distances require real-world tuning.
-- Notification wording is matched using English/Lithuanian/Ukrainian/Russian task/order/delivery stems. If either app changes the wording completely, update `CourierNotificationListener.kt`.
-- Auto-open depends on Android allowing the original notification `PendingIntent` to bring the courier app forward.
+- Distance extraction currently uses the first plausible distance shown by Accessibility/OCR.
 
 ## Build
 
-Current app version: `0.2.0`.
+Current app version: `0.3.0` (`versionCode 3`).
 
-The debug APK was successfully built by GitHub Actions on 2026-08-13 with JDK 17 / Android 35. The workflow uploads it as the `app-debug` artifact.
+A 0.3.0 debug APK was successfully built by GitHub Actions on 2026-08-13 with JDK 17 / Android 35 and uploaded as the `app-debug` artifact.
