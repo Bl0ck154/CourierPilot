@@ -26,8 +26,6 @@ class OfferAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        // Lightweight watchdog: SharedPreferences can be armed by NotificationListener even
-        // when no useful Accessibility event follows (screen locked, shade interaction, OEM quirks).
         handler.removeCallbacks(attemptRunnable)
         handler.post(attemptRunnable)
     }
@@ -86,8 +84,6 @@ class OfferAccessibilityService : AccessibilityService() {
             return CourierWindow(active, active.windowId)
         }
 
-        // If the notification shade / another system surface is on top, the courier window can
-        // still remain in the interactive-windows list. This is especially useful on Android 14+.
         windows.forEach { window ->
             val root = runCatching { window.root }.getOrNull() ?: return@forEach
             if (root.packageName?.toString() == pending.packageName) {
@@ -189,6 +185,18 @@ class OfferAccessibilityService : AccessibilityService() {
         rawText: String,
         parsed: ParsedOffer,
     ) {
+        val current = OfferState.pending(this)
+        val stillCurrent = current != null &&
+            current.packageName == pending.packageName &&
+            current.armedAt == pending.armedAt &&
+            (pending.notificationKey.isBlank() || current.notificationKey == pending.notificationKey)
+        if (!stillCurrent) {
+            bitmap.recycle()
+            captureInFlight = false
+            scheduleAttempt(100L)
+            return
+        }
+
         val priceCents = parsed.priceCents
         if (priceCents == null) {
             bitmap.recycle()
