@@ -6,13 +6,11 @@ internal data class PendingOffer(
     val packageName: String,
     val sourceName: String,
     val armedAt: Long,
+    val notificationKey: String,
 )
 
 internal object OfferState {
     private const val PREFS = "courier_offer_capture"
-    private const val KEY_PACKAGE = "pending_package"
-    private const val KEY_SOURCE = "pending_source"
-    private const val KEY_ARMED_AT = "pending_armed_at"
     private const val KEY_LAST_CAPTURE = "last_capture"
     private const val KEY_LAST_UI_TEXT = "last_ui_text"
     private const val KEY_LAST_ERROR = "last_error"
@@ -21,36 +19,75 @@ internal object OfferState {
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    fun arm(context: Context, packageName: String, sourceName: String) {
-        prefs(context).edit()
-            .putString(KEY_PACKAGE, packageName)
-            .putString(KEY_SOURCE, sourceName)
-            .putLong(KEY_ARMED_AT, System.currentTimeMillis())
-            .putString(KEY_LAST_ERROR, "")
-            .apply()
+    private fun slot(packageName: String): String = when {
+        packageName.contains("wolt", ignoreCase = true) -> "wolt"
+        packageName.contains("bolt", ignoreCase = true) -> "bolt"
+        else -> packageName.hashCode().toString()
     }
 
-    fun pending(context: Context): PendingOffer? {
+    private fun key(packageName: String, field: String): String = "pending_${slot(packageName)}_$field"
+
+    /**
+     * Arms one platform independently from the other platform.
+     * Returns false when the same live notification is already armed, so notification
+     * updates do not reset the three-minute wait window.
+     */
+    fun arm(
+        context: Context,
+        packageName: String,
+        sourceName: String,
+        notificationKey: String,
+    ): Boolean {
+        val existing = pending(context, packageName)
+        if (existing != null && existing.notificationKey == notificationKey) return false
+
+        prefs(context).edit()
+            .putString(key(packageName, "package"), packageName)
+            .putString(key(packageName, "source"), sourceName)
+            .putString(key(packageName, "notification_key"), notificationKey)
+            .putLong(key(packageName, "armed_at"), System.currentTimeMillis())
+            .putString(KEY_LAST_ERROR, "")
+            .apply()
+        return true
+    }
+
+    fun pending(context: Context, packageName: String): PendingOffer? {
         val p = prefs(context)
-        val packageName = p.getString(KEY_PACKAGE, null) ?: return null
-        val armedAt = p.getLong(KEY_ARMED_AT, 0L)
+        val storedPackage = p.getString(key(packageName, "package"), null) ?: return null
+        val armedAt = p.getLong(key(packageName, "armed_at"), 0L)
         if (armedAt == 0L || System.currentTimeMillis() - armedAt > MAX_PENDING_AGE_MS) {
-            clear(context)
-            markError(context, "Offer expired before a price was detected; no screenshot was saved")
+            clearPackage(context, packageName)
+            markError(context, "${platformLabel(packageName)} offer expired before a price was detected; no screenshot was saved")
             return null
         }
         return PendingOffer(
-            packageName = packageName,
-            sourceName = p.getString(KEY_SOURCE, packageName) ?: packageName,
+            packageName = storedPackage,
+            sourceName = p.getString(key(packageName, "source"), storedPackage) ?: storedPackage,
             armedAt = armedAt,
+            notificationKey = p.getString(key(packageName, "notification_key"), "") ?: "",
         )
     }
 
-    fun clear(context: Context) {
+    fun isCurrent(context: Context, offer: PendingOffer): Boolean {
+        val current = pending(context, offer.packageName) ?: return false
+        return current.armedAt == offer.armedAt &&
+            current.notificationKey == offer.notificationKey &&
+            current.packageName == offer.packageName
+    }
+
+    /** Clears only the exact offer that completed. A stale OCR callback cannot clear a newer offer. */
+    fun clearIfCurrent(context: Context, offer: PendingOffer): Boolean {
+        if (!isCurrent(context, offer)) return false
+        clearPackage(context, offer.packageName)
+        return true
+    }
+
+    private fun clearPackage(context: Context, packageName: String) {
         prefs(context).edit()
-            .remove(KEY_PACKAGE)
-            .remove(KEY_SOURCE)
-            .remove(KEY_ARMED_AT)
+            .remove(key(packageName, "package"))
+            .remove(key(packageName, "source"))
+            .remove(key(packageName, "notification_key"))
+            .remove(key(packageName, "armed_at"))
             .apply()
     }
 
@@ -83,5 +120,11 @@ internal object OfferState {
 
     fun setAutoOpen(context: Context, enabled: Boolean) {
         prefs(context).edit().putBoolean(KEY_AUTO_OPEN, enabled).apply()
+    }
+
+    private fun platformLabel(packageName: String): String = when {
+        packageName.contains("wolt", ignoreCase = true) -> "Wolt"
+        packageName.contains("bolt", ignoreCase = true) -> "Bolt"
+        else -> "Courier"
     }
 }
