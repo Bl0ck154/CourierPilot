@@ -34,15 +34,20 @@ internal object OfferParser {
     }
 
     private fun parsePriceCents(text: String): Int? {
-        val match = priceRegex.find(text) ?: return null
-        val raw = match.groupValues[1].ifBlank { match.groupValues[2] }
-            .replace(',', '.')
-        return runCatching {
-            BigDecimal(raw)
-                .multiply(BigDecimal(100))
-                .setScale(0, RoundingMode.HALF_UP)
-                .intValueExact()
-        }.getOrNull()
+        return priceRegex.findAll(text)
+            .mapNotNull { match ->
+                val raw = match.groupValues[1].ifBlank { match.groupValues[2] }
+                    .replace(',', '.')
+                runCatching {
+                    BigDecimal(raw)
+                        .multiply(BigDecimal(100))
+                        .setScale(0, RoundingMode.HALF_UP)
+                        .intValueExact()
+                }.getOrNull()
+            }
+            // €0.00 placeholders must never trigger a saved screenshot. Courier payouts
+            // outside this broad range are treated as unrelated amounts on the screen.
+            .firstOrNull { it in MIN_PRICE_CENTS..MAX_PRICE_CENTS }
     }
 
     private fun parseDistanceMeters(text: String): Int? {
@@ -51,7 +56,7 @@ internal object OfferParser {
         return when (match.groupValues[2].lowercase(Locale.ROOT)) {
             "km" -> (value * 1000.0).toInt()
             else -> value.toInt()
-        }.takeIf { it > 0 }
+        }.takeIf { it in 1..MAX_DISTANCE_METERS }
     }
 
     private fun guessRestaurant(text: String): String? {
@@ -77,4 +82,8 @@ internal object OfferParser {
             }
             .firstOrNull()
     }
+
+    private const val MIN_PRICE_CENTS = 20
+    private const val MAX_PRICE_CENTS = 10_000
+    private const val MAX_DISTANCE_METERS = 100_000
 }
