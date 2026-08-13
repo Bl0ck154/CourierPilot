@@ -22,9 +22,12 @@ class CourierNotificationListener : NotificationListenerService() {
         if (!isCourierSource(sbn.packageName, sourceName)) return
         if (!looksLikeOfferNotification(sbn.notification)) return
 
-        OfferState.arm(this, sbn.packageName, sourceName)
+        val before = OfferState.pending(this)
+        OfferState.arm(this, sbn.packageName, sourceName, sbn.key)
+        val after = OfferState.pending(this)
+        val isNewCurrentOffer = after?.notificationKey == sbn.key && before?.notificationKey != sbn.key
 
-        if (OfferState.autoOpen(this)) {
+        if (OfferState.autoOpen(this) && isNewCurrentOffer) {
             openOriginalNotification(sbn.notification.contentIntent, sourceName)
         }
     }
@@ -85,8 +88,6 @@ class CourierNotificationListener : NotificationListenerService() {
             append(notification.tickerText.orEmpty())
         }.lowercase(Locale.ROOT)
 
-        // Wolt/Bolt localize these strings. Stems are intentional so the listener
-        // survives small wording changes and Lithuanian/Ukrainian/Russian variants.
         val offerWords = listOf(
             "task", "order", "delivery", "offer",
             "užduot", "uzduot", "užsak", "uzsak", "pristat",
