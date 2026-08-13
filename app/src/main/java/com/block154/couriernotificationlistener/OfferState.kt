@@ -6,7 +6,7 @@ internal data class PendingOffer(
     val packageName: String,
     val sourceName: String,
     val armedAt: Long,
-    val notificationKey: String,
+    val notificationKey: String = "",
 )
 
 internal object OfferState {
@@ -16,6 +16,11 @@ internal object OfferState {
     private const val KEY_LAST_ERROR = "last_error"
     private const val KEY_AUTO_OPEN = "auto_open"
     private const val MAX_PENDING_AGE_MS = 180_000L
+
+    private val courierPackages = listOf(
+        "com.wolt.courierapp",
+        "com.bolt.deliverycourier",
+    )
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -28,10 +33,14 @@ internal object OfferState {
     private fun key(packageName: String, field: String): String = "pending_${slot(packageName)}_$field"
 
     /**
-     * Arms one platform independently from the other platform.
-     * Returns false when the same live notification is already armed, so notification
-     * updates do not reset the three-minute wait window.
+     * Existing listener-compatible entry point. If this platform already has a live
+     * pending offer, notification updates do not restart its three-minute timer.
      */
+    fun arm(context: Context, packageName: String, sourceName: String) {
+        if (pending(context, packageName) != null) return
+        writePending(context, packageName, sourceName, "")
+    }
+
     fun arm(
         context: Context,
         packageName: String,
@@ -40,7 +49,17 @@ internal object OfferState {
     ): Boolean {
         val existing = pending(context, packageName)
         if (existing != null && existing.notificationKey == notificationKey) return false
+        if (existing != null && existing.notificationKey.isBlank()) return false
+        writePending(context, packageName, sourceName, notificationKey)
+        return true
+    }
 
+    private fun writePending(
+        context: Context,
+        packageName: String,
+        sourceName: String,
+        notificationKey: String,
+    ) {
         prefs(context).edit()
             .putString(key(packageName, "package"), packageName)
             .putString(key(packageName, "source"), sourceName)
@@ -48,7 +67,6 @@ internal object OfferState {
             .putLong(key(packageName, "armed_at"), System.currentTimeMillis())
             .putString(KEY_LAST_ERROR, "")
             .apply()
-        return true
     }
 
     fun pending(context: Context, packageName: String): PendingOffer? {
@@ -68,6 +86,11 @@ internal object OfferState {
         )
     }
 
+    /** Compatibility helper for older callers; newest live pending offer wins. */
+    fun pending(context: Context): PendingOffer? = courierPackages
+        .mapNotNull { pending(context, it) }
+        .maxByOrNull { it.armedAt }
+
     fun isCurrent(context: Context, offer: PendingOffer): Boolean {
         val current = pending(context, offer.packageName) ?: return false
         return current.armedAt == offer.armedAt &&
@@ -75,11 +98,16 @@ internal object OfferState {
             current.packageName == offer.packageName
     }
 
-    /** Clears only the exact offer that completed. A stale OCR callback cannot clear a newer offer. */
+    /** A stale async callback can never clear a newer pending offer. */
     fun clearIfCurrent(context: Context, offer: PendingOffer): Boolean {
         if (!isCurrent(context, offer)) return false
         clearPackage(context, offer.packageName)
         return true
+    }
+
+    /** Compatibility helper; clears only the newest pending offer, never both platforms. */
+    fun clear(context: Context) {
+        pending(context)?.let { clearPackage(context, it.packageName) }
     }
 
     private fun clearPackage(context: Context, packageName: String) {
