@@ -37,7 +37,14 @@ internal object RouteIntelligencePolicy {
     const val MIN_POINTS = 2
     const val MAX_POINTS = 20
 
-    // Deliberately disabled until a real self-hosted endpoint and Vilnius validation corpus exist.
+    /**
+     * "Production" means a calculated route is trusted enough to replace/drive normal product
+     * behavior, select a preferred route, influence an accept/reject decision or become a capture
+     * dependency. That remains false until real Vilnius validation exists.
+     *
+     * 0.10 may still run an explicitly enabled POST-CAPTURE research comparison and display both
+     * candidates with provenance; that experiment must not be mistaken for production activation.
+     */
     const val PRODUCTION_ENABLED = false
 
     fun validate(request: RouteRequest) {
