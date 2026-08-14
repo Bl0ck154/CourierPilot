@@ -1,0 +1,95 @@
+package com.block154.courierpilot
+
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
+
+internal data class ScreenPoint(val x: Double, val y: Double)
+
+internal data class KnownMapAnchor(
+    val screen: ScreenPoint,
+    val geo: RoutePoint,
+)
+
+/**
+ * Small-area screen-to-geo transform for research after a Bolt map scale/orientation has been
+ * independently established. One known GPS anchor alone is not enough to infer meters-per-pixel;
+ * callers must provide that evidence rather than guessing it.
+ */
+internal data class LocalMapTransform(
+    val anchor: KnownMapAnchor,
+    val metersPerPixel: Double,
+    val clockwiseRotationDegrees: Double = 0.0,
+) {
+    init {
+        require(metersPerPixel > 0.0 && metersPerPixel.isFinite())
+        require(clockwiseRotationDegrees.isFinite())
+    }
+
+    fun screenToGeo(target: ScreenPoint): RoutePoint {
+        // Android Y grows downward. Convert screen delta into east/north meters first.
+        val rawEast = (target.x - anchor.screen.x) * metersPerPixel
+        val rawNorth = -(target.y - anchor.screen.y) * metersPerPixel
+
+        val angle = -clockwiseRotationDegrees * PI / 180.0
+        val east = rawEast * cos(angle) - rawNorth * sin(angle)
+        val north = rawEast * sin(angle) + rawNorth * cos(angle)
+
+        val latitudeRadians = anchor.geo.latitude * PI / 180.0
+        val latDelta = north / METERS_PER_DEGREE_LATITUDE
+        val lonScale = METERS_PER_DEGREE_LATITUDE * cos(latitudeRadians)
+        require(kotlin.math.abs(lonScale) > 1.0) { "Longitude scale is unstable near the poles" }
+        val lonDelta = east / lonScale
+
+        return RoutePoint(
+            latitude = anchor.geo.latitude + latDelta,
+            longitude = anchor.geo.longitude + lonDelta,
+        )
+    }
+
+    companion object {
+        private const val METERS_PER_DEGREE_LATITUDE = 111_320.0
+    }
+}
+
+internal enum class BoltMarkerKind {
+    CURRENT_LOCATION,
+    PICKUP,
+    DROPOFF,
+    UNKNOWN,
+}
+
+internal data class BoltMarkerEvidence(
+    val kind: BoltMarkerKind,
+    val screenCenter: ScreenPoint,
+    val semanticLabel: String? = null,
+    val viewId: String? = null,
+    val confidence: Double,
+) {
+    init {
+        require(confidence in 0.0..1.0)
+    }
+}
+
+internal data class BoltMapRecoveryEvidence(
+    val currentLocation: RoutePoint,
+    val currentLocationMarker: BoltMarkerEvidence,
+    val targetMarkers: List<BoltMarkerEvidence>,
+    val metersPerPixel: Double? = null,
+    val clockwiseRotationDegrees: Double? = null,
+) {
+    /** True only when enough independent evidence exists to project pixels into coordinates. */
+    val canProjectCoordinates: Boolean
+        get() = metersPerPixel != null && clockwiseRotationDegrees != null
+
+    fun buildTransform(): LocalMapTransform {
+        require(currentLocationMarker.kind == BoltMarkerKind.CURRENT_LOCATION)
+        val scale = requireNotNull(metersPerPixel) { "Map scale has not been established" }
+        val rotation = requireNotNull(clockwiseRotationDegrees) { "Map orientation has not been established" }
+        return LocalMapTransform(
+            anchor = KnownMapAnchor(currentLocationMarker.screenCenter, currentLocation),
+            metersPerPixel = scale,
+            clockwiseRotationDegrees = rotation,
+        )
+    }
+}
