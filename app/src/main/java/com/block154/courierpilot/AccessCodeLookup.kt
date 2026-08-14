@@ -18,7 +18,7 @@ internal fun CourierMetaDatabase.codesForBuilding(buildingKey: String, limit: In
         arrayOf(buildingKey),
         null,
         null,
-        "seen_count DESC, last_seen_at DESC",
+        "last_seen_at DESC, seen_count DESC",
         limit.coerceIn(1, 20).toString(),
     ).use { cursor ->
         while (cursor.moveToNext()) {
