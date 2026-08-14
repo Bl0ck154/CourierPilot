@@ -29,6 +29,9 @@ internal object OfferState {
     private const val KEY_CAPTURED_NOTIFICATION_PACKAGE = "captured_notification_package"
     private const val KEY_CAPTURED_NOTIFICATION = "captured_notification_key"
     private const val KEY_CAPTURED_NOTIFICATION_AT = "captured_notification_at"
+    private const val KEY_CAPTURED_BURST_PACKAGE = "captured_burst_package"
+    private const val KEY_CAPTURED_BURST_FINGERPRINT = "captured_burst_fingerprint"
+    private const val KEY_CAPTURED_BURST_AT = "captured_burst_at"
     private const val KEY_LAST_CAPTURE = "last_capture"
     private const val KEY_LAST_UI_TEXT = "last_ui_text"
     private const val KEY_LAST_ERROR = "last_error"
@@ -44,6 +47,14 @@ internal object OfferState {
             !notificationKey.startsWith("screen:") &&
             wasCapturedNotification(context, packageName, notificationKey)
         ) {
+            return ArmResult.DUPLICATE_UPDATE
+        }
+
+        // Screen discovery can see progressively richer Accessibility text for one unchanged offer.
+        // The full screen fingerprint then changes, so use a short-lived coarse identity as a second
+        // pre-screenshot gate. Notification-triggered offers intentionally bypass this gate: a real
+        // new notification must still be allowed even if two offers happen to look similar.
+        if (notificationKey.startsWith("screen:") && wasCapturedBurstForCurrentUi(context, packageName)) {
             return ArmResult.DUPLICATE_UPDATE
         }
 
@@ -96,7 +107,7 @@ internal object OfferState {
     }
 
     /**
-     * Called only after a successful capture. Besides seeding the semantic screen deduper, retain
+     * Called only after a successful capture. Besides seeding both screen dedupe identities, retain
      * the notification instance that produced the capture. Courier apps frequently repost/update
      * the same StatusBarNotification after the price is already visible; without this tombstone a
      * cleared transaction was armed again and produced a second/third screenshot + DB row.
@@ -112,6 +123,7 @@ internal object OfferState {
             if (text.isNotBlank()) {
                 val parsed = OfferParser.parse(text)
                 if (parsed.priceCents != null) {
+                    markCapturedBurst(context, current.packageName, OfferDedupeIdentity.burstFingerprint(current.packageName, parsed))
                     ScreenOfferDeduper.markArmed(
                         context,
                         current.packageName,
@@ -164,6 +176,30 @@ internal object OfferState {
             .putString(KEY_CAPTURED_NOTIFICATION_PACKAGE, packageName)
             .putString(KEY_CAPTURED_NOTIFICATION, notificationKey)
             .putLong(KEY_CAPTURED_NOTIFICATION_AT, System.currentTimeMillis())
+            .apply()
+    }
+
+    private fun wasCapturedBurstForCurrentUi(context: Context, packageName: String): Boolean {
+        val p = prefs(context)
+        val capturedAt = p.getLong(KEY_CAPTURED_BURST_AT, 0L)
+        if (capturedAt == 0L || System.currentTimeMillis() - capturedAt > OfferDedupeIdentity.BURST_WINDOW_MS) {
+            return false
+        }
+        if (p.getString(KEY_CAPTURED_BURST_PACKAGE, "") != packageName) return false
+
+        val text = p.getString(KEY_LAST_UI_TEXT, "").orEmpty()
+        if (text.isBlank()) return false
+        val parsed = OfferParser.parse(text)
+        if (parsed.priceCents == null) return false
+        val fingerprint = OfferDedupeIdentity.burstFingerprint(packageName, parsed)
+        return p.getString(KEY_CAPTURED_BURST_FINGERPRINT, "") == fingerprint
+    }
+
+    private fun markCapturedBurst(context: Context, packageName: String, fingerprint: String) {
+        prefs(context).edit()
+            .putString(KEY_CAPTURED_BURST_PACKAGE, packageName)
+            .putString(KEY_CAPTURED_BURST_FINGERPRINT, fingerprint)
+            .putLong(KEY_CAPTURED_BURST_AT, System.currentTimeMillis())
             .apply()
     }
 
