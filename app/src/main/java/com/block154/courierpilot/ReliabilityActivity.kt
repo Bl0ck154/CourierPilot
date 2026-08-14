@@ -163,6 +163,66 @@ class ReliabilityActivity : Activity() {
             }
         }.top(dp(10)))
 
+        root.addView(sectionTitle("Route intelligence research", "Local diagnostics for the future Valhalla/Bolt route pipeline").top(dp(24)))
+        val boltDiagnosticsEnabled = hasAccessibilityService(BoltAccessibilityDiagnosticsService::class.java)
+        val boltDump = BoltAccessibilityDiagnostics.summary(this)
+        val boltArmed = BoltAccessibilityDiagnostics.isArmed(this)
+        root.addView(card().apply {
+            addView(text("Bolt Accessibility tree", 15f, TEXT, true))
+            addView(text(
+                if (boltDiagnosticsEnabled) "Research service enabled" else "Enable the separate research-only Accessibility service first",
+                12f,
+                if (boltDiagnosticsEnabled) GREEN else MUTED,
+            ).top(dp(5)))
+            addView(text(
+                "The next armed Bolt screen is saved once to app-internal storage. The tree includes text/contentDescription/viewId/class/bounds and may contain private delivery data.",
+                12f,
+                MUTED,
+            ).top(dp(6)))
+
+            if (!boltDiagnosticsEnabled) {
+                addView(linkButton("Enable Bolt diagnostics") {
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                }.top(dp(9)))
+            }
+
+            addView(linkButton(if (boltArmed) "Disarm Bolt tree dump" else "Arm next Bolt screen") {
+                if (boltArmed) BoltAccessibilityDiagnostics.disarm(this@ReliabilityActivity)
+                else BoltAccessibilityDiagnostics.arm(this@ReliabilityActivity)
+                render()
+            }.top(dp(5)))
+
+            if (boltArmed) {
+                addView(text("ARMED — open Bolt and wait for the real offer/map screen.", 12f, AMBER, true).top(dp(6)))
+            }
+
+            if (boltDump != null) {
+                addView(text("Last dump", 12f, MUTED, true).top(dp(14)))
+                val truncation = if (boltDump.truncated) " · truncated" else ""
+                addView(text("${formatTime(boltDump.capturedAt)} · ${boltDump.nodeCount} nodes$truncation", 13f, TEXT).top(dp(4)))
+                addView(linkButton("Share last Bolt tree") { shareBoltTree() }.top(dp(7)))
+                addView(linkButton("Delete Bolt tree") {
+                    BoltAccessibilityDiagnostics.clear(this@ReliabilityActivity)
+                    render()
+                }.top(dp(3)))
+            }
+        }.top(dp(10)))
+
+        root.addView(card().apply {
+            addView(text("Valhalla integration", 15f, TEXT, true))
+            addView(text(
+                "Provider-neutral route models and the Valhalla pedestrian/cycleway request contract are compiled in, but production routing is intentionally disabled until the VPS endpoint and real Vilnius route tests exist.",
+                12f,
+                MUTED,
+            ).top(dp(5)))
+            addView(text(
+                "No INTERNET or location permission was added in this groundwork build.",
+                12f,
+                MUTED,
+                true,
+            ).top(dp(6)))
+        }.top(dp(8)))
+
         root.addView(sectionTitle("Capture event log", "No customer names, addresses or raw offer text are written here").top(dp(24)))
         val events = CaptureEventLog.recent(this, 60)
         root.addView(card().apply {
@@ -232,6 +292,7 @@ class ReliabilityActivity : Activity() {
             appendLine("Android: ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
             appendLine("Notification access: ${hasNotificationAccess()}")
             appendLine("Accessibility: ${hasAccessibilityAccess()}")
+            appendLine("Bolt diagnostics Accessibility: ${hasAccessibilityService(BoltAccessibilityDiagnosticsService::class.java)}")
             appendLine("Ignoring battery optimizations: ${power.isIgnoringBatteryOptimizations(packageName)}")
             if (Build.VERSION.SDK_INT >= 28) appendLine("Background restricted: ${activityManager.isBackgroundRestricted}")
             appendLine("Alive reminder: ${HeartbeatSettings.enabled(this@ReliabilityActivity)}")
@@ -249,6 +310,15 @@ class ReliabilityActivity : Activity() {
         }, "Share CourierPilot diagnostics"))
     }
 
+    private fun shareBoltTree() {
+        val body = BoltAccessibilityDiagnostics.readLastDump(this) ?: return
+        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "CourierPilot Bolt Accessibility tree")
+            putExtra(Intent.EXTRA_TEXT, body)
+        }, "Share private Bolt tree deliberately"))
+    }
+
     private fun openBatterySettings() {
         runCatching { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
             .onFailure { openAppInfo() }
@@ -263,9 +333,11 @@ class ReliabilityActivity : Activity() {
         return enabled.split(':').any { ComponentName.unflattenFromString(it)?.packageName == packageName }
     }
 
-    private fun hasAccessibilityAccess(): Boolean {
+    private fun hasAccessibilityAccess(): Boolean = hasAccessibilityService(OfferAccessibilityService::class.java)
+
+    private fun hasAccessibilityService(serviceClass: Class<*>): Boolean {
         if (Settings.Secure.getInt(contentResolver, Settings.Secure.ACCESSIBILITY_ENABLED, 0) != 1) return false
-        val target = ComponentName(this, OfferAccessibilityService::class.java)
+        val target = ComponentName(this, serviceClass)
         val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
         return enabled.split(':').any { ComponentName.unflattenFromString(it) == target }
     }
@@ -340,6 +412,7 @@ class ReliabilityActivity : Activity() {
         private val BORDER = Color.parseColor("#E5E7EB")
         private val BLUE = Color.parseColor("#2563EB")
         private val GREEN = Color.parseColor("#16A34A")
+        private val AMBER = Color.parseColor("#D97706")
         private val RED = Color.parseColor("#DC2626")
     }
 }
