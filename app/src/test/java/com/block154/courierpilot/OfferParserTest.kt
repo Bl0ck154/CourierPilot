@@ -69,6 +69,28 @@ class OfferParserTest {
     }
 
     @Test
+    fun doesNotTreatOfferAsReadyBeforePriceAppears() {
+        val parsed = OfferParser.parse(
+            """
+            Delivery from
+            Manami (Vilniaus g.)
+            Route distance
+            8.8 km
+            Estimated
+            14 - 27 min
+            """.trimIndent()
+        )
+        assertNull(parsed.priceCents)
+        assertEquals(8800, parsed.distanceMeters)
+    }
+
+    @Test
+    fun rejectsZeroPlaceholderPrice() {
+        val parsed = OfferParser.parse("€0.00\nExpected earnings for the full delivery")
+        assertNull(parsed.priceCents)
+    }
+
+    @Test
     fun parsesRealWoltStackedOffer() {
         val parsed = OfferParser.parse(
             """
