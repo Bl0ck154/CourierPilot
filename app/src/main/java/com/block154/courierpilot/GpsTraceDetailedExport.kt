@@ -5,10 +5,10 @@ internal object GpsTraceDetailedExport {
         val coordinates = points.joinToString(",") { point -> "[${point.longitude},${point.latitude}]" }
         val timestamps = points.joinToString(",") { it.recordedAt.toString() }
         val accuracies = points.joinToString(",") {
-            it.accuracyMeters?.takeIf(Float::isFinite)?.toString() ?: "null"
+            it.accuracyMeters?.takeIf { value -> value.isFinite() }?.toString() ?: "null"
         }
         val speeds = points.joinToString(",") {
-            it.speedMetersPerSecond?.takeIf(Float::isFinite)?.toString() ?: "null"
+            it.speedMetersPerSecond?.takeIf { value -> value.isFinite() }?.toString() ?: "null"
         }
         return """{"type":"FeatureCollection","features":[{"type":"Feature","properties":{"source":"courierpilot_gps_trace_v1","session_id":$sessionId,"sample_count":${points.size},"timestamps_ms":[$timestamps],"accuracy_m":[$accuracies],"speed_mps":[$speeds]},"geometry":{"type":"LineString","coordinates":[$coordinates]}}]}"""
     }
