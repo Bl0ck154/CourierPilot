@@ -52,4 +52,8 @@ internal object ScreenshotStore {
             throw t
         }
     }
+
+    fun delete(context: Context, saved: SavedScreenshot) {
+        runCatching { context.contentResolver.delete(saved.uri, null, null) }
+    }
 }
