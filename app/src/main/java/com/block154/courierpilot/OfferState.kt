@@ -84,7 +84,26 @@ internal object OfferState {
         return readPending(context)
     }
 
+    /**
+     * Called after a successful capture. Record the final semantic identity before clearing the
+     * transaction so a notification-triggered capture and the still-visible screen cannot archive
+     * the same offer again through different trigger paths.
+     */
     fun clear(context: Context) {
+        val current = readPending(context)
+        if (current != null) {
+            val text = prefs(context).getString(KEY_LAST_UI_TEXT, "").orEmpty()
+            if (text.isNotBlank()) {
+                val parsed = OfferParser.parse(text)
+                if (parsed.priceCents != null) {
+                    ScreenOfferDeduper.markArmed(
+                        context,
+                        current.packageName,
+                        CourierSignals.offerFingerprint(current.packageName, parsed, text),
+                    )
+                }
+            }
+        }
         clearCurrent(context)
         promoteQueued(context)
     }

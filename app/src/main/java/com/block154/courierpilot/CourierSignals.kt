@@ -98,6 +98,9 @@ internal object CourierSignals {
         "waiting for tasks",
         "looking for orders",
         "looking for tasks",
+        "on duty",
+        "courier app is running",
+        "keep you active while app is in background",
         "laukiame užsakymų",
         "laukiame uzsakymu",
         "ieškome užsakymų",
@@ -110,6 +113,7 @@ internal object CourierSignals {
         "you're offline",
         "you are offline",
         "go online",
+        "off duty",
         "start delivering",
         "start accepting orders",
         "start accepting tasks",
@@ -192,8 +196,6 @@ internal object CourierSignals {
         val hasStructuredStop = parsed.restaurant != null || parsed.dropoffAddresses.isNotEmpty()
         val hasPrice = parsed.priceCents != null
 
-        // Accepted-delivery screens often contain addresses and euro amounts too. Require either
-        // explicit accept/decline controls, or Wolt's full-delivery earnings label, before arming.
         if (lower.contains("expected earnings for the full delivery") && hasPrice) return true
         if (hasDecision && (hasPrice || hasWoltOfferStructure) && (hasRouteEvidence || hasStructuredStop || hasWoltOfferStructure)) return true
         return hasStrongNotificationStylePhrase && hasDecision && (hasPrice || hasRouteEvidence)
@@ -259,15 +261,61 @@ internal object CourierSignals {
         return key to display
     }
 
-    fun offerFingerprint(packageName: String, text: String): String {
-        val normalized = text.lineSequence()
-            .map { it.trim().replace(Regex("\\s+"), " ").lowercase(Locale.ROOT) }
+    /**
+     * Semantic offer fingerprint. Unlike hashing the entire Accessibility/OCR frame, this ignores
+     * dynamic ETA/spinner/UI text and uses fields that belong to the route itself. This lets a
+     * notification-triggered capture and a later screen-triggered view of the same offer share one
+     * identity.
+     */
+    fun offerFingerprint(packageName: String, parsed: ParsedOffer, text: String): String {
+        val merchants = parsed.merchantNames
+            .map(::identityToken)
             .filter(String::isNotEmpty)
-            .joinToString("\n")
+            .distinct()
+            .sorted()
+        val detectedAddresses = likelyAddresses(text)
+            .map(::identityToken)
+            .filter(String::isNotEmpty)
+            .distinct()
+            .sorted()
+        val structuredAddresses = (parsed.pickupAddresses + parsed.dropoffAddresses)
+            .map(::identityToken)
+            .filter(String::isNotEmpty)
+            .distinct()
+            .sorted()
+        val addresses = detectedAddresses.ifEmpty { structuredAddresses }
+        val payload = buildString {
+            append(packageName)
+            append("|p=").append(parsed.priceCents ?: -1)
+            append("|d=").append(parsed.distanceMeters ?: -1)
+            append("|n=").append(parsed.deliveryCount ?: -1)
+            append("|m=").append(merchants.joinToString(";"))
+            append("|a=").append(addresses.joinToString(";"))
+        }
+        return shortHash(payload)
+    }
+
+    /** Existing callers now receive the semantic fingerprint too. */
+    fun offerFingerprint(packageName: String, text: String): String =
+        offerFingerprint(packageName, OfferParser.parse(text), text)
+
+    fun hasStrongOfferIdentity(parsed: ParsedOffer, text: String): Boolean {
+        if (parsed.priceCents == null) return false
+        return likelyAddresses(text).isNotEmpty() ||
+            (parsed.merchantNames.isNotEmpty() && parsed.distanceMeters != null)
+    }
+
+    private fun shortHash(value: String): String {
         val digest = MessageDigest.getInstance("SHA-256")
-            .digest("$packageName\n$normalized".toByteArray(Charsets.UTF_8))
+            .digest(value.toByteArray(Charsets.UTF_8))
         return digest.take(10).joinToString("") { "%02x".format(it) }
     }
+
+    private fun identityToken(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFD)
+        .replace(Regex("\\p{M}+"), "")
+        .lowercase(Locale.ROOT)
+        .replace(Regex("[^a-z0-9]+"), " ")
+        .trim()
 
     private fun looksLikeAddressLine(line: String): Boolean {
         if (!houseNumberRegex.containsMatchIn(line)) return false

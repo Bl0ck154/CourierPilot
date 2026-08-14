@@ -32,17 +32,22 @@ internal object OfferParser {
         val merchantSummary = parseWoltMerchantSummary(lines)
         val merchantNames = merchantSummary?.second ?: parseBoltMerchant(lines)?.let(::listOf).orEmpty()
         val stops = parseAddressStops(lines, merchantNames)
-        val pickups = stops.filter { it.isMerchant }.map { it.address }.distinct()
-        val customers = stops.filterNot { it.isMerchant }.mapNotNull { it.name }.distinct()
-        val dropoffs = stops.filterNot { it.isMerchant }.map { it.address }.distinct()
+        val merchantStops = stops.filter { it.isMerchant }
+        val customerStops = stops.filterNot { it.isMerchant }
+        val pickups = merchantStops.map { it.address }.distinct()
+        // Keep a placeholder when Accessibility/OCR exposes a destination address but omits the
+        // customer label. This preserves name/address alignment in Offer details instead of pairing
+        // the next customer's name with the wrong destination.
+        val customers = customerStops.map { it.name ?: "Customer" }
+        val dropoffs = customerStops.map { it.address }
         val estimate = parseEstimate(lines)
 
-        // Restaurant count and delivery count are different concepts. Wolt can batch two customer
-        // orders from one venue and still show the venue only once (and sometimes even keep the
-        // singular "Delivery from" heading). Count actual customer/drop-off stops as an independent
-        // signal and take the strongest available evidence.
+        // Restaurant count and delivery count are different concepts. Wolt can batch any number of
+        // customer orders from one or several venues. Prefer the explicit N-deliveries header when
+        // present, but also count parsed customer stops because Wolt occasionally keeps a singular
+        // "Delivery from" heading for a multi-drop route.
         val headerDeliveryCount = merchantSummary?.first ?: 0
-        val customerStopCount = stops.count { !it.isMerchant }
+        val customerStopCount = customerStops.size
         val baselineCount = if (merchantNames.isNotEmpty()) 1 else 0
         val deliveryCount = maxOf(headerDeliveryCount, customerStopCount, baselineCount)
             .takeIf { it > 0 }
@@ -125,41 +130,58 @@ internal object OfferParser {
 
     private data class AddressStop(val name: String?, val address: String, val isMerchant: Boolean)
 
+    /**
+     * Parses the route sequentially. A stop name may be separated from its address by Ready/ETA,
+     * but it must live after the previous address. Looking four arbitrary lines backwards allowed a
+     * previous merchant name to "leak" into the next customer address and produced fake P3/P4
+     * pickups. Segment boundaries remove that ambiguity and naturally support 1..N pickups/dropoffs.
+     */
     private fun parseAddressStops(lines: List<String>, merchants: List<String>): List<AddressStop> {
         val addresses = mutableListOf<AddressStop>()
-        var fallbackMerchantIndex = 0
+        val usedMerchants = mutableSetOf<String>()
         var pickupPhaseEnded = false
+        var previousAddressIndex = lines.indexOfFirst { it.equals("Timeline", ignoreCase = true) }
 
         lines.forEachIndexed { index, line ->
             if (!looksLikeAddress(line)) return@forEachIndexed
+            if (index <= previousAddressIndex) return@forEachIndexed
 
-            val candidates = (index - 1 downTo maxOf(0, index - 4))
+            val segmentStart = (previousAddressIndex + 1).coerceAtLeast(0)
+            val nearestNamedStop = (index - 1 downTo segmentStart)
+                .asSequence()
                 .map { lines[it] }
-                .filter(::isStopNameCandidate)
-            val explicitMerchant = candidates.firstOrNull { candidate ->
-                merchants.any { known -> namesEquivalent(candidate, known) }
+                .firstOrNull(::isStopNameCandidate)
+
+            val matchedMerchant = nearestNamedStop?.let { candidate ->
+                merchants.firstOrNull { known -> namesEquivalent(candidate, known) }
             }
-            val nearestNamedStop = candidates.firstOrNull()
-            val hasExplicitNonMerchantName = explicitMerchant == null && nearestNamedStop != null
+            if (nearestNamedStop != null && matchedMerchant == null) pickupPhaseEnded = true
 
-            if (hasExplicitNonMerchantName) pickupPhaseEnded = true
-
-            val fallbackMerchant = explicitMerchant == null &&
+            val fallbackMerchant = if (
                 nearestNamedStop == null &&
-                !pickupPhaseEnded &&
-                fallbackMerchantIndex < merchants.size
-            val isMerchant = explicitMerchant != null || fallbackMerchant
+                !pickupPhaseEnded
+            ) {
+                merchants.firstOrNull { merchant -> merchantIdentity(merchant) !in usedMerchants }
+            } else {
+                null
+            }
+
+            val merchant = matchedMerchant ?: fallbackMerchant
+            val isMerchant = merchant != null
             val name = when {
-                explicitMerchant != null -> explicitMerchant
-                fallbackMerchant -> merchants.getOrNull(fallbackMerchantIndex)
+                matchedMerchant != null -> nearestNamedStop
+                fallbackMerchant != null -> fallbackMerchant
                 else -> nearestNamedStop
             }
 
             addresses += AddressStop(name, line, isMerchant)
-            if (isMerchant) fallbackMerchantIndex++
+            if (merchant != null) usedMerchants += merchantIdentity(merchant)
+            previousAddressIndex = index
         }
-        return addresses.distinctBy { "${it.name}|${it.address}" }
+        return addresses.distinctBy { "${it.name}|${it.address}|${it.isMerchant}" }
     }
+
+    private fun merchantIdentity(value: String): String = value.lowercase(Locale.ROOT).trim()
 
     private fun namesEquivalent(a: String, b: String): Boolean {
         val aa = a.lowercase(Locale.ROOT).trim()
