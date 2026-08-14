@@ -63,6 +63,13 @@ android {
     }
 }
 
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    testLogging {
+        showStandardStreams = true
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+    }
+}
+
 dependencies {
     implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
     testImplementation("junit:junit:4.13.2")
