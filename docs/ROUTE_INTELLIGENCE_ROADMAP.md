@@ -1,173 +1,239 @@
 # CourierPilot Route Intelligence Roadmap
 
-Status: research / future implementation plan
-
-This document preserves the product direction for turning CourierPilot from an offer recorder into a route-aware courier assistant. It is intentionally written as an AI-agent handoff: future agents should treat the constraints and open questions below as product requirements, not as already-solved facts.
+Status: active implementation roadmap; 0.10 reaches experimental Wolt routing + live advisor, while preferred scooter routing, Bolt recovery and personal learning remain evidence-gated.
 
 ## Product goal
 
-At offer time, CourierPilot should reduce the courier's mental work without making the acceptance decision for them.
+At offer time CourierPilot should compress the courier's mental arithmetic without making the acceptance decision.
 
-Desired output for a captured offer:
+Desired output:
 
 - platform offer price;
 - platform-provided distance/time when available;
-- independently calculated route distance;
-- independently estimated route time;
-- price per route kilometer;
-- predicted effective earnings per hour once enough real history exists;
-- compact optional voice summary;
-- no automatic accept/reject action.
-
-The user remains the decision maker.
+- independently calculated route distance/time with provenance;
+- €/km;
+- effective €/h only from inputs that are explicitly shown;
+- later: personalized route time + venue wait once real history is sufficient;
+- optional voice summary;
+- no automatic accept/reject.
 
 ## Routing philosophy
 
-The courier uses a Ninebot-class electric scooter in Vilnius and often chooses shorter urban shortcuts rather than behaving like a standard road cyclist.
+The target is a Ninebot-class urban scooter workflow in Vilnius, not a conventional road-cyclist model.
 
-Desired route preference, in order:
+Preference goals:
 
 1. short practical route;
-2. avoid stairs/steps strongly;
-3. prefer cycleways when they are useful and do not create a large detour;
-4. allow ordinary pedestrian/path topology where practical;
-5. do not blindly force a conventional bicycle route;
-6. do not invent access through roads/paths that routing data marks as inaccessible.
+2. strongly avoid stairs/steps;
+3. use cycleways when useful without accepting a silly detour;
+4. permit practical path/pedestrian topology where routing data allows it;
+5. retain OSM access restrictions;
+6. learn from real ridden routes rather than hiding bad stock-router behavior behind arbitrary Android heuristics.
 
-Important: stock Valhalla does not expose one built-in costing mode that exactly means "pedestrian topology + strong stair avoidance + cycleway preference". The initial implementation must compare available costing models instead of pretending this custom profile already exists.
+Stock Valhalla still has no one costing mode that exactly means this. Therefore CourierPilot continues to compare:
 
-## Baseline Valhalla strategy
+- **pedestrian shortcut** — pedestrian topology with high stair penalty;
+- **cycleway biased** — hybrid bicycle with stronger path/cycleway preference.
 
-Run a self-hosted Valhalla instance using the Lithuania OpenStreetMap extract.
+Neither profile is the permanent CourierPilot winner yet.
 
-For each route test, obtain at least two candidates:
+## Implemented through 0.10
 
-### Candidate A — pedestrian shortcut profile
+### Self-hosted Valhalla
 
-Use `costing=pedestrian` with:
+A protected HTTPS Valhalla deployment for Lithuania is already live and used by the Android client. The token remains outside GitHub and privacy-safe diagnostics.
 
-- a high `step_penalty` so stairs are strongly avoided;
-- pedestrian/walkway topology available;
-- no assumption that the resulting ETA represents actual scooter speed.
+### Current location + geocoding
 
-This candidate is intended primarily for route geometry and distance.
+CourierPilot can obtain a one-shot foreground phone location and resolve textual addresses through the Android geocoder. There is no background-location permission in 0.10.
 
-### Candidate B — cycleway-biased bicycle profile
+### Manual validation harness
 
-Use `costing=bicycle` with:
+The Route Research screen supports:
 
-- `bicycle_type=hybrid` or another type validated against Vilnius routes;
-- low `use_roads` to increase preference for cycleways/paths;
-- practical `avoid_bad_surfaces` value;
-- speed treated as a preliminary estimate only.
+- current phone fix;
+- editable test destination;
+- address → coordinates;
+- both Valhalla candidates;
+- geometry preview;
+- GeoJSON export;
+- local route verdicts/notes.
 
-### Validation
+### Wolt ordered route acquisition
 
-Do not promote either candidate as the CourierPilot route until it has been compared against real routes the user actually rides in Vilnius.
+`OfferParser` now preserves the sequential Wolt Timeline in addition to the existing pickup/drop-off lists.
 
-Build a small validation corpus of 10-20 real start/end pairs with the route the user would actually choose. Record:
+This prevents a stacked route such as:
 
-- Valhalla pedestrian distance and geometry;
-- Valhalla bicycle distance and geometry;
-- platform route if visible;
-- user's real route / GPS trace when available;
-- obvious errors: stairs, inaccessible passage, pointless detour, missed cycleway/shortcut.
+`pickup A → drop-off 1 → pickup B → drop-off 2`
 
-If neither stock profile is consistently good enough, investigate a custom Valhalla costing implementation/fork rather than stacking arbitrary heuristics in the Android client.
+from being silently reordered into:
 
-## Wolt route acquisition
+`pickup A → pickup B → drop-off 1 → drop-off 2`.
 
-When Wolt exposes textual pickup/drop-off addresses through Accessibility/OCR:
+### Experimental automatic Wolt routing
 
-1. parse address/stops as CourierPilot already does;
-2. geocode them to coordinates;
-3. combine with current device GPS;
-4. request route `current -> pickup -> drop-off(s)`;
-5. keep platform distance/time and calculated distance/time as separate fields.
+0.10 can run an **explicitly enabled, post-capture** route experiment:
 
-Never overwrite platform-provided data with calculated data; store provenance.
+`fresh GPS → every ordered Wolt textual stop → geocode → Valhalla pedestrian + cycleway candidates`.
 
-## Bolt route acquisition
+Important constraints:
 
-Bolt is the harder platform because offer screens may show map markers without a textual destination address.
+- off by default;
+- starts only after clean screenshot + offer DB insertion;
+- every required stop must resolve or the run fails closed;
+- no candidate is automatically selected;
+- calculated numbers never overwrite platform numbers;
+- waypoint provenance/confidence and both candidate summaries are stored locally.
 
-Use a staged approach:
+### Live advisor
 
-1. inspect the Bolt Accessibility tree first;
-2. if marker coordinates/semantic labels are exposed, use them directly;
-3. if not, capture marker bounds and the map screenshot;
-4. use the current device GPS as a known map anchor;
-5. infer map transform / marker coordinates from the rendered map;
-6. pass recovered latitude/longitude directly to Valhalla — a human-readable address is not required.
+The post-capture overlay now shows immediately usable arithmetic:
+
+- price;
+- platform km / ETA;
+- platform-derived €/km and €/h range;
+- optional Wolt calculated candidates when enabled;
+- optional voice summary.
+
+It deliberately exposes raw numbers instead of GOOD/BAD scoring.
+
+### Outcome groundwork
+
+The separate research timeline records a certain `OFFER_CAPTURED` event and then only explicit, monotonic screen-state cues.
+
+This is the beginning of the `offer → outcome` loop, not a completed delivery detector.
+
+### Bolt sample collection
+
+One-shot Bolt research bundles already contain Accessibility tree + matching screenshot + available cached phone GPS metadata. This is the evidence source for the next Bolt phase.
+
+## Next phase 1 — validate Wolt live routing
+
+Collect real Wolt examples, especially stacked jobs, and compare:
+
+- captured Timeline order;
+- Android-geocoded stop coordinates;
+- platform distance/ETA;
+- pedestrian Valhalla candidate;
+- cycleway Valhalla candidate;
+- actual route the courier would ride.
+
+Target at least 10–20 known Vilnius routes with awkward cases: Old Town, river crossings, stairs, courtyards, pedestrian shortcuts and cycleway detours.
+
+Do not select a preferred profile until this corpus is reviewed.
+
+## Next phase 2 — Bolt marker coordinate recovery
+
+Bolt is still blocked by evidence, not by Android GPS.
+
+Use real private samples and investigate in this order:
+
+1. semantic marker labels/content descriptions;
+2. stable marker/map view IDs and bounds;
+3. current-location marker and route-line geometry;
+4. viewport/zoom/orientation clues;
+5. independently known anchors to recover map scale/orientation;
+6. recovered marker coordinates checked against ground truth.
+
+If the evidence is insufficient, keep the coordinate unknown. Never fabricate it.
 
 See `BOLT_MAP_COORDINATE_RECOVERY.md`.
 
-## Current-location point
+## Next phase 3 — reliable delivery lifecycle
 
-The user's current point is not an unsolved problem. CourierPilot can request Android location permission and obtain the current device location itself.
+Expand explicit Wolt/Bolt state cues from real screens while preserving the monotonic state machine.
 
-The map-recovery problem is only to determine the unknown Bolt pickup/drop-off marker coordinates. Knowing the user's GPS point is an important anchor that should simplify that task.
+Goal:
 
-## Live advisor (future)
+`OFFER_CAPTURED → ACCEPTED → ARRIVED_PICKUP → PICKED_UP → ARRIVED_DROPOFF → DELIVERED`
 
-Once route extraction is trustworthy, a compact live offer card may show:
+Only observed states may become statistics. A screen disappearing is not acceptance; a later unrelated completion message must not attach to the wrong offer.
 
-- offer price;
-- platform km / platform ETA;
-- calculated route km / route ETA;
-- €/km;
-- predicted €/h;
-- restaurant historical wait adjustment when enough data exists;
-- confidence/provenance labels.
+Once enough real lifecycle evidence exists, derive:
 
-Avoid simplistic GOOD/BAD ratings based only on price. Any future verdict must expose the numbers that produced it.
+- accepted → completed duration;
+- pickup arrival → picked-up wait;
+- venue-specific wait distributions;
+- delivery handoff overhead.
 
-## Historical personalized routing
+## Next phase 4 — opt-in real GPS traces
 
-Long-term, record opted-in GPS traces during active courier work and map-match them to the OSM/Valhalla road graph.
+Only after lifecycle boundaries are reliable, add explicit active-work/active-delivery GPS collection with retention controls.
 
-Possible learned signals:
+Requirements:
 
-- user's actual traversal speed by road/path segment and time bucket;
-- repeated shortcuts the stock router does not prefer;
-- intersection/area delay patterns;
-- actual restaurant pickup wait distribution;
-- real completion time compared with platform and Valhalla estimates.
-
-This is not an AI requirement. The first useful version can be statistical: median/trimmed-mean traversal time per matched segment with minimum sample thresholds and recency weighting.
-
-Never claim personalized estimates until there is enough real data. Fall back to baseline routing when sample support is weak.
+- foreground/user-controlled tracking lifecycle;
+- battery impact measured on a real courier shift;
+- local-first trace storage;
+- no indefinite tracking because Accessibility happens to be enabled;
+- map matching through the protected Valhalla `/trace_attributes` path when deployed.
 
 See `PERSONAL_ROUTE_LEARNING.md`.
 
-## Privacy and data boundaries
+## Next phase 5 — personalized ETA and effective €/h
 
-- GPS history is sensitive and must be local-first by default.
-- Raw customer addresses must not be sent to third-party analytics.
-- A self-hosted Valhalla server only needs coordinates for routing.
-- If the self-hosted router is remote, document that coordinates leave the phone and provide a way to disable route intelligence.
-- Do not include customer address/GPS data in privacy-safe diagnostics.
+Use simple statistics before any ML:
 
-## Implementation order
+- median/trimmed segment traversal times;
+- minimum real sample thresholds;
+- recency weighting if useful;
+- venue median pickup wait after repeated observations;
+- fallback to baseline routing wherever personal support is weak.
 
-1. Deploy and validate self-hosted Valhalla for Lithuania.
-2. Add an internal route-client abstraction to CourierPilot, initially disabled behind a feature flag.
-3. Add Android current-location acquisition with explicit permission and bounded sampling.
-4. Build a route test screen/debug harness that accepts coordinates and compares pedestrian vs bicycle candidates.
-5. Inspect and capture the Bolt Accessibility tree on real offers.
-6. Prototype Bolt marker coordinate recovery only after collecting real samples.
-7. Integrate Wolt textual-address routing where coordinates can be obtained reliably.
-8. Add live advisor UI only after route accuracy is validated.
-9. Add outcome/GPS learning later, with explicit data-retention controls.
+Target transparent calculation:
 
-## Required evidence before production activation
+`effective €/h = offer price / (ride to pickup + expected venue wait + remaining route + handoff overhead) × 60`.
 
-- real Vilnius test routes, not only synthetic tests;
-- no stair-heavy route presented as preferred when an obvious stair-free alternative exists;
-- no fabricated Bolt destination coordinate;
-- route provenance visible in diagnostics;
-- timeouts and failure-safe behavior: routing failure must never block offer capture;
-- feature can be disabled independently of core CourierPilot capture.
+Every component must expose provenance/sample support. Do not display a personalized estimate if the supporting history is too thin.
+
+## Potential later routing profile work
+
+If the real corpus shows that neither stock candidate is consistently acceptable, investigate a custom Valhalla costing/fork on the server.
+
+Prefer improving the routing engine over growing a pile of opaque client-side exceptions.
+
+## Privacy boundaries
+
+- GPS/address history is sensitive and local-first.
+- Automatic Wolt routing is independently switchable and off by default.
+- When enabled, ordered offer coordinates are sent to the configured self-hosted Valhalla endpoint; document this clearly.
+- Raw customer addresses/GPS never belong in privacy-safe diagnostics.
+- Bolt samples stay private until deliberately shared.
+- Continuous GPS must require explicit user-controlled activation.
+
+## Implementation progress
+
+- [x] Deploy protected self-hosted Valhalla for Lithuania.
+- [x] Provider-neutral route client and bounded HTTPS transport.
+- [x] One-shot Android current-location acquisition.
+- [x] Manual route comparison/debug harness.
+- [x] One-shot full Bolt sample capture.
+- [ ] Recover Bolt marker coordinates from real evidence.
+- [x] Preserve ordered Wolt textual route stops.
+- [x] Experimental opt-in Wolt post-capture routing.
+- [x] Transparent live advisor with platform arithmetic.
+- [~] Offer→outcome lifecycle: conservative explicit-state groundwork implemented; real cue coverage incomplete.
+- [ ] Opt-in continuous/active-delivery GPS trace collection.
+- [ ] Map matching and personal segment statistics fed into advisor.
+- [ ] Real venue-wait adjustment fed into effective €/h.
+- [ ] Preferred/custom scooter routing profile selected from real validation.
+
+## Required evidence before production route activation
+
+`RouteIntelligencePolicy.PRODUCTION_ENABLED` must remain false until the route is trusted enough to influence normal product behavior.
+
+Required evidence includes:
+
+- real Vilnius routes rather than only synthetic tests;
+- no stair-heavy route silently promoted over an obvious practical alternative;
+- stacked Wolt stop order verified on real offers;
+- geocoded Wolt stops spot-checked;
+- no fabricated Bolt destination;
+- route provenance visible and retained;
+- routing failure demonstrably independent from core offer persistence;
+- opt-out works independently from capture;
+- personalized estimates gated by real sample counts.
 
 ## Official references
 

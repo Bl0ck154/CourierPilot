@@ -17,6 +17,11 @@ internal class RouteResearchDatabase private constructor(context: Context) :
     SQLiteOpenHelper(context.applicationContext, DB_NAME, null, DB_VERSION) {
 
     override fun onCreate(db: SQLiteDatabase) {
+        createV1Tables(db)
+        createV2Tables(db)
+    }
+
+    private fun createV1Tables(db: SQLiteDatabase) {
         db.execSQL("""
             CREATE TABLE route_comparisons (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,13 +129,60 @@ internal class RouteResearchDatabase private constructor(context: Context) :
         """.trimIndent())
     }
 
+    private fun createV2Tables(db: SQLiteDatabase) {
+        db.execSQL("""
+            CREATE TABLE live_advisor_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                offer_id INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                platform TEXT NOT NULL,
+                price_cents INTEGER NOT NULL,
+                platform_distance_m INTEGER,
+                platform_eta_min INTEGER,
+                platform_eta_max INTEGER,
+                status TEXT NOT NULL,
+                failure_reason TEXT,
+                location_accuracy_m REAL
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX idx_live_advisor_offer ON live_advisor_runs(offer_id, created_at)")
+        db.execSQL("""
+            CREATE TABLE live_advisor_waypoints (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                sequence_index INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                latitude REAL NOT NULL,
+                longitude REAL NOT NULL,
+                provenance TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                label TEXT,
+                FOREIGN KEY(run_id) REFERENCES live_advisor_runs(id) ON DELETE CASCADE
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX idx_live_advisor_waypoints_run ON live_advisor_waypoints(run_id, sequence_index)")
+        db.execSQL("""
+            CREATE TABLE live_advisor_candidates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id INTEGER NOT NULL,
+                profile TEXT NOT NULL,
+                distance_m INTEGER,
+                duration_s INTEGER,
+                http_status INTEGER,
+                warnings TEXT,
+                FOREIGN KEY(run_id) REFERENCES live_advisor_runs(id) ON DELETE CASCADE
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX idx_live_advisor_candidates_run ON live_advisor_candidates(run_id)")
+    }
+
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
         db.setForeignKeyConstraintsEnabled(true)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        error("Route research DB migration $oldVersion->$newVersion is not implemented")
+        if (oldVersion < 2) createV2Tables(db)
     }
 
     fun recordComparison(
@@ -159,7 +211,92 @@ internal class RouteResearchDatabase private constructor(context: Context) :
         }
     }
 
+    fun recordLiveAdvisorRun(
+        offerId: Long,
+        platform: String,
+        parsed: ParsedOffer,
+        waypoints: List<ResolvedWaypoint>,
+        locationAccuracyMeters: Float?,
+        comparison: RouteComparison?,
+        failureReason: String? = null,
+    ): Long {
+        val price = requireNotNull(parsed.priceCents) { "Advisor run requires priced offer" }
+        val db = writableDatabase
+        db.beginTransaction()
+        return try {
+            val runId = db.insertOrThrow("live_advisor_runs", null, ContentValues().apply {
+                put("offer_id", offerId)
+                put("created_at", System.currentTimeMillis())
+                put("platform", platform)
+                put("price_cents", price)
+                parsed.distanceMeters?.let { put("platform_distance_m", it) }
+                parsed.estimatedMinutesMin?.let { put("platform_eta_min", it) }
+                parsed.estimatedMinutesMax?.let { put("platform_eta_max", it) }
+                put("status", if (comparison == null) "FAILED" else "COMPARED")
+                put("failure_reason", failureReason?.trim()?.take(240))
+                locationAccuracyMeters?.let { put("location_accuracy_m", it) }
+            })
+            waypoints.forEachIndexed { index, waypoint ->
+                db.insertOrThrow("live_advisor_waypoints", null, ContentValues().apply {
+                    put("run_id", runId)
+                    put("sequence_index", index)
+                    put("kind", waypoint.kind.name)
+                    put("latitude", waypoint.point.latitude)
+                    put("longitude", waypoint.point.longitude)
+                    put("provenance", waypoint.provenance.name)
+                    put("confidence", waypoint.confidence)
+                    put("label", waypoint.label?.take(160))
+                })
+            }
+            comparison?.let {
+                insertLiveCandidate(db, runId, RouteProfile.PEDESTRIAN_SHORTCUT, it.pedestrian)
+                insertLiveCandidate(db, runId, RouteProfile.CYCLEWAY_BIASED, it.cycleway)
+            }
+            db.setTransactionSuccessful()
+            runId
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    fun recordDeliveryEvent(offerId: Long?, event: DeliveryTimelineEvent): Long = writableDatabase.insertOrThrow(
+        "delivery_timeline_events",
+        null,
+        ContentValues().apply {
+            offerId?.let { put("offer_id", it) }
+            put("event_type", event.type.name)
+            put("occurred_at", event.timestampMillis)
+            put("stop_key", event.stopKey)
+            put("source", event.source)
+            put("confidence", event.confidence)
+        },
+    )
+
+    fun deliveryEvents(offerId: Long): List<DeliveryTimelineEvent> = readableDatabase.rawQuery(
+        "SELECT event_type, occurred_at, stop_key, source, confidence FROM delivery_timeline_events WHERE offer_id=? ORDER BY occurred_at ASC",
+        arrayOf(offerId.toString()),
+    ).use { cursor ->
+        buildList {
+            while (cursor.moveToNext()) {
+                val type = runCatching { DeliveryEventType.valueOf(cursor.getString(0)) }.getOrNull() ?: continue
+                add(
+                    DeliveryTimelineEvent(
+                        type = type,
+                        timestampMillis = cursor.getLong(1),
+                        stopKey = cursor.getString(2),
+                        source = cursor.getString(3),
+                        confidence = cursor.getDouble(4),
+                    )
+                )
+            }
+        }
+    }
+
     fun comparisonCount(): Int = readableDatabase.rawQuery("SELECT COUNT(*) FROM route_comparisons", null).use {
+        if (it.moveToFirst()) it.getInt(0) else 0
+    }
+
+    fun liveAdvisorRunCount(): Int = readableDatabase.rawQuery("SELECT COUNT(*) FROM live_advisor_runs", null).use {
         if (it.moveToFirst()) it.getInt(0) else 0
     }
 
@@ -178,9 +315,23 @@ internal class RouteResearchDatabase private constructor(context: Context) :
         })
     }
 
+    private fun insertLiveCandidate(db: SQLiteDatabase, runId: Long, profile: RouteProfile, result: Result<RouteResult>) {
+        val route = result.getOrNull()
+        db.insertOrThrow("live_advisor_candidates", null, ContentValues().apply {
+            put("run_id", runId)
+            put("profile", profile.name)
+            if (route != null) {
+                put("distance_m", route.distanceMeters)
+                put("duration_s", route.durationSeconds)
+                route.httpStatus?.let { put("http_status", it) }
+                put("warnings", route.warnings.joinToString(" | "))
+            }
+        })
+    }
+
     companion object {
         private const val DB_NAME = "route_research.db"
-        private const val DB_VERSION = 1
+        private const val DB_VERSION = 2
         @Volatile private var instance: RouteResearchDatabase? = null
         fun get(context: Context): RouteResearchDatabase = instance ?: synchronized(this) {
             instance ?: RouteResearchDatabase(context).also { instance = it }

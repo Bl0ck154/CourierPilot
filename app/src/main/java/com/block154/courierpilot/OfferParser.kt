@@ -4,6 +4,17 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.util.Locale
 
+internal enum class ParsedRouteStopKind {
+    PICKUP,
+    DROPOFF,
+}
+
+internal data class ParsedRouteStop(
+    val kind: ParsedRouteStopKind,
+    val name: String?,
+    val address: String,
+)
+
 internal data class ParsedOffer(
     val priceCents: Int?,
     val distanceMeters: Int?,
@@ -15,6 +26,7 @@ internal data class ParsedOffer(
     val deliveryCount: Int? = null,
     val estimatedMinutesMin: Int? = null,
     val estimatedMinutesMax: Int? = null,
+    val orderedRouteStops: List<ParsedRouteStop> = emptyList(),
 )
 
 internal object OfferParser {
@@ -40,6 +52,13 @@ internal object OfferParser {
         // the next customer's name with the wrong destination.
         val customers = customerStops.map { it.name ?: "Customer" }
         val dropoffs = customerStops.map { it.address }
+        val orderedStops = stops.map { stop ->
+            ParsedRouteStop(
+                kind = if (stop.isMerchant) ParsedRouteStopKind.PICKUP else ParsedRouteStopKind.DROPOFF,
+                name = stop.name,
+                address = stop.address,
+            )
+        }
         val estimate = parseEstimate(lines)
 
         // Restaurant count and delivery count are different concepts. Wolt can batch any number of
@@ -63,6 +82,7 @@ internal object OfferParser {
             deliveryCount = deliveryCount,
             estimatedMinutesMin = estimate?.first,
             estimatedMinutesMax = estimate?.second,
+            orderedRouteStops = orderedStops,
         )
     }
 
@@ -147,17 +167,27 @@ internal object OfferParser {
             if (index <= previousAddressIndex) return@forEachIndexed
 
             val segmentStart = (previousAddressIndex + 1).coerceAtLeast(0)
-            val nearestNamedStop = (index - 1 downTo segmentStart)
-                .asSequence()
-                .map { lines[it] }
-                .firstOrNull(::isStopNameCandidate)
+            val segment = lines.subList(segmentStart, index)
+            // Known Wolt merchant names are stronger evidence than the generic stop-name filter.
+            // This is important for interleaved stacked timelines where a later pickup can appear
+            // after an earlier customer drop-off, and it also handles unusually short merchant names.
+            val explicitMerchant = segment.asReversed().firstNotNullOfOrNull { candidate ->
+                merchants.firstOrNull { known -> namesEquivalent(candidate, known) }
+                    ?.let { known -> candidate to known }
+            }
+            val nearestNamedStop = segment.asReversed().firstOrNull(::isStopNameCandidate)
 
-            val matchedMerchant = nearestNamedStop?.let { candidate ->
+            val matchedMerchant = explicitMerchant?.second ?: nearestNamedStop?.let { candidate ->
                 merchants.firstOrNull { known -> namesEquivalent(candidate, known) }
             }
-            if (nearestNamedStop != null && matchedMerchant == null) pickupPhaseEnded = true
+            val matchedMerchantDisplayName = explicitMerchant?.first ?: nearestNamedStop
+
+            // A customer-like named stop ends the fallback "consume remaining merchants" phase,
+            // but an explicit known merchant can still legitimately appear later in a stacked route.
+            if (explicitMerchant == null && nearestNamedStop != null && matchedMerchant == null) pickupPhaseEnded = true
 
             val fallbackMerchant = if (
+                explicitMerchant == null &&
                 nearestNamedStop == null &&
                 !pickupPhaseEnded
             ) {
@@ -169,7 +199,7 @@ internal object OfferParser {
             val merchant = matchedMerchant ?: fallbackMerchant
             val isMerchant = merchant != null
             val name = when {
-                matchedMerchant != null -> nearestNamedStop
+                matchedMerchant != null -> matchedMerchantDisplayName
                 fallbackMerchant != null -> fallbackMerchant
                 else -> nearestNamedStop
             }
