@@ -3,6 +3,8 @@ package com.block154.courierpilot
 import android.content.Context
 import java.util.Locale
 
+internal data class DeliveryLifecycleEvidence(val type: DeliveryEventType, val cue: String)
+
 /**
  * Conservative delivery outcome tracker. It records only explicit textual state cues from the
  * courier UI and never infers acceptance/completion merely because an offer screen disappeared.
@@ -64,9 +66,7 @@ internal object DeliveryLifecycleTracking {
         }
     }
 
-    private data class Evidence(val type: DeliveryEventType, val cue: String)
-
-    internal fun detect(text: String): Evidence? {
+    internal fun detect(text: String): DeliveryLifecycleEvidence? {
         val lower = text.lowercase(Locale.ROOT).replace('’', '\'')
         val ordered = listOf(
             DeliveryEventType.CANCELLED to listOf(
@@ -92,7 +92,7 @@ internal object DeliveryLifecycleTracking {
             ),
         )
         ordered.forEach { (type, cues) ->
-            cues.firstOrNull(lower::contains)?.let { return Evidence(type, it) }
+            cues.firstOrNull(lower::contains)?.let { return DeliveryLifecycleEvidence(type, it) }
         }
         return null
     }
