@@ -77,14 +77,14 @@ internal object DeliveryMemory {
                 AccessCodeSuggestions.save(context, suggestion)
                 Toast.makeText(
                     context,
-                    "Known door code · ${normalized.second}: ${codes.joinToString(" / ")}",
+                    "Possible door code · ${normalized.second}: ${codes.joinToString(" / ")}",
                     Toast.LENGTH_LONG,
                 ).show()
                 CaptureEventLog.append(
                     context,
                     stage = "access_code_match",
                     platform = platform,
-                    message = "Known building access code matched locally",
+                    message = "Possible historical building access code matched locally",
                     dedupeWindowMs = 30_000L,
                 )
             }
