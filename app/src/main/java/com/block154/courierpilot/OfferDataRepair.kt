@@ -3,6 +3,8 @@ package com.block154.courierpilot
 import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
+import java.text.Normalizer
+import java.util.Locale
 
 /**
  * Parser fixes should also repair statistics for offers captured by older versions. This migration
@@ -12,8 +14,9 @@ import android.net.Uri
 internal object OfferDataRepair {
     private const val PREFS = "courier_offer_repairs"
     private const val KEY_REVISION = "parser_repair_revision"
-    private const val CURRENT_REVISION = 2
-    private const val DUPLICATE_WINDOW_MS = 2L * 60L * 1000L
+    private const val CURRENT_REVISION = 3
+    private const val EXACT_DUPLICATE_WINDOW_MS = 2L * 60L * 1000L
+    private const val BURST_DUPLICATE_WINDOW_MS = 90L * 1000L
     private const val LIST_SEPARATOR = "\u001F"
 
     fun runIfNeeded(context: Context) {
@@ -24,7 +27,8 @@ internal object OfferDataRepair {
         val database = OfferDatabase.get(appContext)
         val sqlite = database.writableDatabase
         val records = database.recordsSince(0L, 5000).sortedBy { it.capturedAt }
-        val latestByFingerprint = mutableMapOf<String, OfferRecord>()
+        val latestByExactFingerprint = mutableMapOf<String, OfferRecord>()
+        val latestByBurstFingerprint = mutableMapOf<String, OfferRecord>()
         val duplicateScreenshotUris = mutableListOf<String>()
 
         sqlite.beginTransaction()
@@ -47,17 +51,25 @@ internal object OfferDataRepair {
                 sqlite.update("offers", values, "id = ?", arrayOf(original.id.toString()))
 
                 if (!CourierSignals.hasStrongOfferIdentity(parsed, original.rawText)) return@forEach
-                val fingerprint = CourierSignals.offerFingerprint(original.packageName, parsed, original.rawText)
-                val previous = latestByFingerprint[fingerprint]
-                val duplicate = previous != null &&
-                    original.capturedAt >= previous.capturedAt &&
-                    original.capturedAt - previous.capturedAt <= DUPLICATE_WINDOW_MS
 
-                if (duplicate) {
+                val exactFingerprint = CourierSignals.offerFingerprint(original.packageName, parsed, original.rawText)
+                val burstFingerprint = burstFingerprint(repaired)
+                val previousExact = latestByExactFingerprint[exactFingerprint]
+                val previousBurst = latestByBurstFingerprint[burstFingerprint]
+
+                val exactDuplicate = previousExact != null &&
+                    original.capturedAt >= previousExact.capturedAt &&
+                    original.capturedAt - previousExact.capturedAt <= EXACT_DUPLICATE_WINDOW_MS
+                val burstDuplicate = previousBurst != null &&
+                    original.capturedAt >= previousBurst.capturedAt &&
+                    original.capturedAt - previousBurst.capturedAt <= BURST_DUPLICATE_WINDOW_MS
+
+                if (exactDuplicate || burstDuplicate) {
                     sqlite.delete("offers", "id = ?", arrayOf(original.id.toString()))
                     duplicateScreenshotUris += original.screenshotUri
                 } else {
-                    latestByFingerprint[fingerprint] = original
+                    latestByExactFingerprint[exactFingerprint] = original
+                    latestByBurstFingerprint[burstFingerprint] = original
                 }
             }
             sqlite.setTransactionSuccessful()
@@ -72,6 +84,33 @@ internal object OfferDataRepair {
             runCatching { appContext.contentResolver.delete(Uri.parse(uri), null, null) }
         }
     }
+
+    /**
+     * Short-lived burst identity for frames from one live offer. Accessibility can reveal extra
+     * customer/address rows between callbacks, making the full semantic fingerprint change even
+     * though price + route distance + delivery count + venue summary still identify the same offer.
+     */
+    internal fun burstFingerprint(record: OfferRecord): String {
+        val merchants = (record.merchantNames.ifEmpty { listOfNotNull(record.restaurant) })
+            .map(::identityToken)
+            .filter(String::isNotEmpty)
+            .distinct()
+            .sorted()
+            .joinToString(";")
+        return buildString {
+            append(record.packageName)
+            append("|p=").append(record.priceCents)
+            append("|d=").append(record.distanceMeters ?: -1)
+            append("|n=").append(record.deliveryCount ?: -1)
+            append("|m=").append(merchants)
+        }
+    }
+
+    private fun identityToken(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFD)
+        .replace(Regex("\\p{M}+"), "")
+        .lowercase(Locale.ROOT)
+        .replace(Regex("[^a-z0-9]+"), " ")
+        .trim()
 
     private fun encodeList(values: List<String>): String? =
         values.map(String::trim)
