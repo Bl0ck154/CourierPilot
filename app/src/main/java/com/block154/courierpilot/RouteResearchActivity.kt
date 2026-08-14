@@ -2,12 +2,15 @@ package com.block154.courierpilot
 
 import android.Manifest
 import android.app.Activity
+import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.text.InputType
 import android.text.method.PasswordTransformationMethod
 import android.view.Gravity
@@ -19,6 +22,8 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
+import androidx.core.content.FileProvider
+import java.util.ArrayList
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
@@ -46,6 +51,7 @@ class RouteResearchActivity : Activity() {
     private lateinit var previewView: RoutePreviewView
     private lateinit var notesField: EditText
     private lateinit var validationStatusText: TextView
+    private lateinit var boltSampleStatusText: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -53,6 +59,11 @@ class RouteResearchActivity : Activity() {
         window.navigationBarColor = BG
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         setContentView(buildScreen().also { it.applySystemBarsPadding() })
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::boltSampleStatusText.isInitialized) refreshBoltSampleStatus()
     }
 
     override fun onDestroy() {
@@ -165,6 +176,33 @@ class RouteResearchActivity : Activity() {
             addView(validationStatusText.top(dp(8)))
         }.top(dp(8)))
 
+        root.addView(section("Bolt map sample", "One arm captures tree + screenshot + available cached phone GPS").top(dp(20)))
+        root.addView(card().apply {
+            boltSampleStatusText = text("", 12f, MUTED)
+            addView(boltSampleStatusText)
+            addView(button("Open Android Accessibility settings") {
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }.top(dp(8)))
+            addView(button("Arm next Bolt offer/map screen") {
+                BoltAccessibilityDiagnostics.arm(this@RouteResearchActivity)
+                refreshBoltSampleStatus()
+            }.top(dp(4)))
+            addView(button("Disarm") {
+                BoltAccessibilityDiagnostics.disarm(this@RouteResearchActivity)
+                refreshBoltSampleStatus()
+            }.top(dp(3)))
+            addView(button("Share full Bolt sample") { shareBoltSample() }.top(dp(3)))
+            addView(button("Clear Bolt sample") {
+                BoltAccessibilityDiagnostics.clear(this@RouteResearchActivity)
+                refreshBoltSampleStatus()
+            }.top(dp(3)))
+            addView(text(
+                "For GPS metadata, grant location once with Use my current location. The Bolt research service only reads the best cached fix; it does not start background tracking.",
+                11f, MUTED,
+            ).top(dp(8)))
+        }.top(dp(8)))
+        refreshBoltSampleStatus()
+
         scroll.addView(root)
         return scroll
     }
@@ -256,15 +294,49 @@ class RouteResearchActivity : Activity() {
             currentStart?.let { appendLine("Start: ${it.latitude},${it.longitude}") }
             currentEnd?.let { appendLine("End: ${it.latitude},${it.longitude}") }
             appendLine(formatComparison(comparison))
-            appendLine()
-            appendLine("GeoJSON:")
-            append(RoutePolyline.comparisonGeoJson(comparison))
+            appendLine(); appendLine("GeoJSON:"); append(RoutePolyline.comparisonGeoJson(comparison))
         }
         startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_SUBJECT, "CourierPilot route comparison")
             putExtra(Intent.EXTRA_TEXT, body)
         }, "Share route comparison"))
+    }
+
+    private fun refreshBoltSampleStatus() {
+        val armed = BoltAccessibilityDiagnostics.isArmed(this)
+        val sample = BoltAccessibilityDiagnostics.summary(this)
+        boltSampleStatusText.text = buildString {
+            append(if (armed) "ARMED — switch to Bolt and wait for the offer/map screen." else "Not armed.")
+            if (sample != null) {
+                append("\nLast sample: ${sample.nodeCount} nodes")
+                if (sample.truncated) append(" · tree truncated")
+                append(if (sample.screenshotAvailable) " · screenshot ✓" else " · screenshot missing")
+                append(if (sample.locationAvailable) " · GPS ✓") else append(" · GPS missing")
+                sample.locationAgeMillis?.let { append(" (${it / 1000}s old)") }
+            } else append("\nNo saved Bolt sample yet.")
+        }
+        boltSampleStatusText.setTextColor(if (armed) AMBER else MUTED)
+    }
+
+    private fun shareBoltSample() {
+        val files = BoltAccessibilityDiagnostics.sampleFiles(this)
+        if (files.isEmpty()) {
+            boltSampleStatusText.text = "No Bolt sample to share yet."
+            return
+        }
+        val uris = ArrayList<Uri>()
+        files.forEach { file -> uris += FileProvider.getUriForFile(this, "$packageName.researchfiles", file) }
+        val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+            type = "*/*"
+            putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+            putExtra(Intent.EXTRA_SUBJECT, "CourierPilot Bolt research sample")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            clipData = ClipData.newUri(contentResolver, "CourierPilot Bolt research", uris.first()).also { clip ->
+                uris.drop(1).forEach { clip.addItem(ClipData.Item(it)) }
+            }
+        }
+        startActivity(Intent.createChooser(intent, "Share private Bolt research sample"))
     }
 
     private fun formatComparison(comparison: RouteComparison): String = listOf(
