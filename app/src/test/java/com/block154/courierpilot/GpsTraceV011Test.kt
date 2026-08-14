@@ -23,16 +23,20 @@ class GpsTraceV011Test {
     }
 
     @Test
-    fun geoJsonUsesLongitudeLatitudeOrder() {
-        val body = GpsTraceExport.geoJson(
+    fun richGeoJsonPreservesGeometryTimeAccuracyAndSpeed() {
+        val body = GpsTraceDetailedExport.geoJson(
             7,
             listOf(
-                GpsTracePoint(1_000L, 54.6872, 25.2797, 5f, null),
-                GpsTracePoint(2_000L, 54.6880, 25.2805, 5f, null),
+                GpsTracePoint(1_000L, 54.6872, 25.2797, 5f, 4.2f),
+                GpsTracePoint(2_000L, 54.6880, 25.2805, 6f, null),
             ),
         )
         assertTrue(body.contains("\"session_id\":7"))
         assertTrue(body.contains("[25.2797,54.6872]"))
         assertTrue(body.contains("\"sample_count\":2"))
+        assertTrue(body.contains("\"timestamps_ms\":[1000,2000]"))
+        assertTrue(body.contains("\"accuracy_m\":[5.0,6.0]"))
+        assertTrue(body.contains("\"speed_mps\":[4.2,null]"))
+        assertTrue(body.contains("\"source\":\"courierpilot_gps_trace_v1\""))
     }
 }
