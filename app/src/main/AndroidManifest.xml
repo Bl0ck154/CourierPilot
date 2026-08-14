@@ -27,6 +27,9 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <activity android:name=".CourierPilotComposeActivity" android:exported="false" />
@@ -37,7 +40,7 @@
         <activity android:name=".AddressDetailsActivity" android:exported="false" />
         <activity android:name=".ReliabilityActivity" android:exported="false" />
         <activity android:name=".RouteResearchActivity" android:exported="false" />
-        <activity android:name=".RouteTraceActivity" android:exported="false" />
+        <activity android:name=".RouteTraceActivity" android:exported="true" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
