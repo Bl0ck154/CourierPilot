@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="docs/assets/courierpilot-banner.svg" alt="CourierPilot — local-first Android journal for Wolt and Bolt courier offers" />
+  <img src="docs/assets/courierpilot-banner.svg" alt="CourierPilot — Android companion for Wolt and Bolt couriers" />
 </p>
 
 <p align="center">
   <a href="https://github.com/Bl0ck154/CourierPilot/actions/workflows/ci.yml"><img src="https://github.com/Bl0ck154/CourierPilot/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/version-0.9.0-53E09C" alt="Version 0.9.0">
+  <img src="https://img.shields.io/badge/version-0.10.0-53E09C" alt="Version 0.10.0">
   <img src="https://img.shields.io/badge/Android-11%2B-3DDC84?logo=android&logoColor=white" alt="Android 11+">
   <img src="https://img.shields.io/badge/Kotlin%20%2B%20Compose-Material%203-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin and Compose">
   <img src="https://img.shields.io/badge/data-local--first-1f6feb" alt="Local-first">
@@ -12,194 +12,195 @@
 
 > **Unofficial project.** CourierPilot is not affiliated with, endorsed by, or sponsored by Wolt, Bolt, or their affiliates. Product names and trademarks belong to their respective owners.
 
-## Why CourierPilot?
+## What CourierPilot does
 
-Courier apps show useful offer and delivery information only briefly. CourierPilot creates a private local record of priced offers you actually saw, adds automatic online-time tracking, and maintains searchable local address/visit context for later deliveries.
+CourierPilot is a local-first Android companion for courier work. It captures priced Wolt/Bolt offers that are actually shown on the phone, keeps searchable local history, tracks platform presence, remembers useful delivery-address context, and now provides a transparent post-capture live advisor.
 
-Capture stays deliberately conservative: **an offer is not archived until a plausible non-zero price is visible.** Intermediate OCR probe screenshots remain in memory and are never written to the Gallery.
+The capture rule remains strict: **the original offer is not archived until a plausible non-zero price is visible.** The final proof screenshot is saved before CourierPilot draws its own advisor overlay or starts any route request.
 
-## CourierPilot 0.9.0
+## CourierPilot 0.10.0
 
 | Feature | Behavior |
 |---|---|
-| 💶 Offer price | Final screenshot/history row only after a plausible non-zero price is detected |
-| 📍 Route | Distance, pickup/drop-off and €/km when the platform exposes enough data |
-| 📦 Stacked offers | Multiple venues and multiple deliveries from one venue are supported |
-| 🔔 Offer notifications | Only strict offer-like Wolt/Bolt notifications may arm or auto-open capture |
-| 👀 Screen-only offers | Accessibility can discover an offer directly from a visible Wolt/Bolt screen; a notification is not required |
-| 🟢 Online time | Automatic Wolt/Bolt presence tracking; no Start/End shift button |
-| 🔑 Address memory | Searchable local address history, visit context and access/intercom codes |
-| 🖼 Offer proof | Final priced screenshot saved under `Pictures/CourierOffers` |
-| 🧭 Route research | Self-hosted Valhalla comparison with current GPS, address lookup, route preview and local verdict corpus |
-| 🧪 Bolt map research | One-shot private Accessibility tree + screenshot + available cached GPS sample |
+| 💶 Priced offer history | Saves a final screenshot and local record only after a plausible price is detected |
+| 👀 Screen-only capture | Accessibility + bounded on-device OCR can discover offers even without a useful notification |
+| 📦 Stacked offers | Keeps multiple merchants, pickups, customers and drop-offs; sequential Timeline stop order is preserved for routing |
+| 📊 Live advisor | Post-capture card shows price, platform km/ETA, €/km and platform-derived €/h range |
+| 🧭 Wolt route experiment | Optional `current GPS → Wolt Timeline stops` geocoding + self-hosted Valhalla comparison |
+| 🟠🔵 Route provenance | Shows pedestrian-shortcut and cycleway-biased candidates separately; CourierPilot does not select a winner |
+| 🔊 Voice | Optional short spoken offer summary, off by default |
+| 🧪 Bolt route research | One-shot private Accessibility tree + screenshot + cached GPS bundle for real marker-coordinate research |
+| 🧾 Outcome groundwork | Records `OFFER_CAPTURED` and only explicit monotonic courier-screen lifecycle cues |
+| 🟢 Platform presence | Automatic Wolt/Bolt Online / Offline / Unknown tracking |
+| 🔑 Address memory | Searchable local visits, delivery context and explicit access/intercom codes |
 
-Fields the courier app does not expose remain empty rather than being invented.
+Fields that the courier app does not expose remain empty rather than being invented.
 
-## Capture has two entry paths
+## Capture pipeline
 
-### 1. Strict notification path
+CourierPilot has two offer entry paths:
 
-`NotificationListenerService` only arms capture when the Wolt/Bolt notification looks like a real new offer. Routine courier notifications such as completion/payment/message updates do not trigger auto-open.
-
-### 2. Visible-screen path
-
-If the courier app is already open and an offer appears directly on screen, `AccessibilityService` inspects the active Wolt/Bolt window. When the Accessibility tree is insufficient, CourierPilot can make a rate-limited **in-memory** screenshot and run on-device ML Kit OCR to recognize the offer.
-
-This means the app no longer depends on the chain `notification → pending offer → screenshot` for every capture.
+1. a strict Wolt/Bolt offer-like notification can arm capture;
+2. an already-visible courier screen can be recognized through Accessibility, with on-device ML Kit OCR as a bounded fallback.
 
 ```mermaid
 flowchart LR
-    A[Strict offer notification] --> C[Arm offer]
-    B[Visible Wolt/Bolt offer screen] --> D[Accessibility / in-memory OCR discovery]
+    A[Offer notification] --> C[Arm capture]
+    B[Visible courier offer] --> D[Accessibility / in-memory OCR]
     D --> C
-    C --> E[Watch matching courier window]
-    E --> F{Plausible price found?}
-    F -- No --> G[Retry UI/OCR in memory]
-    G --> E
-    F -- Yes --> H[Save final screenshot]
-    H --> I[Local SQLite offer history]
+    C --> E{Plausible price?}
+    E -- No --> D
+    E -- Yes --> F[Save clean proof screenshot]
+    F --> G[Insert local offer record]
+    G --> H[Post-capture live advisor]
+    H --> I[Optional Wolt route experiment]
 ```
 
-## Automatic online/offline tracking
+The `screenshot → offer DB insert` boundary is deliberately before advisor/routing work. A geocoder, GPS or Valhalla failure cannot roll back a successfully captured offer.
 
-CourierPilot combines two kinds of evidence:
+## Live advisor
 
-- a persistent/ongoing Wolt or Bolt notification can be positive evidence that the platform is online;
-- explicit online/offline wording on a courier notification can update the state;
-- the visible courier screen is treated as a stronger online/offline signal.
+After the clean proof screenshot and offer row have been saved, CourierPilot can draw a temporary `TYPE_ACCESSIBILITY_OVERLAY` card over the courier app.
 
-A notification disappearing is **not** treated as proof of offline. It becomes an `Unknown` notification signal because the user may have swiped it away, Android may have removed it, or a courier app may have stale notification behavior. A recent strong on-screen offline signal also temporarily overrides a stale persistent notification.
+The card reports only inspectable numbers, for example:
 
-The dashboard shows Wolt and Bolt separately as `Online`, `Offline`, or `Unknown`, together with automatically tracked online time.
+```text
+Wolt · €6.40 · 4.0 km · 20–30 min
+€1.60/km · €12.8–19.2/h · platform data
 
-## Local address memory
+Calculated route · 3 points
+🟠 pedestrian: 4.72 km · generic 56.0 min
+🔵 cycleway: 5.01 km · generic 18.4 min
+No route winner selected
+```
 
-While a courier delivery screen is visible, CourierPilot can recognize address/instruction text and retain useful local address/visit context. It also extracts explicit access-code patterns such as door/intercom/gate codes.
+The first €/h range is simple arithmetic from the **platform-provided ETA**, not a claim about actual completion earnings. Generic Valhalla durations are labeled as generic and are not treated as personalized scooter ETA.
 
-The separate local `courier_meta.db` stores the searchable address record and visit history, including:
+The card includes persistent toggles for:
 
-- normalized address and detected customer/delivery context;
-- access/intercom code when explicitly exposed;
-- source platform and nearby delivery details;
-- first/last seen time and visit history.
+- **Wolt route ON/OFF** — off by default and independent from normal capture;
+- **Voice ON/OFF** — off by default.
 
-Apartment suffixes are removed from the building key where possible (for example `Žirmūnų g. 23-45` can match the building `Žirmūnų g. 23`). The **Addresses** tab supports local search and opens retained addresses in maps.
+CourierPilot never presses Accept/Decline and does not convert these numbers into a hidden GOOD/BAD verdict.
 
-Address memory and offer history can contain customer/delivery context and raw Accessibility/OCR text from captured screens. They stay local but must be treated as private; none of this content is copied into the privacy-safe Reliability event log.
+## Experimental Wolt route intelligence
 
-## Dashboard
+When the user explicitly turns **Wolt route ON** and the protected Valhalla endpoint is configured, CourierPilot can run route research automatically **after** the offer was archived.
 
-The main UI is Jetpack Compose + Material 3 with system dark mode and Android safe-area handling. The four primary tabs are:
+For a Wolt offer it:
 
-- **Home** — Wolt/Bolt presence, automatic tracked time, today metrics and recent offers;
-- **History** — recent priced offer records;
-- **Addresses** — searchable local address/visit/access-code memory;
-- **Stats** — offer statistics plus automatically detected online time.
+1. requests one fresh foreground device-location fix;
+2. reparses the same captured offer text and preserves the Wolt Timeline stop order;
+3. geocodes every textual pickup/drop-off address;
+4. fails closed if any required stop cannot be resolved;
+5. sends the ordered coordinates to the self-hosted Valhalla endpoint;
+6. requests both pedestrian-shortcut and cycleway-biased candidates;
+7. shows both results instead of silently selecting one;
+8. stores the run, waypoint order, coordinate provenance/confidence and candidate summary in `route_research.db`.
 
-The old manual-shift activity is only a compatibility redirect into the dashboard; it no longer exposes manual shift controls.
+Platform km/ETA and calculated route km/time remain separate data sources.
 
-## Offer Details and statistics
+Automatic Wolt routing is intentionally an opt-in because offer-time current/pickup/drop-off coordinates are sent from the phone to the configured self-hosted Valhalla server. There is still no background-location permission or continuous GPS tracking in 0.10.
 
-Captured offers can contain platform/time, full-delivery price, route distance, €/km, estimated time, merchant/pickup information, customer/drop-off information, delivery count, original screenshot and optional raw Accessibility/OCR text for local diagnostics.
+## Delivery outcome groundwork
 
-CourierPilot reports offer data rather than pretending an offer was completed or paid. Missing Bolt/Wolt fields remain empty.
+CourierPilot now associates a captured offer ID with an isolated delivery timeline, but the detector is intentionally conservative.
 
-## Reliability Center
+`OFFER_CAPTURED` is certain because it is written only after the priced offer is durably stored. Later events are accepted only when the courier UI exposes explicit text and the state transition is plausible:
 
-Android/OEM background restrictions can interrupt Notification Listener or Accessibility services. The Reliability screen includes permission/service state, Doze/background restriction information, optional strict offer auto-open, optional brief wake-screen behavior, optional non-persistent alive reminder, pending capture state, last screenshot/error, bounded event diagnostics and Android-settings shortcuts.
+```text
+OFFER_CAPTURED
+  → ACCEPTED
+  → ARRIVED_PICKUP
+  → PICKED_UP
+  → ARRIVED_DROPOFF
+  → DELIVERED
+```
 
-## Route intelligence research
+`CANCELLED` can terminate an active route from the permitted in-progress states. A disappearing offer, changed screen or generic address view is **not** treated as proof of acceptance or completion.
 
-Reliability links to a protected Valhalla research screen backed by the self-hosted Lithuania/Vilnius routing service.
-
-The test workflow now supports:
-
-- **Use my current location** for a one-shot foreground start fix;
-- Android address lookup for a destination, with coordinates still visible/editable;
-- side-by-side pedestrian-shortcut and cycleway-biased Valhalla candidates;
-- distance, generic ETA and warnings;
-- a lightweight native geometry preview: orange pedestrian, blue cycleway;
-- shareable GeoJSON for a suspicious comparison;
-- local verdicts (`pedestrian better`, `cycleway better`, `both usable`, `both bad`) plus notes in a separate `route_research.db`.
-
-The route preview deliberately does not claim to be a navigation map. The goal of 0.9 is to collect a real Vilnius validation corpus before automatic offer-time routing is enabled.
-
-See [`docs/ROUTE_RESEARCH_TESTING.md`](docs/ROUTE_RESEARCH_TESTING.md) for the exact phone workflow.
+This is groundwork for future real restaurant-wait and completion-time statistics; it is not yet a promise that every Wolt/Bolt delivery lifecycle will be recognized.
 
 ## Bolt map research
 
-Bolt may show useful pickup/drop-off geometry on a map without exposing a reliable text address. CourierPilot therefore has a separate research-only Accessibility service.
+Bolt remains the harder route source because a real offer can contain useful map markers without reliable textual destination coordinates.
 
-After one explicit **Arm next Bolt offer/map screen** action, the service consumes the arm once and can store a private bundle containing:
+CourierPilot therefore keeps a separate research-only Accessibility service. After one explicit **Arm next Bolt offer/map screen** action it can store a private bundle containing:
 
-- bounded Accessibility hierarchy with screen bounds;
-- a screenshot of that Bolt research frame when Android permits it;
+- bounded Accessibility hierarchy and node bounds;
+- a screenshot of that Bolt frame when Android permits it;
 - timestamp and screen dimensions;
-- the best cached phone location with accuracy/age/provider when location permission was previously granted.
+- best available cached phone location, accuracy, age and provider.
 
-The sample is not added to normal diagnostics. It can be deliberately shared through a restricted `FileProvider` or deleted from the research screen. It may contain customer/location information and should not be posted publicly.
+The bundle stays app-private until deliberately shared and may contain customer/location information. CourierPilot does not fabricate Bolt coordinates when map scale/orientation evidence is missing.
 
-## Future route intelligence scaffolding
+See [`docs/ROUTE_RESEARCH_TESTING.md`](docs/ROUTE_RESEARCH_TESTING.md) and [`docs/BOLT_MAP_COORDINATE_RECOVERY.md`](docs/BOLT_MAP_COORDINATE_RECOVERY.md).
 
-0.9 also keeps non-production models for the next phases:
+## Manual route research
 
-- offer → resolved/unresolved route waypoints with coordinate provenance;
-- Bolt screen-pixel → geographic transform that refuses to guess missing map scale/orientation;
-- delivery lifecycle observations;
-- transparent route-based €/km and effective €/h calculations;
-- GPS trace and conservative personal segment/restaurant-wait statistics;
-- Valhalla `/trace_attributes` contract for future map matching.
+**Reliability → Open route comparison** remains available for controlled Vilnius tests. It supports:
 
-These models are intentionally not wired into automatic courier decisions yet.
+- one-shot current phone location;
+- address → coordinates lookup;
+- pedestrian-shortcut vs cycleway-biased Valhalla candidates;
+- native geometry preview;
+- GeoJSON sharing;
+- local verdicts (`pedestrian better`, `cycleway better`, `both usable`, `both bad`) and notes.
+
+The validation corpus is still important: 0.10 intentionally does not promote one stock Valhalla profile as the universal scooter route.
+
+## Local address memory and statistics
+
+CourierPilot stores offer history in `courier_offers.db` and delivery/address context in `courier_meta.db`. The Addresses tab can search retained buildings/visits and remembers explicit access/intercom/gate codes when exposed by the courier UI.
+
+The dashboard keeps four main tabs:
+
+- **Home** — Wolt/Bolt presence, automatic tracked time, today metrics and recent offers;
+- **History** — priced offer records;
+- **Addresses** — searchable local address/visit/access-code memory;
+- **Stats** — offer statistics and automatically detected online time.
+
+CourierPilot still distinguishes **offers shown** from actual money earned. Offer history does not magically become payout history.
 
 ## Privacy model
 
-CourierPilot is a local personal tool:
+CourierPilot is local-first:
 
-- offer history and automatic-work/address metadata are stored in local SQLite databases;
-- route-validation data is stored separately in `route_research.db`;
-- final priced offer screenshots are stored in `Pictures/CourierOffers`;
-- intermediate OCR discovery screenshots remain in memory and are recycled;
-- customer names/exact addresses are not added to the privacy-safe Reliability event log;
-- `INTERNET` is used by explicitly enabled self-hosted route research; Android cleartext traffic is disabled;
-- foreground coarse/fine location is optional for the research screen; there is no background-location permission in 0.9;
-- the Valhalla URL/token are stored in app-private no-backup storage and excluded from diagnostics;
-- Bolt research bundles remain app-private until deliberately shared;
-- there is no CourierPilot account or cloud sync.
+- offer history, outcome evidence and address metadata stay in local SQLite databases;
+- route-validation/advisor provenance stays in separate `route_research.db`;
+- final priced offer screenshots are stored under `Pictures/CourierOffers`;
+- intermediate OCR screenshots stay in memory and are recycled;
+- normal Reliability diagnostics exclude customer names, exact addresses and raw offer text;
+- Android cleartext traffic is disabled;
+- Valhalla URL/token are kept in app-private no-backup storage and excluded from diagnostics;
+- automatic Wolt routing is off by default;
+- when that route toggle is enabled, ordered offer coordinates are sent only to the configured self-hosted Valhalla endpoint;
+- there is no background-location permission, CourierPilot account or cloud sync.
 
-Raw offer-screen Accessibility/OCR text and Bolt research samples can contain personal delivery information and should be treated as private.
+Raw offer text, exact addresses, GPS data and Bolt research bundles are sensitive local data.
 
 ## Installation
 
 1. Install a release-signed CourierPilot APK.
 2. Enable **Notification access** for CourierPilot.
 3. Enable **Accessibility → CourierPilot screen capture**.
-4. Review **Settings / Reliability** if the phone aggressively restricts background services.
+4. Grant foreground location only if you want route research/Wolt routing.
+5. Review **Reliability** if Android/OEM battery controls interrupt capture.
 
-Optional route research is configured separately under **Reliability → Open route comparison**. Do not paste the bearer token into GitHub issues or public diagnostics.
+For Bolt map research, separately enable **Accessibility → CourierPilot Bolt diagnostics** only when collecting a sample.
 
-For Bolt map research, separately enable **Accessibility → CourierPilot Bolt diagnostics** only when collecting samples.
+## Requirements and stack
 
-## Requirements
-
-- Android 11 / API 30 or newer;
-- Wolt Courier Partner and/or Bolt Courier installed;
-- Notification Access permission for notification classification/presence signals;
-- Accessibility service enabled for screen capture, screen-only offers and stronger screen-state observation;
-- optional foreground location permission for route research.
-
-## Tech stack
-
+- Android 11 / API 30+;
 - Kotlin / Android SDK 35 / Java 17;
 - Jetpack Compose + Material 3;
-- `NotificationListenerService`;
-- `AccessibilityService`;
+- NotificationListenerService + AccessibilityService;
 - Google Play services ML Kit Text Recognition;
-- HTTPS-only self-hosted Valhalla research client;
-- Android `Geocoder` + foreground `LocationManager` research helpers;
-- `SQLiteOpenHelper` for offer history, local metadata and isolated route research;
+- Android `LocationManager` + `Geocoder` for foreground route experiments;
+- protected HTTPS self-hosted Valhalla client;
+- SQLiteOpenHelper;
 - JUnit + Robolectric;
-- GitHub Actions for CI and permanent-certificate release builds.
+- GitHub Actions CI and permanent-certificate signed release builds.
 
 ## Build from source
 
@@ -207,45 +208,34 @@ For Bolt map research, separately enable **Accessibility → CourierPilot Bolt d
 gradle testDebugUnitTest assembleDebug
 ```
 
-Release tasks require all permanent signing variables:
-
-```text
-ANDROID_KEYSTORE_PATH
-ANDROID_KEYSTORE_PASSWORD
-ANDROID_KEY_ALIAS
-ANDROID_KEY_PASSWORD
-```
-
-The private keystore is not stored in the repository. See [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNING.md).
+Release tasks require the permanent signing environment documented in [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNING.md).
 
 ## Current release
 
-**CourierPilot 0.9.0** (`versionCode 15`)
+**CourierPilot 0.10.0** (`versionCode 16`)
 
-0.9 turns the protected Valhalla hook into a real-device research workflow: current phone location, destination geocoding, route geometry comparison, local route verdicts and complete one-shot Bolt map samples. Production offer capture remains independent from routing and preserves the priced-screenshot rule.
+0.10 moves route intelligence out of a purely manual harness: platform economics are available in a post-capture live card, and an explicitly enabled Wolt experiment can resolve the actual captured Timeline into two self-hosted Valhalla candidates. Core offer capture remains independent and fail-safe.
 
 ## Known limitations
 
-- Wolt/Bolt notification wording and UI can change, so strict offer/presence phrases may need real-device tuning.
-- Notification disappearance deliberately produces an uncertain signal instead of guessing offline.
-- If a courier platform exposes neither recognizable Accessibility text nor OCR-recognizable offer controls, a screen-only offer can still be missed.
-- Android/OEM background restrictions can interrupt capture until system access/settings are corrected.
+- Courier-app UI/notification wording can change and may require parser/lifecycle tuning.
+- Android/OEM background restrictions can interrupt Notification Listener or Accessibility services.
 - A courier app can block screenshots using secure-window flags.
-- Address/access-code extraction and Android address geocoding are best-effort; verify results before relying on them.
-- Capture is still serialized around one active offer, with limited queuing/replacement behavior for overlapping Wolt/Bolt offers.
-- CourierPilot records offers shown, not whether an offer was accepted, completed, cancelled, or paid.
-- Valhalla candidates remain experimental until enough real Vilnius routes are reviewed; generic ETA is not a personalized scooter estimate.
-- The 0.9 route preview shows route geometry without a basemap.
-- Production automatic offer-time routing and continuous personal GPS learning remain disabled.
+- Android address geocoding is best-effort; one unresolved Wolt stop intentionally cancels that calculated route run.
+- Generic Valhalla ETA is not yet a personalized Ninebot/scooter ETA.
+- Real Vilnius route validation is still required before selecting or tuning a preferred routing profile.
+- Bolt automatic routing is blocked on trustworthy recovery of real offer marker coordinates; collect real Bolt samples instead of guessing.
+- Explicit lifecycle tracking is intentionally incomplete when the courier UI never exposes a recognized state cue.
+- Continuous GPS trace collection, map matching, learned segment speeds and restaurant-wait prediction remain later opt-in work.
 
 ## Contributing
 
-Real Wolt/Bolt parser samples are useful when app UI or notification wording changes. Redact customer names, phone numbers, exact addresses and screenshots before posting public bug reports. Prefer the Reliability screen's privacy-safe diagnostics when possible.
+Real parser/route samples are useful when platform UI changes. Redact customer names, phone numbers, exact addresses and screenshots before posting public issues. Private Bolt research bundles should not be attached to public GitHub issues.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ---
 
 <p align="center">
-  Built for real-world courier use — local data, inspectable behavior, and no invented metrics.
+  Built for real courier use: inspectable numbers, explicit provenance, local data, no invented certainty.
 </p>
