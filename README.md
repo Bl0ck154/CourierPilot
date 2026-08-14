@@ -3,10 +3,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Bl0ck154/CourierPilot/actions/workflows/build.yml"><img src="https://github.com/Bl0ck154/CourierPilot/actions/workflows/build.yml/badge.svg" alt="Build"></a>
-  <img src="https://img.shields.io/badge/version-0.5.1-53E09C" alt="Version 0.5.1">
+  <a href="https://github.com/Bl0ck154/CourierPilot/actions/workflows/ci.yml"><img src="https://github.com/Bl0ck154/CourierPilot/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/version-0.6.0-53E09C" alt="Version 0.6.0">
   <img src="https://img.shields.io/badge/Android-11%2B-3DDC84?logo=android&logoColor=white" alt="Android 11+">
-  <img src="https://img.shields.io/badge/Kotlin-native-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin">
+  <img src="https://img.shields.io/badge/Kotlin%20%2B%20Compose-Material%203-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin and Compose">
   <img src="https://img.shields.io/badge/data-local--first-1f6feb" alt="Local-first">
 </p>
 
@@ -14,65 +14,84 @@
 
 ## Why CourierPilot?
 
-Courier apps show a lot of useful information at offer time, but that information is temporary. CourierPilot creates a private, searchable record of the offers **you actually saw** so you can review patterns later instead of relying on memory.
+Courier apps show useful information only briefly at offer time. CourierPilot creates a private, searchable record of the offers **you actually saw** so you can inspect prices, routes and patterns later instead of relying on memory.
 
-It is deliberately conservative about capture: **an offer is not archived until a plausible non-zero price is visible.** Intermediate OCR screenshots stay in memory and are not written to the Gallery.
+Capture is deliberately conservative: **an offer is not archived until a plausible non-zero price is visible.** Intermediate OCR probe screenshots stay in memory and are never written to the Gallery.
 
 ### What it can record
 
-| | CourierPilot 0.5.1 |
+| | CourierPilot 0.6.0 |
 |---|---|
-| 💶 Price | Captured only when a real non-zero price is detected |
+| 💶 Price | Captured only when a real non-zero full-delivery price is detected |
 | 📍 Distance | Stored when the courier app exposes it |
 | ⏱ Estimated time | Stored when available |
-| 🏪 Merchant | Best-effort merchant/venue extraction |
+| 🏪 Merchant | One or multiple venues, including stacked offers |
 | 🧭 Pickup / drop-off | Structured locally when available |
 | 👤 Customer name | Stored locally when available |
-| 📦 Stacked offers | Delivery count and multi-stop details supported |
+| 📦 Stacked offers | Supports multiple merchants **and multiple deliveries from one merchant** |
 | 🖼 Original offer | Final priced screenshot saved to `Pictures/CourierOffers` |
 | 🕒 Work time | Manual `Start shift` / `End shift` tracking |
 
-Fields that a courier platform does not expose are left empty rather than invented.
+Fields that a courier platform does not expose are left empty rather than invented. Bolt, for example, may expose time and price without route distance.
 
 ## Highlights
 
 ### Automatic priced-offer capture
 
-`NotificationListenerService` detects new Wolt/Bolt tasks and arms a capture transaction. `AccessibilityService` watches the matching courier window and parses visible UI text. If the price is not exposed through Accessibility, CourierPilot uses on-device ML Kit OCR as a fallback.
+`NotificationListenerService` detects matching Wolt/Bolt task notifications and arms a capture transaction. `AccessibilityService` watches the matching courier window and parses visible UI text. If the final price is not exposed through Accessibility yet, CourierPilot uses on-device ML Kit OCR as a fallback.
 
-The active transaction is protected from repeated notification updates and stale OCR callbacks, and can stay pending for up to three minutes while waiting for a price.
+The active transaction is protected from repeated notification updates and stale screenshot/OCR callbacks and can remain pending for up to three minutes while waiting for a price.
+
+### Material 3 dashboard
+
+CourierPilot 0.6.0 moves the main product UI to **Jetpack Compose + Material 3**:
+
+- dark command/shift hero instead of an all-white card wall;
+- tonal metric surfaces and clearer visual hierarchy;
+- system dark mode;
+- safe handling of Android status/navigation insets;
+- Material navigation/settings icons;
+- finger-friendly horizontally scrollable activity calendar;
+- searchable History with `All / Wolt / Bolt / Single / Stacked` filters;
+- period-based Statistics with visual platform and stacked splits.
+
+The UI direction and interaction rules are documented in [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ### Offer Details
 
 Each captured offer can include:
 
 - platform and arrival time;
-- expected price;
+- expected full-delivery price;
 - route distance and calculated €/km when distance exists;
 - estimated time;
 - single vs stacked delivery count;
 - merchant names and pickup addresses;
 - customer names and drop-off addresses;
 - original screenshot;
-- optional raw Accessibility/OCR text for parser diagnostics.
+- optional raw Accessibility/OCR text for local parser diagnostics.
+
+### Same-venue stacked Wolt offers
+
+Restaurant count and delivery count are treated as different concepts. If Wolt exposes one merchant but two customer/drop-off stops, CourierPilot records **two deliveries**, even when the heading remains singular `Delivery from`.
+
+When Accessibility/OCR exposes several euro amounts, the parser prioritizes the amount semantically adjacent to `Expected earnings for the full delivery`.
 
 ### Statistics that describe offers — not imaginary earnings
 
 CourierPilot can show:
 
-- Today / 7-day / 30-day offer summaries;
+- Today / 7-day / 30-day / all-time summaries;
 - Wolt vs Bolt split;
 - average offer value;
 - average detected distance;
 - average €/km where distance exists;
 - single vs stacked counts;
 - represented delivery stops;
-- top detected venues;
-- hourly offer-arrival activity;
-- interactive 365-day contribution-style heatmap;
+- activity by day and period;
 - manually tracked work time.
 
-`Offers / tracked hour` is intentionally an **offer-arrival metric**, not completed-delivery earnings per hour.
+Work time comes from explicit `Start shift` / `End shift` sessions rather than guessing from first/last offer timestamps.
 
 ### Reliability Center
 
@@ -82,13 +101,16 @@ Android background behavior can be aggressive, especially on OEM builds. Courier
 - Accessibility capture status;
 - battery-optimization / Doze state;
 - Android background restriction state;
+- optional courier-app auto-open;
+- optional brief wake-screen behavior;
+- optional **non-persistent alive reminder** approximately every four hours;
 - current pending offer;
 - last screenshot / last error;
 - privacy-safe bounded capture event log;
-- shortcuts to the relevant Android settings;
+- shortcuts to relevant Android settings;
 - shareable privacy-safe diagnostics.
 
-Pending capture can resume on device unlock. An optional **Wake screen for offers** setting briefly wakes the display without unlocking or bypassing the keyguard.
+The alive reminder is off by default and does not create a permanent foreground notification.
 
 ## How capture works
 
@@ -127,15 +149,15 @@ Raw Accessibility/OCR text can contain information visible on the courier screen
 
 CourierPilot currently targets personal/sideloaded Android use.
 
-1. Install a signed CourierPilot APK.
+1. Install a release-signed CourierPilot APK.
 2. Open **CourierPilot**.
 3. Enable **Notification access** for CourierPilot.
 4. Enable **Accessibility → CourierPilot screen capture**.
-5. On phones with aggressive background management, review the **Reliability** screen and allow the app to keep running as needed.
+5. On phones with aggressive background management, review **Settings → Reliability** and allow the app to keep running as needed.
 
-Optional settings include automatic opening of the relevant courier app after a matching notification and briefly waking the screen for pending offers.
+Optional behavior such as auto-open, wake-screen and the periodic alive reminder is configured in Reliability.
 
-> GitHub Releases have not been published yet. Signed release builds are produced by the repository's GitHub Actions workflow and use the permanent CourierPilot signing identity documented in [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNING.md).
+> Signed release builds use the permanent CourierPilot signing identity documented in [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNING.md).
 
 ## Requirements
 
@@ -146,22 +168,23 @@ Optional settings include automatic opening of the relevant courier app after a 
 
 ## Tech stack
 
-- **Kotlin** / native Android framework;
+- **Kotlin** / Android SDK;
+- **Jetpack Compose + Material 3** for the main dashboard;
 - **NotificationListenerService** for incoming courier-task notifications;
 - **AccessibilityService** for window-aware UI extraction and screenshot capture;
 - **Google Play services ML Kit Text Recognition** for OCR fallback;
 - **SQLiteOpenHelper** for local offer and shift history;
-- **JUnit** parser regression tests;
-- **GitHub Actions** for signed release builds and certificate verification.
+- **JUnit + Robolectric** for parser and launcher-start regression tests;
+- **GitHub Actions** for CI and permanent-certificate release builds.
 
-The project intentionally stays small: no Compose, no Room, no account backend and no cloud database.
+Capture/parser/database code remains independent of Compose, and the previous Views dashboard remains in the codebase as a fallback while the new UI is field-tested.
 
 ## Build from source
 
 The project uses Java 17 and Android SDK 35.
 
 ```bash
-gradle testDebugUnitTest
+gradle testDebugUnitTest assembleDebug
 ```
 
 Release tasks intentionally fail unless all signing environment variables are present:
@@ -177,22 +200,19 @@ The repository does not contain the private release keystore. See [`docs/RELEASE
 
 ## Current release
 
-**CourierPilot 0.5.1** (`versionCode 6`)
+**CourierPilot 0.6.0** (`versionCode 10`)
 
-0.5.1 is the branding/public-repository polish release: it adds the real adaptive CourierPilot launcher icon and public-project presentation/CI without changing the 0.5 capture rules or local data model.
-
-The functional reliability, rich offer details, stacked-delivery statistics, venue statistics, manual shift tracking and parser regression coverage introduced in 0.5.0 remain unchanged.
-
-Full notes: [`docs/RELEASE_0.5.1.md`](docs/RELEASE_0.5.1.md)
+0.6.0 is the Material 3 UI and implementation-audit release. It also retains the 0.5.4 parser fixes for same-venue stacked Wolt offers and full-delivery price selection, stabilizes the optional alive-reminder schedule, reduces unnecessary Accessibility polling, and cleans up a Gallery screenshot if the corresponding database insert fails.
 
 ## Known limitations
 
-- Android/OEM background restrictions can still interrupt capture until the user grants the relevant system permissions.
+- Android/OEM background restrictions can still interrupt capture until the relevant system permissions/settings are granted.
 - A courier app can block screenshots with secure-window flags.
 - Merchant/address parsing is best-effort and may need tuning when Wolt/Bolt change their UI.
-- Captures are serialized: an active pending offer is not overwritten by another notification.
+- Capture is still serialized around one active offer, with limited queuing/replacement behavior for overlapping notifications.
 - Bolt and Wolt expose different fields; missing fields remain empty.
 - CourierPilot records **offers shown**, not whether an offer was accepted, completed, cancelled, or ultimately paid.
+- The Compose dashboard is new in 0.6.0 and is intentionally being field-tested while the legacy Views implementation remains available in the codebase.
 
 ## Contributing
 

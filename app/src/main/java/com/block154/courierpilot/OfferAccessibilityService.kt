@@ -123,6 +123,8 @@ class OfferAccessibilityService : AccessibilityService() {
         if (captureInFlight) return
         val pending = OfferState.pending(this)
         if (pending == null) {
+            // Accessibility/window events wake us immediately when UI changes. This slow watchdog is
+            // only a fallback, so there is no reason to poll every two seconds all day.
             scheduleAttempt(IDLE_WATCHDOG_MS)
             return
         }
@@ -143,7 +145,7 @@ class OfferAccessibilityService : AccessibilityService() {
                 message = "Courier offer window is not currently available",
                 dedupeWindowMs = 5_000L,
             )
-            scheduleAttempt(WINDOW_RETRY_MS)
+            scheduleAttempt(adaptiveWindowDelay(pending))
             return
         }
 
@@ -330,8 +332,9 @@ class OfferAccessibilityService : AccessibilityService() {
             return
         }
 
+        var saved: SavedScreenshot? = null
         try {
-            val saved = ScreenshotStore.save(this, bitmap, pending.sourceName)
+            saved = ScreenshotStore.save(this, bitmap, pending.sourceName)
             val rowId = OfferDatabase.get(this).insert(
                 OfferRecord(
                     capturedAt = pending.armedAt,
@@ -362,6 +365,9 @@ class OfferAccessibilityService : AccessibilityService() {
             OfferState.clear(this)
             lastHandledArmedAt = 0L
         } catch (t: Throwable) {
+            // If MediaStore succeeds but SQLite fails, roll back the published PNG too. Otherwise a
+            // failed save leaves an orphan image in Pictures/CourierOffers with no history record.
+            saved?.let { ScreenshotStore.delete(this, it) }
             OfferState.markError(this, "Offer save failed: ${t.message ?: t.javaClass.simpleName}")
             CaptureEventLog.append(this, "save_failed", t.javaClass.simpleName, platform)
         } finally {
@@ -422,6 +428,16 @@ class OfferAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun adaptiveWindowDelay(pending: PendingOffer): Long {
+        val age = System.currentTimeMillis() - pending.armedAt
+        return when {
+            age < 5_000L -> 350L
+            age < 30_000L -> 900L
+            age < 60_000L -> 1_500L
+            else -> 2_500L
+        }
+    }
+
     private fun scheduleAttempt(delayMs: Long) {
         handler.removeCallbacks(attemptRunnable)
         handler.postDelayed(attemptRunnable, delayMs)
@@ -456,7 +472,6 @@ class OfferAccessibilityService : AccessibilityService() {
     }
 
     companion object {
-        private const val IDLE_WATCHDOG_MS = 2_000L
-        private const val WINDOW_RETRY_MS = 350L
+        private const val IDLE_WATCHDOG_MS = 8_000L
     }
 }
