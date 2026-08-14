@@ -75,9 +75,6 @@ internal object OfferParser {
             }
         }
 
-        // Bolt commonly renders the total offer as e.g. "16 min, 4,45 €" while pickup/drop-off
-        // legs above it have their own ~9 min / ~7 min values. Prefer the minute value on the same
-        // line as the price so we do not mistake one individual leg for total ETA.
         lines.firstOrNull { priceRegex.containsMatchIn(it) }?.let { priceLine ->
             singleMinuteRegex.find(priceLine)?.groupValues?.getOrNull(1)?.toIntOrNull()
                 ?.takeIf { it in 1..240 }
@@ -125,20 +122,33 @@ internal object OfferParser {
     private data class AddressStop(val name: String?, val address: String, val isMerchant: Boolean)
 
     private fun parseAddressStops(lines: List<String>, merchants: List<String>): List<AddressStop> {
-        val out = mutableListOf<AddressStop>()
+        val addresses = mutableListOf<AddressStop>()
+        var addressOrdinal = 0
+
         lines.forEachIndexed { index, line ->
             if (!looksLikeAddress(line)) return@forEachIndexed
 
             val candidates = (index - 1 downTo maxOf(0, index - 4))
                 .map { lines[it] }
                 .filter(::isStopNameCandidate)
-            val merchantName = candidates.firstOrNull { candidate ->
+            val explicitMerchant = candidates.firstOrNull { candidate ->
                 merchants.any { known -> namesEquivalent(candidate, known) }
             }
-            val name = merchantName ?: candidates.firstOrNull()
-            out += AddressStop(name, line, merchantName != null)
+
+            // Accessibility/OCR can omit a repeated merchant label from the Timeline. Courier
+            // offer layouts list pickup stops before customer drop-offs, so the first N address
+            // rows (N = detected merchants) are a safe fallback for pickup classification.
+            val fallbackMerchant = explicitMerchant == null && addressOrdinal < merchants.size
+            val isMerchant = explicitMerchant != null || fallbackMerchant
+            val name = when {
+                explicitMerchant != null -> explicitMerchant
+                fallbackMerchant -> merchants.getOrNull(addressOrdinal)
+                else -> candidates.firstOrNull()
+            }
+            addresses += AddressStop(name, line, isMerchant)
+            addressOrdinal++
         }
-        return out.distinctBy { "${it.name}|${it.address}" }
+        return addresses.distinctBy { "${it.name}|${it.address}" }
     }
 
     private fun namesEquivalent(a: String, b: String): Boolean {
@@ -187,15 +197,14 @@ internal object OfferParser {
     }
 
     private fun parseDistanceMeters(text: String): Int? {
-        val matches = distanceRegex.findAll(text).mapNotNull { match ->
+        return distanceRegex.findAll(text).mapNotNull { match ->
             val value = match.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return@mapNotNull null
             val meters = when (match.groupValues[2].lowercase(Locale.ROOT)) {
                 "km" -> (value * 1000.0).toInt()
                 else -> value.toInt()
             }
             meters.takeIf { it in 1..MAX_DISTANCE_METERS }
-        }.toList()
-        return matches.firstOrNull()
+        }.firstOrNull()
     }
 
     private val GENERIC_LINES = setOf(
