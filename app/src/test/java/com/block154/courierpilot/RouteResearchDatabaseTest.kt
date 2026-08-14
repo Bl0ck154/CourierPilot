@@ -23,6 +23,7 @@ class RouteResearchDatabaseTest {
         assertTrue("gps_sessions" in tables)
         assertTrue("gps_samples" in tables)
         assertTrue("matched_edge_traversals" in tables)
+        assertTrue("delivery_timeline_events" in tables)
         assertTrue("venue_wait_observations" in tables)
         assertTrue("route_validation_samples" in tables)
         assertTrue("bolt_map_ground_truth" in tables)
