@@ -16,13 +16,10 @@ internal object LiveAdvisorSettings {
     }
 
     /**
-     * Existing users who already explicitly enabled the protected Valhalla endpoint inherit that
-     * opt-in for Wolt auto-routing. A later explicit toggle always overrides the inherited default.
+     * Automatic Wolt routing is a separate privacy-sensitive opt-in. Merely configuring the manual
+     * Valhalla research endpoint does not enable sending offer-time coordinates automatically.
      */
-    fun automaticWoltRouting(context: Context): Boolean = prefs(context).getBoolean(
-        KEY_WOLT_ROUTING,
-        RouteEndpointSettings.load(context).enabled,
-    )
+    fun automaticWoltRouting(context: Context): Boolean = prefs(context).getBoolean(KEY_WOLT_ROUTING, false)
 
     fun setAutomaticWoltRouting(context: Context, enabled: Boolean) {
         prefs(context).edit().putBoolean(KEY_WOLT_ROUTING, enabled).apply()
