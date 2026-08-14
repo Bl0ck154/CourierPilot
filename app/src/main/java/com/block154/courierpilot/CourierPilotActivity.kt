@@ -33,13 +33,13 @@ class CourierPilotActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        setContentView(buildShell())
         window.statusBarColor = BG
         window.navigationBarColor = SURFACE
-        window.insetsController?.setSystemBarsAppearance(
+        window.decorView.windowInsetsController?.setSystemBarsAppearance(
             WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
             WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
         )
-        setContentView(buildShell())
         renderScreen()
     }
 
