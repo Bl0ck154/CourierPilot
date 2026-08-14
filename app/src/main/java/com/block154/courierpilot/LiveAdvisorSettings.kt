@@ -16,10 +16,13 @@ internal object LiveAdvisorSettings {
     }
 
     /**
-     * Explicit opt-in for sending current/pickup/drop-off coordinates to the configured self-hosted
-     * Valhalla endpoint. The core offer capture path never depends on this flag.
+     * Existing users who already explicitly enabled the protected Valhalla endpoint inherit that
+     * opt-in for Wolt auto-routing. A later explicit toggle always overrides the inherited default.
      */
-    fun automaticWoltRouting(context: Context): Boolean = prefs(context).getBoolean(KEY_WOLT_ROUTING, false)
+    fun automaticWoltRouting(context: Context): Boolean = prefs(context).getBoolean(
+        KEY_WOLT_ROUTING,
+        RouteEndpointSettings.load(context).enabled,
+    )
 
     fun setAutomaticWoltRouting(context: Context, enabled: Boolean) {
         prefs(context).edit().putBoolean(KEY_WOLT_ROUTING, enabled).apply()
