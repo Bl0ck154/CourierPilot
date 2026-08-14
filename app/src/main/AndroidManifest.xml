@@ -4,6 +4,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -25,6 +27,9 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
         <activity android:name=".CourierPilotComposeActivity" android:exported="false" />
@@ -35,6 +40,7 @@
         <activity android:name=".AddressDetailsActivity" android:exported="false" />
         <activity android:name=".ReliabilityActivity" android:exported="false" />
         <activity android:name=".RouteResearchActivity" android:exported="false" />
+        <activity android:name=".RouteTraceActivity" android:exported="true" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
@@ -54,6 +60,12 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <service
+            android:name=".GpsTraceService"
+            android:exported="false"
+            android:foregroundServiceType="location"
+            android:stopWithTask="false" />
 
         <service
             android:name=".CourierPilotNotificationListener"
