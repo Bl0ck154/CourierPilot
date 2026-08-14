@@ -38,7 +38,9 @@ class ReliabilityActivity : Activity() {
     }
 
     private fun render() {
-        setContentView(buildScreen())
+        val screen = buildScreen()
+        setContentView(screen)
+        screen.applySystemBarsPadding()
     }
 
     private fun buildScreen(): View {
