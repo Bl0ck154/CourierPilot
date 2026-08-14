@@ -1,6 +1,7 @@
 package com.block154.courierpilot
 
 import android.content.Context
+import android.os.SystemClock
 
 internal data class PlatformPresence(
     val platform: String,
@@ -25,6 +26,15 @@ internal object CourierPresence {
         update(context, packageName, PresenceSignal.ONLINE, "persistent notification", strong = false, now = now)
     }
 
+    fun markOfferOnline(
+        context: Context,
+        packageName: String,
+        source: String = "offer signal",
+        now: Long = System.currentTimeMillis(),
+    ) {
+        update(context, packageName, PresenceSignal.ONLINE, source, strong = true, now = now)
+    }
+
     fun markNotificationUnknown(context: Context, packageName: String, now: Long = System.currentTimeMillis()) {
         update(context, packageName, PresenceSignal.UNKNOWN, "notification disappeared", strong = false, now = now)
     }
@@ -37,6 +47,30 @@ internal object CourierPresence {
     fun markExplicitNotification(context: Context, packageName: String, signal: PresenceSignal, now: Long = System.currentTimeMillis()) {
         if (signal == PresenceSignal.UNKNOWN) return
         update(context, packageName, signal, "notification text", strong = true, now = now)
+    }
+
+    /**
+     * SharedPreferences and SQLite survive a device reboot. An open work session must not silently
+     * count the period while the phone was powered off. BOOT_COMPLETED arrives shortly after boot,
+     * so wall-clock now minus elapsedRealtime approximates the actual boot instant.
+     */
+    fun resetAfterBoot(context: Context) {
+        val now = System.currentTimeMillis()
+        val bootWallTime = (now - SystemClock.elapsedRealtime()).coerceIn(0L, now)
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        prefs.edit()
+            .putStringSet(KEY_ACTIVE_PLATFORMS, emptySet())
+            .putString("wolt_state", PresenceSignal.UNKNOWN.name)
+            .putString("wolt_source", "device reboot")
+            .putLong("wolt_updated_at", now)
+            .putLong("wolt_strong_until", 0L)
+            .putString("bolt_state", PresenceSignal.UNKNOWN.name)
+            .putString("bolt_source", "device reboot")
+            .putLong("bolt_updated_at", now)
+            .putLong("bolt_strong_until", 0L)
+            .apply()
+        CourierMetaDatabase.get(context).endAutomaticSession("Device reboot", bootWallTime)
+        CaptureEventLog.append(context, "work_reset", "Automatic presence reset after device reboot", dedupeWindowMs = 30_000L)
     }
 
     fun platformPresence(context: Context, packageName: String): PlatformPresence {
