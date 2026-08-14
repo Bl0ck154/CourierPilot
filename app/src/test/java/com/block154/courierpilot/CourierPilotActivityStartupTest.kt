@@ -11,7 +11,7 @@ import org.robolectric.annotation.Config
 class CourierPilotActivityStartupTest {
     @Test
     fun launcherActivityStartsAndResumes() {
-        Robolectric.buildActivity(CourierPilotActivity::class.java).setup().use { controller ->
+        Robolectric.buildActivity(CourierPilotHomeActivity::class.java).setup().use { controller ->
             check(controller.get() != null)
         }
     }
