@@ -1,12 +1,5 @@
 <p align="center">
-  <img src="docs/assets/courierpilot-icon.svg" width="128" alt="CourierPilot icon" />
-</p>
-
-<h1 align="center">CourierPilot</h1>
-
-<p align="center">
-  <strong>A local-first Android journal for Wolt and Bolt courier offers.</strong><br>
-  Capture priced offers automatically, keep the original screenshot, and turn your own offer history into useful statistics.
+  <img src="docs/assets/courierpilot-banner.svg" alt="CourierPilot — local-first Android journal for Wolt and Bolt courier offers" />
 </p>
 
 <p align="center">
@@ -204,6 +197,8 @@ Full notes: [`docs/RELEASE_0.5.0.md`](docs/RELEASE_0.5.0.md)
 Bug reports and parser samples are useful, especially after courier-app UI changes. When sharing diagnostics publicly, remove or redact customer names, phone numbers, exact addresses and screenshots containing personal information.
 
 For capture problems, the Reliability screen's privacy-safe diagnostics report is preferred over raw order data.
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution guidelines.
 
 ---
 
