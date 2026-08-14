@@ -13,9 +13,9 @@ internal data class PlatformPresence(
 /**
  * Tracks Wolt/Bolt online state without a manual Start shift button.
  *
- * Ongoing notifications are useful positive evidence, but notification disappearance is deliberately
- * treated as UNKNOWN because users can swipe notifications and Bolt can occasionally leave stale
- * ones behind. A strong on-screen OFFLINE signal is what removes a platform from the active set.
+ * Ongoing notifications are useful positive evidence. Notification disappearance is deliberately
+ * UNKNOWN rather than OFFLINE: it removes that platform from time accounting until a new positive
+ * signal arrives, but never claims that the courier actually went offline.
  */
 internal object CourierPresence {
     private const val PREFS = "courierpilot_presence"
@@ -128,16 +128,48 @@ internal object CourierPresence {
                 }
             }
             PresenceSignal.OFFLINE -> {
-                val removed = active.remove(packageName)
-                prefs.edit().putStringSet(KEY_ACTIVE_PLATFORMS, active).apply()
-                if (removed && active.isEmpty()) {
-                    CourierMetaDatabase.get(context).endAutomaticSession("All active courier apps offline · $source", now)
-                    CaptureEventLog.append(context, "work_offline", "Automatic work session ended from $source", OfferState.platformLabel(packageName))
-                }
+                removeFromTimeAccounting(
+                    context = context,
+                    prefs = prefs,
+                    active = active,
+                    packageName = packageName,
+                    endReason = "All active courier apps offline · $source",
+                    eventStage = "work_offline",
+                    eventMessage = "Automatic work session ended from $source",
+                    now = now,
+                )
             }
             PresenceSignal.UNKNOWN -> {
-                // Keep the active membership unchanged. Absence of a notification is not proof of offline.
+                // Unknown is not Offline, but continuing to count it as Online would invent work time.
+                removeFromTimeAccounting(
+                    context = context,
+                    prefs = prefs,
+                    active = active,
+                    packageName = packageName,
+                    endReason = "No confirmed online signal · $source",
+                    eventStage = "work_uncertain",
+                    eventMessage = "Automatic work timer paused until a new online signal",
+                    now = now,
+                )
             }
+        }
+    }
+
+    private fun removeFromTimeAccounting(
+        context: Context,
+        prefs: android.content.SharedPreferences,
+        active: MutableSet<String>,
+        packageName: String,
+        endReason: String,
+        eventStage: String,
+        eventMessage: String,
+        now: Long,
+    ) {
+        val removed = active.remove(packageName)
+        prefs.edit().putStringSet(KEY_ACTIVE_PLATFORMS, active).apply()
+        if (removed && active.isEmpty()) {
+            CourierMetaDatabase.get(context).endAutomaticSession(endReason, now)
+            CaptureEventLog.append(context, eventStage, eventMessage, OfferState.platformLabel(packageName))
         }
     }
 
