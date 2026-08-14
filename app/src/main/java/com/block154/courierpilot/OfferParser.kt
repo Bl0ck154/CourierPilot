@@ -86,14 +86,10 @@ internal object OfferParser {
         return null
     }
 
-    private fun normalizedLines(text: String): List<String> {
-        val seen = LinkedHashSet<String>()
-        text.lineSequence()
-            .map { it.trim().replace(Regex("\\s+"), " ") }
-            .filter { it.isNotEmpty() }
-            .forEach(seen::add)
-        return seen.toList()
-    }
+    private fun normalizedLines(text: String): List<String> = text.lineSequence()
+        .map { it.trim().replace(Regex("\\s+"), " ") }
+        .filter { it.isNotEmpty() }
+        .toList()
 
     private fun parseWoltMerchantSummary(lines: List<String>): Pair<Int, List<String>>? {
         lines.forEachIndexed { index, line ->
@@ -132,16 +128,15 @@ internal object OfferParser {
         val out = mutableListOf<AddressStop>()
         lines.forEachIndexed { index, line ->
             if (!looksLikeAddress(line)) return@forEachIndexed
-            var name: String? = null
-            for (i in index - 1 downTo maxOf(0, index - 4)) {
-                val candidate = lines[i]
-                if (isStopNameCandidate(candidate)) {
-                    name = candidate
-                    break
-                }
+
+            val candidates = (index - 1 downTo maxOf(0, index - 4))
+                .map { lines[it] }
+                .filter(::isStopNameCandidate)
+            val merchantName = candidates.firstOrNull { candidate ->
+                merchants.any { known -> namesEquivalent(candidate, known) }
             }
-            val merchant = name != null && merchants.any { known -> namesEquivalent(name, known) }
-            out += AddressStop(name, line, merchant)
+            val name = merchantName ?: candidates.firstOrNull()
+            out += AddressStop(name, line, merchantName != null)
         }
         return out.distinctBy { "${it.name}|${it.address}" }
     }
@@ -208,7 +203,7 @@ internal object OfferParser {
         "accept", "decline", "reject", "pickup", "dropoff", "delivery",
         "delivery from", "timeline", "route distance", "estimated",
         "expected earnings for the full delivery", "close drawer", "google map", "map marker",
-        "ready", "show map", "priimti", "atmesti", "užduotis", "uzduotis", "užsakymas", "uzsakymas",
+        "ready", "show map", "priimti", "atmesti", "užduotis", "uzduot", "užsakymas", "uzsakymas",
         "принять", "отклонить", "заказ", "задание", "прийняти", "відхилити", "замовлення", "завдання"
     )
 
