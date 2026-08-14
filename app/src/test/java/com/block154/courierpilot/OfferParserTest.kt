@@ -69,6 +69,32 @@ class OfferParserTest {
     }
 
     @Test
+    fun doesNotMisclassifyDropoffAsPickupWhenPickupAddressIsMissing() {
+        val parsed = OfferParser.parse(
+            """
+            €4.48
+            Expected earnings for the full delivery
+            Delivery from
+            Sushi Lounge (Dominikonų g.)
+            Route distance
+            8.4 km
+            Estimated
+            19 - 32 min
+            Timeline
+            Rasa T.
+            19 min
+            Žirmūnų gatvė 54 81, Vilnius
+            Accept
+            """.trimIndent()
+        )
+
+        assertEquals(listOf("Sushi Lounge (Dominikonų g.)"), parsed.merchantNames)
+        assertTrue(parsed.pickupAddresses.isEmpty())
+        assertEquals(listOf("Rasa T."), parsed.customerNames)
+        assertEquals(listOf("Žirmūnų gatvė 54 81, Vilnius"), parsed.dropoffAddresses)
+    }
+
+    @Test
     fun doesNotTreatOfferAsReadyBeforePriceAppears() {
         val parsed = OfferParser.parse(
             """
