@@ -4,10 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.roundToInt
 
-/**
- * Pure Valhalla JSON contract. Networking is intentionally not wired yet: CourierPilot currently
- * has no INTERNET permission and remains local-only until a validated self-hosted endpoint exists.
- */
+/** Pure Valhalla JSON contract shared by the research screen and the HTTPS route provider. */
 internal object ValhallaContract {
     const val PROVIDER_NAME = "valhalla"
 
@@ -30,7 +27,7 @@ internal object ValhallaContract {
         return root.toString()
     }
 
-    fun parseRouteResponse(profile: RouteProfile, json: String): RouteResult {
+    fun parseRouteResponse(profile: RouteProfile, json: String, httpStatus: Int? = null): RouteResult {
         val root = JSONObject(json)
         val trip = root.getJSONObject("trip")
         val summary = trip.getJSONObject("summary")
@@ -43,6 +40,7 @@ internal object ValhallaContract {
                 if (shape.isNotBlank()) add(shape)
             }
         }
+        val warnings = parseWarnings(trip.optJSONArray("warnings") ?: root.optJSONArray("warnings"))
 
         require(distanceKm >= 0.0) { "Valhalla returned a negative distance" }
         require(durationSeconds >= 0) { "Valhalla returned a negative duration" }
@@ -53,7 +51,33 @@ internal object ValhallaContract {
             distanceMeters = (distanceKm * 1_000.0).roundToInt(),
             durationSeconds = durationSeconds,
             legShapes = shapes,
+            httpStatus = httpStatus,
+            warnings = warnings,
         )
+    }
+
+    fun parseErrorMessage(json: String): String {
+        return runCatching {
+            val root = JSONObject(json)
+            root.optString("error").takeIf { it.isNotBlank() }
+                ?: root.optString("status_message").takeIf { it.isNotBlank() }
+                ?: "Valhalla request failed"
+        }.getOrDefault("Valhalla request failed")
+    }
+
+    private fun parseWarnings(array: JSONArray?): List<String> = buildList {
+        if (array == null) return@buildList
+        for (index in 0 until array.length()) {
+            when (val warning = array.opt(index)) {
+                is String -> warning.takeIf { it.isNotBlank() }?.let(::add)
+                is JSONObject -> {
+                    val message = warning.optString("text").takeIf { it.isNotBlank() }
+                        ?: warning.optString("message").takeIf { it.isNotBlank() }
+                        ?: warning.toString()
+                    add(message)
+                }
+            }
+        }
     }
 
     private fun costingName(profile: RouteProfile): String = when (profile) {
