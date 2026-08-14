@@ -9,7 +9,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BarChart
@@ -35,7 +36,6 @@ import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.PauseCircle
 import androidx.compose.material.icons.rounded.PlayArrow
-import androidx.compose.material.icons.rounded.Route
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shield
@@ -212,6 +212,7 @@ private fun HomeScreen(
     onOpenOffer: (Long) -> Unit,
     onRefresh: () -> Unit,
 ) {
+    val context = LocalContext.current
     val today = database.summarySince(startOfDay(0))
     val wolt = database.summarySince(startOfDay(0), "Wolt")
     val bolt = database.summarySince(startOfDay(0), "Bolt")
@@ -240,7 +241,7 @@ private fun HomeScreen(
                 onShift = {
                     if (shift == null) database.startShift() else database.endActiveShift()
                     CaptureEventLog.append(
-                        LocalContext.current,
+                        context,
                         "shift",
                         if (shift == null) "Manual work shift started" else "Manual work shift ended",
                     )
@@ -528,7 +529,10 @@ private fun HistoryScreen(database: OfferDatabase, padding: PaddingValues, onOpe
             )
         }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.fillMaxWidth()) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            ) {
                 listOf(
                     HistoryFilter.ALL to "All",
                     HistoryFilter.WOLT to "Wolt",
@@ -578,7 +582,10 @@ private fun StatsScreen(database: OfferDatabase, padding: PaddingValues) {
     ) {
         item { SectionHeader("Statistics", "Patterns, platforms and tracked work time") }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+            ) {
                 listOf(1 to "Today", 7 to "7d", 30 to "30d", 0 to "All").forEach { (days, label) ->
                     FilterChip(selected = period == days, onClick = { period = days }, label = { Text(label) })
                 }
