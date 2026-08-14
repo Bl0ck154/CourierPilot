@@ -4,8 +4,10 @@ import android.content.Context
 import android.widget.Toast
 
 /**
- * Learns only the minimum useful delivery memory: building address + access code.
- * Customer names and raw delivery instructions are intentionally not copied into this database.
+ * Learns local delivery context for buildings seen in the courier apps.
+ *
+ * Address memory is deliberately loss-tolerant: normalized addresses power lookup/search while a
+ * nearby text excerpt plus the raw Accessibility/OCR screen are retained for future parsers.
  */
 internal object DeliveryMemory {
     private const val PREFS = "courierpilot_delivery_memory"
@@ -18,19 +20,46 @@ internal object DeliveryMemory {
             CourierPresence.markOfferOnline(context, packageName, "offer screen")
         }
 
-        val addresses = CourierSignals.likelyAddresses(text)
+        val detectedAddresses = CourierSignals.likelyAddresses(text)
+        val allAddresses = (detectedAddresses + parsed.pickupAddresses + parsed.dropoffAddresses)
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .distinctBy { CourierSignals.normalizeBuildingAddress(it)?.first ?: it.lowercase() }
+
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val key = addressKey(packageName)
         val previous = prefs.getString(key, null)
-        val fallback = addresses.lastOrNull() ?: previous
-        if (addresses.isNotEmpty()) prefs.edit().putString(key, addresses.last()).apply()
+        val fallback = detectedAddresses.lastOrNull() ?: previous
+        if (detectedAddresses.isNotEmpty()) prefs.edit().putString(key, detectedAddresses.last()).apply()
 
         val platform = OfferState.platformLabel(packageName)
         val database = CourierMetaDatabase.get(context)
-        val observations = CourierSignals.extractAccessCodeObservations(text, fallback)
 
+        // Store every address exposed by the current courier screen, not only buildings where a code
+        // happened to be detected. This becomes the local address history used by the Addresses tab.
+        allAddresses.forEach { address ->
+            val customer = customerForAddress(parsed, address)
+            runCatching {
+                database.saveAddressObservation(
+                    address = address,
+                    platform = platform,
+                    customerName = customer,
+                    detailsText = addressContext(text, address),
+                    rawText = text,
+                )
+            }.onFailure {
+                CaptureEventLog.append(
+                    context,
+                    stage = "address_memory_failed",
+                    platform = platform,
+                    message = it.javaClass.simpleName,
+                    dedupeWindowMs = 30_000L,
+                )
+            }
+        }
+
+        val observations = CourierSignals.extractAccessCodeObservations(text, fallback)
         if (observations.isNotEmpty()) {
-            // The current delivery already exposes a code, so there is no need to suggest an old one.
             AccessCodeSuggestions.clear(context)
             observations.forEach { observation ->
                 runCatching { database.saveAccessCode(observation, platform) }
@@ -56,11 +85,10 @@ internal object DeliveryMemory {
             return
         }
 
-        // For suggestions, require an address on the current screen. The remembered previous
-        // address is intentionally used only above as a learning fallback when code/address are
-        // shown on separate delivery screens.
+        // Suggest historical codes only when the current screen itself exposes an address. The
+        // remembered fallback is used for learning across split screens, never for a blind suggestion.
         var matched = false
-        for (address in addresses.asReversed().distinct()) {
+        for (address in detectedAddresses.asReversed().distinct()) {
             val normalized = CourierSignals.normalizeBuildingAddress(address) ?: continue
             val known = database.codesForBuilding(normalized.first)
             if (known.isEmpty()) continue
@@ -91,7 +119,33 @@ internal object DeliveryMemory {
             matched = true
             break
         }
-        if (!matched && addresses.isNotEmpty()) AccessCodeSuggestions.clear(context)
+        if (!matched && detectedAddresses.isNotEmpty()) AccessCodeSuggestions.clear(context)
+    }
+
+    private fun customerForAddress(parsed: ParsedOffer, address: String): String? {
+        val key = CourierSignals.normalizeBuildingAddress(address)?.first ?: return null
+        val index = parsed.dropoffAddresses.indexOfFirst {
+            CourierSignals.normalizeBuildingAddress(it)?.first == key
+        }
+        return parsed.customerNames.getOrNull(index)
+            ?.takeUnless { it.equals("Customer", ignoreCase = true) }
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+    }
+
+    private fun addressContext(text: String, address: String): String? {
+        val targetKey = CourierSignals.normalizeBuildingAddress(address)?.first ?: return null
+        val lines = text.lineSequence()
+            .map { it.trim().replace(Regex("\\s+"), " ") }
+            .filter(String::isNotEmpty)
+            .toList()
+        val index = lines.indexOfFirst { line ->
+            CourierSignals.normalizeBuildingAddress(line)?.first == targetKey
+        }
+        if (index < 0) return null
+        val from = (index - 2).coerceAtLeast(0)
+        val to = (index + 10).coerceAtMost(lines.size)
+        return lines.subList(from, to).joinToString("\n").take(4_000)
     }
 
     private fun addressKey(packageName: String): String = "last_address_${packageName.replace('.', '_')}"
