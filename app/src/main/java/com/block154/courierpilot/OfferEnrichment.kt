@@ -9,6 +9,7 @@ internal fun OfferRecord.withCurrentParsedStructure(): OfferRecord {
     if (rawText.isBlank()) return this
     val parsed = OfferParser.parse(rawText)
     return copy(
+        priceCents = parsed.priceCents ?: priceCents,
         distanceMeters = parsed.distanceMeters ?: distanceMeters,
         restaurant = parsed.restaurant ?: restaurant,
         merchantNames = parsed.merchantNames.takeIf { it.isNotEmpty() } ?: merchantNames,
