@@ -44,10 +44,10 @@ fun OfferHeatmap(
 
     Row(
         modifier = modifier.horizontalScroll(scroll),
-        horizontalArrangement = Arrangement.spacedBy(5.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         repeat(weeks) { week ->
-            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 repeat(7) { dayIndex ->
                     val date = start.plusDays((week * 7L) + dayIndex)
                     val key = date.toString()
@@ -61,11 +61,11 @@ fun OfferHeatmap(
                     val selected = selectedDay == key
                     Box(
                         Modifier
-                            .size(22.dp)
-                            .clip(RoundedCornerShape(6.dp))
+                            .size(30.dp)
+                            .clip(RoundedCornerShape(8.dp))
                             .background(fill)
                             .then(
-                                if (selected) Modifier.border(2.dp, BrandCyan, RoundedCornerShape(6.dp))
+                                if (selected) Modifier.border(2.dp, BrandCyan, RoundedCornerShape(8.dp))
                                 else Modifier
                             )
                             .clickable(enabled = !future) { onSelected(summary) }
