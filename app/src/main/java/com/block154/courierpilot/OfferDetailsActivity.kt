@@ -31,12 +31,16 @@ class OfferDetailsActivity : Activity() {
     }
 
     private fun render() {
-        val record = database.findById(offerId)
+        val record = database.findById(offerId)?.withCurrentParsedStructure()
         if (record == null) {
-            setContentView(messageScreen("Offer not found"))
+            val screen = messageScreen("Offer not found")
+            setContentView(screen)
+            screen.applySystemBarsPadding()
             return
         }
-        setContentView(buildScreen(record))
+        val screen = buildScreen(record)
+        setContentView(screen)
+        screen.applySystemBarsPadding()
     }
 
     private fun buildScreen(record: OfferRecord): View {
@@ -82,7 +86,7 @@ class OfferDetailsActivity : Activity() {
         root.addView(hero.top(dp(22)))
 
         if (record.merchantNames.isNotEmpty() || record.pickupAddresses.isNotEmpty()) {
-            root.addView(sectionTitle("Pickup", "Venue${if (record.merchantNames.size > 1) "s" else ""} and addresses").top(dp(24)))
+            root.addView(sectionTitle("Pickup", "Venue${if (record.merchantNames.size > 1) "s" else ""} and pickup addresses").top(dp(24)))
             val count = maxOf(record.merchantNames.size, record.pickupAddresses.size)
             for (i in 0 until count) {
                 root.addView(stopCard(
@@ -95,7 +99,7 @@ class OfferDetailsActivity : Activity() {
         }
 
         if (record.customerNames.isNotEmpty() || record.dropoffAddresses.isNotEmpty()) {
-            root.addView(sectionTitle("Drop-off", "Customer information provided by the courier app").top(dp(24)))
+            root.addView(sectionTitle("Drop-off", "Customer and destination from the courier app").top(dp(24)))
             val count = maxOf(record.customerNames.size, record.dropoffAddresses.size)
             for (i in 0 until count) {
                 root.addView(stopCard(
@@ -106,6 +110,13 @@ class OfferDetailsActivity : Activity() {
                 ).top(dp(9)))
             }
             root.addView(text("Customer names and addresses stay in CourierPilot's local database on this device.", 11f, MUTED).top(dp(8)))
+        }
+
+        if (record.customerNames.isEmpty() && record.dropoffAddresses.isEmpty() && record.pickupAddresses.isEmpty()) {
+            root.addView(card().apply {
+                addView(text("Route details were not exposed clearly enough to classify this offer.", 13f, MUTED))
+                addView(text("The original screenshot and raw capture text are still available below.", 11f, MUTED).top(dp(4)))
+            }.top(dp(24)))
         }
 
         root.addView(sectionTitle("Original", "Saved evidence and parser diagnostics").top(dp(24)))
