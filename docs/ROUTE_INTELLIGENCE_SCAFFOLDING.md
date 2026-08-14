@@ -4,7 +4,7 @@ Branch: `route-intelligence-scaffolding`
 
 Status: experimental groundwork; do not merge into production merely because it compiles.
 
-This branch intentionally turns the route-intelligence ideas into code contracts and testable math before the Valhalla VPS and Bolt ground-truth samples are available.
+This branch turns the route-intelligence ideas into code contracts and testable math before the Valhalla VPS and Bolt ground-truth samples are available.
 
 ## What this branch adds
 
@@ -21,11 +21,7 @@ This branch intentionally turns the route-intelligence ideas into code contracts
 
 `OfferRouteDraftBuilder` converts an existing `ParsedOffer` into a draft without inventing missing coordinates. A Wolt address remains unresolved until a geocoder resolves it. A Bolt map point remains unresolved until Accessibility semantics or map recovery produces evidence.
 
-Interfaces are reserved for:
-
-- `CurrentLocationSource`;
-- `AddressGeocoder`;
-- `RouteProvider` (already defined in the previous groundwork).
+Interfaces are reserved for `CurrentLocationSource`, `AddressGeocoder` and `RouteProvider`.
 
 ### Route comparison engine
 
@@ -34,9 +30,7 @@ Interfaces are reserved for:
 - `PEDESTRIAN_SHORTCUT`;
 - `CYCLEWAY_BIASED`.
 
-It deliberately returns both results and does **not** automatically choose a winner. One candidate can fail without destroying the other result.
-
-A later real-Vilnius validation layer may decide whether one profile is consistently preferable or whether custom Valhalla costing is required.
+It returns both results and does **not** automatically choose a winner. One candidate can fail without destroying the other result. Real Vilnius validation decides later whether one stock profile is consistently preferable or custom Valhalla costing is required.
 
 ### Bolt screen-to-coordinate model
 
@@ -53,25 +47,50 @@ Important invariant:
 
 **Knowing the phone GPS coordinate and seeing the current-location marker is only one anchor. It does not determine map scale/zoom.**
 
-The code therefore refuses coordinate projection unless both are independently established:
+The code refuses coordinate projection unless meters-per-pixel and map orientation are independently established.
 
-- meters per pixel;
-- map orientation/rotation.
+`LocalMapTransform.fromTwoAnchors(...)` can derive scale and rotation once two independent screen+geographic anchor pairs are known. That gives a concrete future path: phone GPS/current marker + one independently recognized landmark/intersection can calibrate the Bolt viewport, after which other marker pixels can be projected.
 
-Once those are known, `LocalMapTransform` converts a marker pixel position into an approximate latitude/longitude using a local tangent/equirectangular approximation suitable for short city-scale distances.
-
-This is scaffolding, not proof that Bolt marker recovery is solved.
-
-Potential future sources for scale/orientation evidence include:
+Potential evidence sources:
 
 - hidden Accessibility semantics;
-- stable map SDK camera metadata if somehow exposed;
+- stable map SDK camera metadata if exposed;
 - visible scale bar;
-- two or more recognized map landmarks/road intersections;
-- matching rendered road geometry to OSM;
-- stable north-up behavior plus inferred zoom from map features.
+- recognized road intersections/landmarks;
+- rendered-road matching against OSM;
+- stable north-up behavior plus independently inferred zoom.
 
 Never use a guessed scale as a production destination coordinate.
+
+### Inactive Valhalla HTTP provider
+
+`ValhallaHttpRouteProvider.kt` already provides a concrete implementation of `RouteProvider` with:
+
+- HTTPS-only endpoint config;
+- optional bearer token;
+- bounded connect/read timeouts;
+- JSON POST to `/route`;
+- bounded HTTP error diagnostics;
+- existing Valhalla request/response contract reuse.
+
+It is intentionally **not instantiated anywhere** and the Android manifest still has no `INTERNET` permission. When the VPS exists, activation should be a small wiring task rather than a redesign.
+
+### Valhalla/Meili map-matching contract
+
+`ValhallaMapMatchingContract.kt` is based on the current official Valhalla `trace_attributes` API.
+
+It can build `map_snap` requests from timestamped GPS samples and requests only useful attributes such as:
+
+- `edge.id`;
+- `edge.way_id`;
+- `edge.length`;
+- `edge.use`;
+- `edge.surface`;
+- `edge.cycle_lane`;
+- matched point coordinates/type/edge index/distance;
+- matched shape.
+
+It parses those into `MapMatchedTrace`, `MatchedTraceEdge` and `MatchedTracePoint` models. This is the bridge from raw phone GPS history to real Valhalla graph edges used by personal traversal statistics.
 
 ### Personal route learning
 
@@ -89,7 +108,29 @@ The initial algorithm is intentionally simple:
 - median restaurant wait;
 - at least 3 observations before restaurant wait is treated as usable personalized data.
 
-This provides a conservative baseline before considering time-of-day buckets, recency weighting, weather or any ML.
+This is a conservative baseline before time-of-day buckets, recency weighting, weather or any ML.
+
+### Delivery lifecycle model
+
+`DeliveryTimeline.kt` defines explicit observed states:
+
+- offer captured;
+- accepted;
+- arrived at pickup;
+- picked up;
+- arrived at drop-off;
+- delivered;
+- cancelled.
+
+Each event carries timestamp, source and confidence. `DeliveryTimelineAnalyzer` only derives metrics from events that actually exist; it never infers completion because enough time passed.
+
+This allows future real metrics such as:
+
+- accepted -> completed duration;
+- per-venue arrived -> picked-up wait;
+- stacked pickup waits by stop key.
+
+The still-missing part is reliable Accessibility/GPS classification that produces these events on real Wolt/Bolt delivery screens.
 
 ### Offer economics
 
@@ -102,49 +143,63 @@ This provides a conservative baseline before considering time-of-day buckets, re
 - `€/km`;
 - effective `€/h`.
 
-It deliberately outputs no `GOOD/BAD`, no auto-accept and no hidden score.
+It deliberately outputs no `GOOD/BAD`, no auto-accept and no hidden score. Future UI should show which components were personalized and which came from baseline Valhalla/platform estimates.
 
-Future UI should show which components were personalized and which came from baseline Valhalla/platform estimates.
+### Isolated research database
+
+`RouteResearchDatabase.kt` defines a separate `route_research.db`. Production code does not open it.
+
+Prepared tables cover:
+
+- GPS recording sessions;
+- raw GPS samples;
+- matched edge traversals;
+- delivery timeline events;
+- venue wait observations;
+- real-route validation samples;
+- Bolt map recovered-vs-ground-truth coordinates.
+
+This is intentionally separate from the proven offer-history DB so experimental schema work cannot destabilize offer capture.
 
 ## What is still blocked on real external evidence
 
 ### Valhalla endpoint
 
-Need the deployed self-hosted server before implementing:
+The HTTP class exists, but activation still needs:
 
-- HTTPS HTTP client;
-- auth;
-- timeouts/cancellation;
-- endpoint settings;
-- real Vilnius route requests;
-- route-shape display/debug screen.
+- deployed HTTPS endpoint;
+- real auth configuration;
+- `INTERNET` permission;
+- background-thread/cancellation wiring;
+- real Vilnius route smoke tests;
+- route-shape debug UI.
 
 ### Android location
 
-Need to choose the minimal-permission implementation. Offer-time current location can be implemented separately from later continuous historical GPS recording.
-
-Do not silently turn route research into permanent background tracking.
+Need to choose the minimal-permission implementation. Offer-time current location can be implemented separately from later continuous historical GPS recording. Do not silently turn route research into permanent background tracking.
 
 ### Wolt geocoding
 
-Text addresses can already become unresolved pickup/drop-off waypoints. A real geocoder still needs to be chosen/deployed.
-
-Prefer a self-hosted/open-data-compatible approach if practical, but validate Lithuanian address quality before integrating.
+Text addresses can already become unresolved pickup/drop-off waypoints. A real geocoder still needs to be chosen/deployed and validated on Lithuanian address quality.
 
 ### Bolt coordinate recovery
 
 Need several real datasets containing:
 
-- new Accessibility tree dump;
+- Accessibility tree dump;
 - screenshot of the same offer/map;
 - current phone GPS at capture time;
 - eventual known pickup/drop-off ground truth.
 
-Only then implement marker detection/scale/orientation inference.
+Only then implement actual marker recognition and scale/orientation inference.
 
-### Map matching and historical learning
+### Lifecycle event detection
 
-Need a Valhalla/Meili endpoint plus opted-in GPS traces before `MatchedEdgeTraversal` records are real rather than test fixtures.
+Need real Wolt/Bolt accepted/pickup/delivery screens and event samples before classifiers can safely emit `ACCEPTED`, `ARRIVED_PICKUP`, `PICKED_UP` and `DELIVERED`.
+
+### Historical learning
+
+Need opted-in GPS traces plus the deployed Valhalla `trace_attributes` endpoint before matched-edge records become real rather than fixtures.
 
 ## Intended future pipeline
 
@@ -163,29 +218,42 @@ Offer captured
                                                       v
                                            route distance/time
                                                       |
-                          +---------------------------+
-                          |
-             historical segment times / venue wait
-                          |
-                          v
-                     OfferEconomics
-                    €/km + effective €/h
+                         +----------------------------+
+                         |
+               delivery lifecycle + real GPS trace
+                         |
+                         +--> trace_attributes / Meili
+                         |          |
+                         |          +--> matched graph edges
+                         |                    |
+                         |                    +--> personal segment times
+                         |
+                         +--> real venue wait times
+                                      |
+                                      v
+                                OfferEconomics
+                           €/km + effective €/h
 ```
 
 ## Tests in this branch
 
-`RouteIntelligenceScaffoldingTest` verifies:
+Tests verify:
 
 - parsed offers remain unresolved instead of receiving fabricated coordinates;
 - Bolt projection is impossible without scale/orientation evidence;
-- known pixel offsets project plausibly around Vilnius once transform evidence exists;
-- route comparison preserves a surviving candidate when the other fails;
+- known pixel offsets project plausibly around Vilnius;
+- two known anchors derive a usable transform;
+- route comparison preserves one candidate when the other fails;
 - personal segment ETA is gated by minimum real sample count;
-- economics calculations include route + wait transparently.
+- economics includes route + wait transparently;
+- HTTPS Valhalla endpoint contract;
+- `trace_attributes` request/response parsing;
+- delivery lifecycle never invents completion;
+- isolated research SQLite schema is created as expected.
 
 ## Merge policy
 
-Keep this branch/draft PR unmerged until it is useful to the next implementation stage.
+Keep this branch and draft PR unmerged until it is useful to the next implementation stage.
 
 Before production merge, at minimum:
 
