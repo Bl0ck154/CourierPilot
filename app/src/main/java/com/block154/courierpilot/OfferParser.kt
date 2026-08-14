@@ -4,6 +4,17 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.util.Locale
 
+internal enum class ParsedRouteStopKind {
+    PICKUP,
+    DROPOFF,
+}
+
+internal data class ParsedRouteStop(
+    val kind: ParsedRouteStopKind,
+    val name: String?,
+    val address: String,
+)
+
 internal data class ParsedOffer(
     val priceCents: Int?,
     val distanceMeters: Int?,
@@ -15,6 +26,7 @@ internal data class ParsedOffer(
     val deliveryCount: Int? = null,
     val estimatedMinutesMin: Int? = null,
     val estimatedMinutesMax: Int? = null,
+    val orderedRouteStops: List<ParsedRouteStop> = emptyList(),
 )
 
 internal object OfferParser {
@@ -40,6 +52,13 @@ internal object OfferParser {
         // the next customer's name with the wrong destination.
         val customers = customerStops.map { it.name ?: "Customer" }
         val dropoffs = customerStops.map { it.address }
+        val orderedStops = stops.map { stop ->
+            ParsedRouteStop(
+                kind = if (stop.isMerchant) ParsedRouteStopKind.PICKUP else ParsedRouteStopKind.DROPOFF,
+                name = stop.name,
+                address = stop.address,
+            )
+        }
         val estimate = parseEstimate(lines)
 
         // Restaurant count and delivery count are different concepts. Wolt can batch any number of
@@ -63,6 +82,7 @@ internal object OfferParser {
             deliveryCount = deliveryCount,
             estimatedMinutesMin = estimate?.first,
             estimatedMinutesMax = estimate?.second,
+            orderedRouteStops = orderedStops,
         )
     }
 
