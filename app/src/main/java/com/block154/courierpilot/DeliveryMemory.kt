@@ -1,0 +1,98 @@
+package com.block154.courierpilot
+
+import android.content.Context
+import android.widget.Toast
+
+/**
+ * Learns only the minimum useful delivery memory: building address + access code.
+ * Customer names and raw delivery instructions are intentionally not copied into this database.
+ */
+internal object DeliveryMemory {
+    private const val PREFS = "courierpilot_delivery_memory"
+
+    fun observeScreen(context: Context, packageName: String, text: String) {
+        if (text.isBlank()) return
+
+        val parsed = OfferParser.parse(text)
+        if (CourierSignals.looksLikeOfferScreen(text, parsed)) {
+            CourierPresence.markOfferOnline(context, packageName, "offer screen")
+        }
+
+        val addresses = CourierSignals.likelyAddresses(text)
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val key = addressKey(packageName)
+        val previous = prefs.getString(key, null)
+        val fallback = addresses.lastOrNull() ?: previous
+        if (addresses.isNotEmpty()) prefs.edit().putString(key, addresses.last()).apply()
+
+        val platform = OfferState.platformLabel(packageName)
+        val database = CourierMetaDatabase.get(context)
+        val observations = CourierSignals.extractAccessCodeObservations(text, fallback)
+
+        if (observations.isNotEmpty()) {
+            // The current delivery already exposes a code, so there is no need to suggest an old one.
+            AccessCodeSuggestions.clear(context)
+            observations.forEach { observation ->
+                runCatching { database.saveAccessCode(observation, platform) }
+                    .onSuccess {
+                        CaptureEventLog.append(
+                            context,
+                            stage = "access_code",
+                            platform = platform,
+                            message = "Building access code learned locally",
+                            dedupeWindowMs = 30_000L,
+                        )
+                    }
+                    .onFailure {
+                        CaptureEventLog.append(
+                            context,
+                            stage = "access_code_failed",
+                            platform = platform,
+                            message = it.javaClass.simpleName,
+                            dedupeWindowMs = 30_000L,
+                        )
+                    }
+            }
+            return
+        }
+
+        // For suggestions, require an address on the current screen. The remembered previous
+        // address is intentionally used only above as a learning fallback when code/address are
+        // shown on separate delivery screens.
+        var matched = false
+        for (address in addresses.asReversed().distinct()) {
+            val normalized = CourierSignals.normalizeBuildingAddress(address) ?: continue
+            val known = database.codesForBuilding(normalized.first)
+            if (known.isEmpty()) continue
+            val codes = known.map { it.code }.distinct()
+            val oldSuggestion = AccessCodeSuggestions.latest(context)
+            val sameSuggestion = oldSuggestion?.displayAddress == normalized.second && oldSuggestion.codes == codes
+            val suggestion = AccessCodeSuggestion(
+                displayAddress = normalized.second,
+                codes = codes,
+                platform = platform,
+                updatedAt = System.currentTimeMillis(),
+            )
+            if (!sameSuggestion) {
+                AccessCodeSuggestions.save(context, suggestion)
+                Toast.makeText(
+                    context,
+                    "Possible door code · ${normalized.second}: ${codes.joinToString(" / ")}",
+                    Toast.LENGTH_LONG,
+                ).show()
+                CaptureEventLog.append(
+                    context,
+                    stage = "access_code_match",
+                    platform = platform,
+                    message = "Possible historical building access code matched locally",
+                    dedupeWindowMs = 30_000L,
+                )
+            }
+            matched = true
+            break
+        }
+        if (!matched && addresses.isNotEmpty()) AccessCodeSuggestions.clear(context)
+    }
+
+    private fun addressKey(packageName: String): String = "last_address_${packageName.replace('.', '_')}"
+}

@@ -1,0 +1,308 @@
+package com.block154.courierpilot
+
+import android.app.Notification
+import android.content.Context
+import java.security.MessageDigest
+import java.text.Normalizer
+import java.util.Locale
+
+internal enum class PresenceSignal {
+    ONLINE,
+    OFFLINE,
+    UNKNOWN,
+}
+
+internal data class AccessCodeObservation(
+    val buildingKey: String,
+    val displayAddress: String,
+    val code: String,
+)
+
+/**
+ * Small, testable classifiers shared by NotificationListenerService and AccessibilityService.
+ * The rules intentionally prefer false negatives over opening a courier app for unrelated alerts.
+ */
+internal object CourierSignals {
+    const val WOLT_PACKAGE = "com.wolt.courierapp"
+    const val BOLT_PACKAGE = "com.bolt.deliverycourier"
+    val courierPackages = setOf(WOLT_PACKAGE, BOLT_PACKAGE)
+
+    private val strongOfferPhrases = listOf(
+        "new task",
+        "new order",
+        "new delivery",
+        "new offer",
+        "task available",
+        "order available",
+        "delivery available",
+        "nauja užduotis",
+        "nauja uzduotis",
+        "naujas užsakymas",
+        "naujas uzsakymas",
+        "naujas pristatymas",
+        "новый заказ",
+        "новое задание",
+        "нове замовлення",
+        "нове завдання",
+    )
+
+    private val negativeNotificationPhrases = listOf(
+        "order completed",
+        "delivery completed",
+        "delivery complete",
+        "task completed",
+        "picked up",
+        "payment",
+        "payout",
+        "bonus",
+        "campaign",
+        "schedule",
+        "customer message",
+        "message from customer",
+    )
+
+    private val decisionPhrases = listOf(
+        "accept",
+        "decline",
+        "reject",
+        "priimti",
+        "atmesti",
+        "принять",
+        "отклонить",
+        "прийняти",
+        "відхилити",
+    )
+
+    private val weakOfferNouns = listOf(
+        "task",
+        "order",
+        "delivery",
+        "offer",
+        "užduot",
+        "uzduot",
+        "užsak",
+        "uzsak",
+        "pristat",
+        "заказ",
+        "задан",
+        "достав",
+        "замов",
+        "завдан",
+    )
+
+    private val onlinePhrases = listOf(
+        "you're online",
+        "you are online",
+        "go offline",
+        "waiting for orders",
+        "waiting for tasks",
+        "looking for orders",
+        "looking for tasks",
+        "laukiame užsakymų",
+        "laukiame uzsakymu",
+        "ieškome užsakymų",
+        "ieskome uzsakymu",
+        "вы онлайн",
+        "ви онлайн",
+    )
+
+    private val offlinePhrases = listOf(
+        "you're offline",
+        "you are offline",
+        "go online",
+        "start delivering",
+        "start accepting orders",
+        "start accepting tasks",
+        "switch online",
+        "перейти онлайн",
+        "выйти онлайн",
+        "вийти онлайн",
+        "почати доставку",
+    )
+
+    private val codeCueRegex = Regex(
+        "(?i)(door\\s*code|entry\\s*code|gate\\s*code|intercom|domofon|" +
+            "dur[ųu]\\s*kod|laiptin[eė]s?\\s*kod|vart[ųu]\\s*kod|" +
+            "kod\\w*\\s*(?:dur|laipt|vart)|" +
+            "код\\s*(?:домоф|двер|подъезд|під.?їзд|воріт)|домофон)"
+    )
+    private val codeTokenRegex = Regex("(?i)[#*A-Z0-9]{2,12}")
+    private val streetMarkerRegex = Regex(
+        "(?i)(?:\\bg\\.|gatv[eė]|\\bpr\\.|prospekt|\\bal\\.|al[eė]ja|\\bpl\\.|plentas|" +
+            "\\bskg\\.|skersgatv|\\bkel\\.|kelias|\\bst\\.|street|\\bstr\\.|улиц|\\bул\\.|\\bвул\\.)"
+    )
+    private val houseNumberRegex = Regex("\\b\\d{1,4}[A-Za-z]?(?:\\s*[-/]\\s*\\d{1,4})?\\b")
+    private val apartmentSuffixRegex = Regex("(\\b\\d{1,4}[A-Za-z]?)\\s*[-/]\\s*\\d{1,4}\\b")
+
+    fun isCourierPackage(packageName: String): Boolean = packageName in courierPackages
+
+    fun notificationText(notification: Notification): String {
+        val e = notification.extras
+        return buildString {
+            append(e.getCharSequence(Notification.EXTRA_TITLE).orEmpty())
+            append(' ')
+            append(e.getCharSequence(Notification.EXTRA_TEXT).orEmpty())
+            append(' ')
+            append(e.getCharSequence(Notification.EXTRA_BIG_TEXT).orEmpty())
+            append(' ')
+            append(e.getCharSequence(Notification.EXTRA_SUB_TEXT).orEmpty())
+            append(' ')
+            append(notification.tickerText.orEmpty())
+        }.trim()
+    }
+
+    fun notificationActionLabels(notification: Notification): List<String> =
+        notification.actions.orEmpty().mapNotNull { it.title?.toString()?.trim() }.filter(String::isNotEmpty)
+
+    fun isOfferNotification(notification: Notification): Boolean =
+        isOfferNotificationText(notificationText(notification), notificationActionLabels(notification))
+
+    fun isOfferNotificationText(text: String, actionLabels: List<String> = emptyList()): Boolean {
+        val lower = text.lowercase(Locale.ROOT)
+        if (lower.isBlank()) return false
+        if (negativeNotificationPhrases.any(lower::contains)) return false
+        if (strongOfferPhrases.any(lower::contains)) return true
+
+        val actions = actionLabels.joinToString(" ").lowercase(Locale.ROOT)
+        val hasDecisionAction = decisionPhrases.any(actions::contains)
+        val hasOfferNoun = weakOfferNouns.any(lower::contains)
+        return hasDecisionAction && hasOfferNoun
+    }
+
+    fun isOngoingPresenceNotification(notification: Notification): Boolean =
+        notification.flags and Notification.FLAG_ONGOING_EVENT != 0 && !isOfferNotification(notification)
+
+    fun detectPresence(text: String): PresenceSignal {
+        val lower = text.lowercase(Locale.ROOT)
+        if (offlinePhrases.any(lower::contains)) return PresenceSignal.OFFLINE
+        if (onlinePhrases.any(lower::contains)) return PresenceSignal.ONLINE
+        return PresenceSignal.UNKNOWN
+    }
+
+    fun looksLikeOfferScreen(text: String, parsed: ParsedOffer): Boolean {
+        val lower = text.lowercase(Locale.ROOT)
+        val hasDecision = decisionPhrases.any(lower::contains)
+        val hasStrongNotificationStylePhrase = strongOfferPhrases.any(lower::contains)
+        val hasWoltOfferStructure = lower.contains("delivery from") ||
+            Regex("(?i)\\b\\d+\\s+deliver(?:y|ies)\\s+from\\b").containsMatchIn(text) ||
+            lower.contains("expected earnings for the full delivery")
+        val hasRouteEvidence = parsed.distanceMeters != null ||
+            lower.contains("route distance") ||
+            lower.contains("estimated")
+        val hasStructuredStop = parsed.restaurant != null || parsed.dropoffAddresses.isNotEmpty()
+        val hasPrice = parsed.priceCents != null
+
+        // Accepted-delivery screens often contain addresses and euro amounts too. Require either
+        // explicit accept/decline controls, or Wolt's full-delivery earnings label, before arming.
+        if (lower.contains("expected earnings for the full delivery") && hasPrice) return true
+        if (hasDecision && (hasPrice || hasWoltOfferStructure) && (hasRouteEvidence || hasStructuredStop || hasWoltOfferStructure)) return true
+        return hasStrongNotificationStylePhrase && hasDecision && (hasPrice || hasRouteEvidence)
+    }
+
+    fun likelyAddresses(text: String): List<String> = text.lineSequence()
+        .map { it.trim().replace(Regex("\\s+"), " ") }
+        .filter { it.length in 4..180 }
+        .filter(::looksLikeAddressLine)
+        .distinct()
+        .toList()
+
+    fun extractAccessCodeObservations(text: String, fallbackAddress: String? = null): List<AccessCodeObservation> {
+        val lines = text.lineSequence()
+            .map { it.trim().replace(Regex("\\s+"), " ") }
+            .filter(String::isNotEmpty)
+            .toList()
+        if (lines.isEmpty()) return emptyList()
+
+        val addressesByIndex = lines.mapIndexedNotNull { index, line ->
+            line.takeIf(::looksLikeAddressLine)?.let { index to it }
+        }
+
+        val out = mutableListOf<AccessCodeObservation>()
+        lines.forEachIndexed { index, line ->
+            val cue = codeCueRegex.find(line) ?: return@forEachIndexed
+            val afterCue = line.substring(cue.range.last + 1)
+            val candidates = codeCandidates(afterCue).ifEmpty { codeCandidates(line) }
+            if (candidates.isEmpty()) return@forEachIndexed
+
+            val nearestAddress = addressesByIndex
+                .filter { kotlin.math.abs(it.first - index) <= 8 }
+                .minByOrNull { kotlin.math.abs(it.first - index) }
+                ?.second
+                ?: fallbackAddress
+                ?: return@forEachIndexed
+
+            val normalized = normalizeBuildingAddress(nearestAddress) ?: return@forEachIndexed
+            candidates.forEach { code ->
+                out += AccessCodeObservation(normalized.first, normalized.second, code)
+            }
+        }
+        return out.distinctBy { "${it.buildingKey}|${it.code}" }
+    }
+
+    fun normalizeBuildingAddress(raw: String): Pair<String, String>? {
+        var display = raw.trim().replace(Regex("\\s+"), " ")
+        if (!looksLikeAddressLine(display)) return null
+        display = display.replace(Regex("(?i)^vilnius[,]?\\s*"), "")
+        display = display.replace(Regex("(?i),?\\s*LT-\\d{5}.*$"), "")
+        display = display.replace(Regex("(?i),?\\s*Vilnius.*$"), "")
+        display = apartmentSuffixRegex.replace(display) { match -> match.groupValues[1] }
+        display = display.trim(' ', ',')
+        if (display.length < 4) return null
+
+        val ascii = Normalizer.normalize(display, Normalizer.Form.NFD)
+            .replace(Regex("\\p{M}+"), "")
+            .lowercase(Locale.ROOT)
+        val key = ascii
+            .replace(Regex("[^a-z0-9]+"), " ")
+            .trim()
+        if (key.isBlank()) return null
+        return key to display
+    }
+
+    fun offerFingerprint(packageName: String, text: String): String {
+        val normalized = text.lineSequence()
+            .map { it.trim().replace(Regex("\\s+"), " ").lowercase(Locale.ROOT) }
+            .filter(String::isNotEmpty)
+            .joinToString("\n")
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest("$packageName\n$normalized".toByteArray(Charsets.UTF_8))
+        return digest.take(10).joinToString("") { "%02x".format(it) }
+    }
+
+    private fun looksLikeAddressLine(line: String): Boolean {
+        if (!houseNumberRegex.containsMatchIn(line)) return false
+        val lower = line.lowercase(Locale.ROOT)
+        return streetMarkerRegex.containsMatchIn(line) || lower.contains("vilnius") || lower.contains("lt-")
+    }
+
+    private fun codeCandidates(value: String): List<String> = codeTokenRegex.findAll(value)
+        .map { it.value.uppercase(Locale.ROOT).trim() }
+        .filter { token -> token.count(Char::isDigit) >= 2 }
+        .filterNot { token -> token.length == 4 && token.toIntOrNull() in 1900..2100 }
+        .distinct()
+        .take(4)
+        .toList()
+}
+
+/** Prevents a still-visible offer screen from being archived again after a successful capture. */
+internal object ScreenOfferDeduper {
+    private const val PREFS = "courierpilot_screen_offer_dedupe"
+    private const val DEDUPE_MS = 10L * 60L * 1000L
+
+    fun shouldArm(context: Context, packageName: String, fingerprint: String, now: Long = System.currentTimeMillis()): Boolean {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val prefix = packageName.replace('.', '_')
+        val previous = prefs.getString("${prefix}_fingerprint", null)
+        val previousAt = prefs.getLong("${prefix}_at", 0L)
+        return previous != fingerprint || now - previousAt > DEDUPE_MS
+    }
+
+    fun markArmed(context: Context, packageName: String, fingerprint: String, now: Long = System.currentTimeMillis()) {
+        val prefix = packageName.replace('.', '_')
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString("${prefix}_fingerprint", fingerprint)
+            .putLong("${prefix}_at", now)
+            .apply()
+    }
+}

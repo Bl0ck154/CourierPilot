@@ -85,7 +85,11 @@ internal object HeartbeatScheduler {
 class HeartbeatReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         when {
-            intent?.action == Intent.ACTION_BOOT_COMPLETED || intent?.action == Intent.ACTION_MY_PACKAGE_REPLACED -> {
+            intent?.action == Intent.ACTION_BOOT_COMPLETED -> {
+                CourierPresence.resetAfterBoot(context)
+                HeartbeatScheduler.ensureScheduled(context)
+            }
+            intent?.action == Intent.ACTION_MY_PACKAGE_REPLACED -> {
                 HeartbeatScheduler.ensureScheduled(context)
             }
             HeartbeatScheduler.isHeartbeatAction(intent?.action) && HeartbeatSettings.enabled(context) -> {
@@ -119,7 +123,7 @@ internal object HeartbeatNotifier {
         val openApp = PendingIntent.getActivity(
             context,
             1545,
-            Intent(context, CourierPilotHomeActivity::class.java).apply {
+            Intent(context, CourierPilotDashboardActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
