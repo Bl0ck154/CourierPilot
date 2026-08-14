@@ -3,6 +3,8 @@ name: Build signed release APK
 on:
   workflow_dispatch:
   push:
+    branches:
+      - 'feature/v0.5.0'
     tags:
       - 'v*'
 
@@ -48,8 +50,8 @@ jobs:
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/courierpilot-release.jks"
           echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/courierpilot-release.jks" >> "$GITHUB_ENV"
 
-      - name: Build signed release APK
-        run: gradle assembleRelease --stacktrace
+      - name: Test parser and build signed release APK
+        run: gradle testDebugUnitTest assembleRelease --stacktrace
 
       - name: Verify permanent release certificate
         shell: bash
