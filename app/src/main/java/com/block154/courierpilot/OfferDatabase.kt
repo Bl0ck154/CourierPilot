@@ -133,7 +133,11 @@ class OfferDatabase private constructor(context: Context) :
             record.estimatedMinutesMin?.let { put("estimated_min", it) }
             record.estimatedMinutesMax?.let { put("estimated_max", it) }
         }
-        return writableDatabase.insertOrThrow("offers", null, values)
+        val rowId = writableDatabase.insertOrThrow("offers", null, values)
+        // Post-capture work is deliberately best-effort. A broken advisor/router cannot roll back a
+        // successfully persisted offer or its already-saved screenshot.
+        runCatching { LiveAdvisorHub.onOfferPersisted(rowId, record) }
+        return rowId
     }
 
     fun findById(id: Long): OfferRecord? {
