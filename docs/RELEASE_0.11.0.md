@@ -15,14 +15,15 @@
 - service heartbeat for interrupted/stale-session detection;
 - orphaned open-session cleanup on the next explicit start/stop;
 - latest trace summary with distance and average speed;
-- deliberate GeoJSON export;
-- tests for trace filtering, distance and GeoJSON coordinate order.
+- deliberate GeoJSON export containing geometry plus per-point timestamps, accuracy and reported speed;
+- deletion of the latest finished trace or all finished traces, with confirmation;
+- tests for trace filtering, distance and rich GeoJSON metadata.
 
 ## Android/privacy boundary
 
 Recording starts only after a visible Activity action. Foreground location permission is required; Android 13+ also requires notification permission in CourierPilot so an active recording remains visibly controllable in the notification surface.
 
-The service is `START_NOT_STICKY` and does not silently restart after process death or reboot. No `ACCESS_BACKGROUND_LOCATION` permission is added.
+The service is `START_NOT_STICKY` and does not silently restart after process death or reboot. No `ACCESS_BACKGROUND_LOCATION` permission is added. Finished traces remain local until deliberately shared and can be deleted from the Ride trace screen.
 
 ## Not yet wired
 
