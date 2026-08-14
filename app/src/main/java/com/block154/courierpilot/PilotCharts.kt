@@ -11,6 +11,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
 import kotlin.math.max
+import kotlin.math.min
 
 internal class PilotHeatmapView(context: Context) : View(context) {
     private val dayFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
@@ -18,10 +19,17 @@ internal class PilotHeatmapView(context: Context) : View(context) {
     private var days: Map<String, DaySummary> = emptyMap()
     private val hitRects = mutableListOf<Pair<RectF, String>>()
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(2f)
+        color = Color.parseColor("#2563EB")
+    }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.parseColor("#6B7280")
         textSize = sp(10f)
     }
+    private var weeksToShow = 16
+    private var selectedKey: String? = null
     var onDaySelected: ((DaySummary?) -> Unit)? = null
 
     fun setDays(values: List<DaySummary>) {
@@ -29,19 +37,33 @@ internal class PilotHeatmapView(context: Context) : View(context) {
         invalidate()
     }
 
+    fun setWeeks(value: Int) {
+        weeksToShow = value.coerceIn(8, 26)
+        requestLayout()
+        invalidate()
+    }
+
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), dp(90))
+        val width = MeasureSpec.getSize(widthMeasureSpec)
+        val horizontalPadding = dp(4) * 2f
+        val gap = dp(3).toFloat()
+        val available = (width - horizontalPadding - gap * (weeksToShow - 1)).coerceAtLeast(dp(120).toFloat())
+        val cell = min(dp(17).toFloat(), available / weeksToShow)
+        val top = dp(28).toFloat()
+        val height = (top + 7f * (cell + gap) + dp(4)).toInt()
+        setMeasuredDimension(width, height)
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         hitRects.clear()
-        val cell = dp(5).toFloat()
-        val gap = dp(2).toFloat()
+        val gap = dp(3).toFloat()
+        val left = dp(4).toFloat()
+        val right = width - dp(4).toFloat()
+        val available = (right - left - gap * (weeksToShow - 1)).coerceAtLeast(dp(120).toFloat())
+        val cell = min(dp(17).toFloat(), available / weeksToShow)
         val step = cell + gap
-        val top = dp(25).toFloat()
-        val left = dp(2).toFloat()
-        val weeks = max(1, ((width - left * 2) / step).toInt())
+        val top = dp(28).toFloat()
         val today = Calendar.getInstance().apply {
             set(Calendar.HOUR_OF_DAY, 12)
             set(Calendar.MINUTE, 0)
@@ -51,11 +73,11 @@ internal class PilotHeatmapView(context: Context) : View(context) {
         val endOfWeek = today.clone() as Calendar
         endOfWeek.add(Calendar.DAY_OF_YEAR, Calendar.SATURDAY - endOfWeek.get(Calendar.DAY_OF_WEEK))
         val cursor = endOfWeek.clone() as Calendar
-        cursor.add(Calendar.DAY_OF_YEAR, -(weeks * 7 - 1))
+        cursor.add(Calendar.DAY_OF_YEAR, -(weeksToShow * 7 - 1))
         val maxCount = max(1, days.values.maxOfOrNull { it.count } ?: 1)
         var lastMonth = -1
 
-        for (week in 0 until weeks) {
+        for (week in 0 until weeksToShow) {
             for (row in 0 until 7) {
                 val key = dayFormat.format(cursor.time)
                 val future = cursor.after(today)
@@ -71,11 +93,21 @@ internal class PilotHeatmapView(context: Context) : View(context) {
                 val x = left + week * step
                 val y = top + row * step
                 val rect = RectF(x, y, x + cell, y + cell)
-                canvas.drawRoundRect(rect, dp(1.5f), dp(1.5f), paint)
-                if (!future) hitRects += RectF(rect) to key
+                canvas.drawRoundRect(rect, dp(3f), dp(3f), paint)
+                if (!future) {
+                    hitRects += RectF(
+                        rect.left - gap / 2f,
+                        rect.top - gap / 2f,
+                        rect.right + gap / 2f,
+                        rect.bottom + gap / 2f,
+                    ) to key
+                    if (key == selectedKey) {
+                        canvas.drawRoundRect(rect, dp(3f), dp(3f), outlinePaint)
+                    }
+                }
                 val month = cursor.get(Calendar.MONTH)
                 if (row == 0 && month != lastMonth && cursor.get(Calendar.DAY_OF_MONTH) <= 7) {
-                    canvas.drawText(monthFormat.format(cursor.time), x, dp(12).toFloat(), textPaint)
+                    canvas.drawText(monthFormat.format(cursor.time), x, dp(14).toFloat(), textPaint)
                     lastMonth = month
                 }
                 cursor.add(Calendar.DAY_OF_YEAR, 1)
@@ -86,6 +118,8 @@ internal class PilotHeatmapView(context: Context) : View(context) {
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (event.action != MotionEvent.ACTION_UP) return true
         val hit = hitRects.firstOrNull { it.first.contains(event.x, event.y) } ?: return true
+        selectedKey = hit.second
+        invalidate()
         onDaySelected?.invoke(days[hit.second] ?: DaySummary(hit.second, 0, 0, 0, null, null))
         performClick()
         return true
