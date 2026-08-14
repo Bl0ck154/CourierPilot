@@ -40,9 +40,12 @@ internal object DeliveryLifecycleTracking {
         val offerId = prefs.getLong("${prefix}_offer", -1L).takeIf { it > 0 } ?: return
         val evidence = detect(text) ?: return
         val now = System.currentTimeMillis()
-        val lastEvent = prefs.getString("${prefix}_last_event", null)
+        val lastType = prefs.getString("${prefix}_last_event", null)
+            ?.let { runCatching { DeliveryEventType.valueOf(it) }.getOrNull() }
+            ?: DeliveryEventType.OFFER_CAPTURED
         val lastAt = prefs.getLong("${prefix}_last_event_at", 0L)
-        if (lastEvent == evidence.type.name && now - lastAt < REPEAT_SUPPRESSION_MS) return
+        if (lastType == evidence.type && now - lastAt < REPEAT_SUPPRESSION_MS) return
+        if (!canAdvance(lastType, evidence.type)) return
 
         val stopKey = stopKey(text, evidence.type)
         record(
@@ -64,6 +67,23 @@ internal object DeliveryLifecycleTracking {
         if (evidence.type == DeliveryEventType.DELIVERED || evidence.type == DeliveryEventType.CANCELLED) {
             prefs.edit().remove("${prefix}_offer").apply()
         }
+    }
+
+    internal fun canAdvance(from: DeliveryEventType, to: DeliveryEventType): Boolean = when (from) {
+        DeliveryEventType.OFFER_CAPTURED -> to in setOf(DeliveryEventType.ACCEPTED, DeliveryEventType.CANCELLED)
+        DeliveryEventType.ACCEPTED -> to in setOf(
+            DeliveryEventType.ARRIVED_PICKUP,
+            DeliveryEventType.PICKED_UP,
+            DeliveryEventType.CANCELLED,
+        )
+        DeliveryEventType.ARRIVED_PICKUP -> to in setOf(DeliveryEventType.PICKED_UP, DeliveryEventType.CANCELLED)
+        DeliveryEventType.PICKED_UP -> to in setOf(
+            DeliveryEventType.ARRIVED_DROPOFF,
+            DeliveryEventType.DELIVERED,
+            DeliveryEventType.CANCELLED,
+        )
+        DeliveryEventType.ARRIVED_DROPOFF -> to in setOf(DeliveryEventType.DELIVERED, DeliveryEventType.CANCELLED)
+        DeliveryEventType.DELIVERED, DeliveryEventType.CANCELLED -> false
     }
 
     internal fun detect(text: String): DeliveryLifecycleEvidence? {
