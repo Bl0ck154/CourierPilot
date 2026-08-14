@@ -29,7 +29,7 @@ internal object DeliveryMemory {
                         context,
                         stage = "access_code",
                         platform = platform,
-                        message = "Building access code learned for ${observation.displayAddress}",
+                        message = "Building access code learned locally",
                         dedupeWindowMs = 30_000L,
                     )
                 }
