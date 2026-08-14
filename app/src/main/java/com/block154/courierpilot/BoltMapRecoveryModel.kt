@@ -1,7 +1,9 @@
 package com.block154.courierpilot
 
 import kotlin.math.PI
+import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.sin
 
 internal data class ScreenPoint(val x: Double, val y: Double)
@@ -27,7 +29,7 @@ internal data class LocalMapTransform(
     }
 
     fun screenToGeo(target: ScreenPoint): RoutePoint {
-        // Android Y grows downward. Convert screen delta into east/north meters first.
+        // Android Y grows downward. Convert screen delta into east/north-like axes first.
         val rawEast = (target.x - anchor.screen.x) * metersPerPixel
         val rawNorth = -(target.y - anchor.screen.y) * metersPerPixel
 
@@ -49,6 +51,41 @@ internal data class LocalMapTransform(
 
     companion object {
         private const val METERS_PER_DEGREE_LATITUDE = 111_320.0
+
+        /**
+         * Derives scale + orientation from two independently known screen/geo anchors. This is useful
+         * if future Bolt research can identify current GPS plus one known landmark/intersection.
+         */
+        fun fromTwoAnchors(first: KnownMapAnchor, second: KnownMapAnchor): LocalMapTransform {
+            val screenDx = second.screen.x - first.screen.x
+            val screenNorth = -(second.screen.y - first.screen.y)
+            val pixelDistance = hypot(screenDx, screenNorth)
+            require(pixelDistance >= 2.0) { "Screen anchors are too close to establish map scale" }
+
+            val averageLatitudeRadians = ((first.geo.latitude + second.geo.latitude) / 2.0) * PI / 180.0
+            val northMeters = (second.geo.latitude - first.geo.latitude) * METERS_PER_DEGREE_LATITUDE
+            val eastMeters = (second.geo.longitude - first.geo.longitude) *
+                METERS_PER_DEGREE_LATITUDE * cos(averageLatitudeRadians)
+            val geoDistance = hypot(eastMeters, northMeters)
+            require(geoDistance >= 1.0) { "Geographic anchors are too close to establish map scale" }
+
+            val rawAngle = atan2(screenNorth, screenDx)
+            val worldAngle = atan2(northMeters, eastMeters)
+            val clockwiseRotation = normalizeDegrees((rawAngle - worldAngle) * 180.0 / PI)
+
+            return LocalMapTransform(
+                anchor = first,
+                metersPerPixel = geoDistance / pixelDistance,
+                clockwiseRotationDegrees = clockwiseRotation,
+            )
+        }
+
+        private fun normalizeDegrees(value: Double): Double {
+            var normalized = value % 360.0
+            if (normalized > 180.0) normalized -= 360.0
+            if (normalized <= -180.0) normalized += 360.0
+            return normalized
+        }
     }
 }
 
