@@ -155,15 +155,53 @@ class OfferDatabase private constructor(context: Context) :
         selection = null,
         args = null,
         limit = limit,
+        offset = 0,
     )
 
     fun recordsSince(since: Long, limit: Int = 5000): List<OfferRecord> = queryOffers(
         selection = "captured_at >= ?",
         args = arrayOf(since.toString()),
         limit = limit,
+        offset = 0,
     )
 
-    private fun queryOffers(selection: String?, args: Array<String>?, limit: Int): List<OfferRecord> {
+    fun searchPage(query: String, limit: Int = 50, offset: Int = 0): List<OfferRecord> {
+        val spec = searchSpec(query)
+        return queryOffers(spec.first, spec.second, limit.coerceIn(1, 200), offset)
+    }
+
+    fun offerCount(query: String = ""): Int {
+        val spec = searchSpec(query)
+        val where = spec.first?.let { " WHERE $it" }.orEmpty()
+        readableDatabase.rawQuery("SELECT COUNT(*) FROM offers$where", spec.second).use { cursor ->
+            return if (cursor.moveToFirst()) cursor.getInt(0) else 0
+        }
+    }
+
+    private fun searchSpec(query: String): Pair<String?, Array<String>?> {
+        val terms = query.trim().lowercase()
+            .split(Regex("\\s+"))
+            .filter(String::isNotBlank)
+            .take(8)
+        if (terms.isEmpty()) return null to null
+        val searchable = """
+            LOWER(
+                COALESCE(platform, '') || ' ' ||
+                COALESCE(package_name, '') || ' ' ||
+                COALESCE(restaurant, '') || ' ' ||
+                COALESCE(merchant_names, '') || ' ' ||
+                COALESCE(pickup_addresses, '') || ' ' ||
+                COALESCE(customer_names, '') || ' ' ||
+                COALESCE(dropoff_addresses, '') || ' ' ||
+                COALESCE(raw_text, '') || ' ' ||
+                COALESCE(screenshot_filename, '')
+            )
+        """.trimIndent()
+        val selection = terms.joinToString(" AND ") { "$searchable LIKE ?" }
+        return selection to terms.map { "%$it%" }.toTypedArray()
+    }
+
+    private fun queryOffers(selection: String?, args: Array<String>?, limit: Int, offset: Int): List<OfferRecord> {
         val out = mutableListOf<OfferRecord>()
         readableDatabase.query(
             "offers",
@@ -173,7 +211,7 @@ class OfferDatabase private constructor(context: Context) :
             null,
             null,
             "captured_at DESC",
-            limit.coerceIn(1, 5000).toString(),
+            "${limit.coerceIn(1, 5000)} OFFSET ${offset.coerceAtLeast(0)}",
         ).use { c ->
             while (c.moveToNext()) out += c.toOfferRecord()
         }

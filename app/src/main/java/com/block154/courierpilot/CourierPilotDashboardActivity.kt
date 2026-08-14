@@ -27,11 +27,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BarChart
+import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Home
-import androidx.compose.material.icons.rounded.Key
+import androidx.compose.material.icons.rounded.Map
 import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.Place
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Storefront
@@ -42,6 +45,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -77,6 +81,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import kotlin.math.ceil
 
 class CourierPilotDashboardActivity : ComponentActivity() {
     private val refreshVersion = mutableIntStateOf(0)
@@ -115,7 +120,7 @@ class CourierPilotDashboardActivity : ComponentActivity() {
     }
 }
 
-private enum class DashboardScreen { HOME, HISTORY, CODES, STATS, SETTINGS }
+private enum class DashboardScreen { HOME, HISTORY, ADDRESSES, STATS, SETTINGS }
 
 @Composable
 private fun DashboardRoot(
@@ -138,7 +143,7 @@ private fun DashboardRoot(
                     listOf(
                         Triple(DashboardScreen.HOME, "Home", Icons.Rounded.Home),
                         Triple(DashboardScreen.HISTORY, "History", Icons.Rounded.History),
-                        Triple(DashboardScreen.CODES, "Codes", Icons.Rounded.Key),
+                        Triple(DashboardScreen.ADDRESSES, "Addresses", Icons.Rounded.Place),
                         Triple(DashboardScreen.STATS, "Stats", Icons.Rounded.BarChart),
                     ).forEach { (target, label, icon) ->
                         NavigationBarItem(
@@ -154,23 +159,40 @@ private fun DashboardRoot(
     ) { padding ->
         when (screen) {
             DashboardScreen.HOME -> DashboardHome(
-                offers,
-                meta,
-                notificationOk,
-                accessibilityOk,
-                padding,
+                offers = offers,
+                meta = meta,
+                notificationOk = notificationOk,
+                accessibilityOk = accessibilityOk,
+                padding = padding,
                 onSettings = { screen = DashboardScreen.SETTINGS },
                 onHistory = { screen = DashboardScreen.HISTORY },
-                onCodes = { screen = DashboardScreen.CODES },
+                onStats = { screen = DashboardScreen.STATS },
                 onOpenOffer = { id ->
-                    context.startActivity(Intent(context, OfferDetailsActivity::class.java).putExtra(OfferDetailsActivity.EXTRA_OFFER_ID, id))
+                    context.startActivity(
+                        Intent(context, OfferDetailsActivity::class.java)
+                            .putExtra(OfferDetailsActivity.EXTRA_OFFER_ID, id)
+                    )
                 },
             )
             DashboardScreen.HISTORY -> DashboardHistory(offers, padding) { id ->
-                context.startActivity(Intent(context, OfferDetailsActivity::class.java).putExtra(OfferDetailsActivity.EXTRA_OFFER_ID, id))
+                context.startActivity(
+                    Intent(context, OfferDetailsActivity::class.java)
+                        .putExtra(OfferDetailsActivity.EXTRA_OFFER_ID, id)
+                )
             }
-            DashboardScreen.CODES -> DashboardCodes(meta, padding)
-            DashboardScreen.STATS -> DashboardStats(offers, meta, padding)
+            DashboardScreen.ADDRESSES -> DashboardAddresses(meta, padding) { id ->
+                context.startActivity(
+                    Intent(context, AddressDetailsActivity::class.java)
+                        .putExtra(AddressDetailsActivity.EXTRA_ADDRESS_ID, id)
+                )
+            }
+            DashboardScreen.STATS -> DashboardStats(
+                offers = offers,
+                meta = meta,
+                padding = padding,
+                onHistory = { screen = DashboardScreen.HISTORY },
+                onAddresses = { screen = DashboardScreen.ADDRESSES },
+            )
             DashboardScreen.SETTINGS -> DashboardSettings(notificationOk, accessibilityOk, padding) {
                 screen = DashboardScreen.HOME
             }
@@ -187,7 +209,7 @@ private fun DashboardHome(
     padding: PaddingValues,
     onSettings: () -> Unit,
     onHistory: () -> Unit,
-    onCodes: () -> Unit,
+    onStats: () -> Unit,
     onOpenOffer: (Long) -> Unit,
 ) {
     val context = LocalContext.current
@@ -195,6 +217,7 @@ private fun DashboardHome(
     val work = meta.workSummarySince(dashStartOfDay(0))
     val today = offers.summarySince(dashStartOfDay(0))
     val recent = offers.recent(4).map { it.withCurrentParsedStructure() }
+    val offersPerHour = dashOffersPerHour(today.count, work.totalMillis)
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -228,7 +251,7 @@ private fun DashboardHome(
                         Spacer(Modifier.size(12.dp))
                         Column(Modifier.weight(1f)) {
                             Text("Capture needs attention", fontWeight = FontWeight.SemiBold)
-                            Text("Open settings to restore the required Android access.", fontSize = 12.sp)
+                            Text("Open settings to restore Android access.", fontSize = 12.sp)
                         }
                         Icon(Icons.Rounded.ChevronRight, contentDescription = null)
                     }
@@ -239,40 +262,28 @@ private fun DashboardHome(
         item { DashboardSection("Today", SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(Date())) }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                DashboardMetric("Offers", today.count.toString(), "priced captures", BrandBlue, Modifier.weight(1f), onHistory)
-                DashboardMetric("Avg offer", dashAveragePrice(today), "today", BrandCyan, Modifier.weight(1f), onHistory)
+                DashboardMetric("Offers", today.count.toString(), "captured", BrandBlue, Modifier.weight(1f), onHistory)
+                DashboardMetric("Avg offer", dashAveragePrice(today), "today", BrandCyan, Modifier.weight(1f), onStats)
             }
         }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                DashboardMetric("Work time", dashDuration(work.totalMillis), "auto-detected", Success, Modifier.weight(1f), {})
-                DashboardMetric("Door codes", meta.accessCodeCount().toString(), "saved locally", Purple, Modifier.weight(1f), onCodes)
+                DashboardMetric("Work time", dashDuration(work.totalMillis), "auto-detected", Success, Modifier.weight(1f), onStats)
+                DashboardMetric("Offers / hour", offersPerHour, "during tracked time", Purple, Modifier.weight(1f), onStats)
             }
         }
 
-        item { DashboardSection("Recent offers", "Tap an offer for its route and screenshot") }
+        item { DashboardSection("Recent offers", "Tap an offer to open all details") }
         if (recent.isEmpty()) {
             item { DashboardEmpty("No priced offers captured yet.") }
         } else {
-            items(recent, key = { it.id }) { record -> DashboardOfferCard(record) { onOpenOffer(record.id) } }
+            items(recent, key = { it.id }) { record ->
+                DashboardOfferCard(record) { onOpenOffer(record.id) }
+            }
             item {
                 TextButton(onClick = onHistory, modifier = Modifier.fillMaxWidth()) {
                     Text("View full history")
                     Icon(Icons.Rounded.ChevronRight, contentDescription = null)
-                }
-            }
-        }
-
-        item {
-            Surface(shape = RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surface) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("How work time is detected", fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "Persistent Wolt/Bolt notifications can start an online session. The courier screen can confirm online/offline. If a notification is swiped away, CourierPilot marks the signal unknown instead of pretending you went offline.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp,
-                    )
                 }
             }
         }
@@ -298,9 +309,15 @@ private fun AutoPresenceHero(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("CourierPilot", color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
-                        Text(if (healthy) "Capture ready · automatic work tracking" else "Android access needs attention", color = Color(0xFFB9C6D8), fontSize = 12.sp)
+                        Text(
+                            if (healthy) "Automatic offer & work tracking" else "Android access needs attention",
+                            color = Color(0xFFB9C6D8),
+                            fontSize = 12.sp,
+                        )
                     }
-                    FilledTonalIconButton(onClick = onSettings) { Icon(Icons.Rounded.Settings, contentDescription = "Settings") }
+                    FilledTonalIconButton(onClick = onSettings) {
+                        Icon(Icons.Rounded.Settings, contentDescription = "Settings")
+                    }
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -309,10 +326,12 @@ private fun AutoPresenceHero(
 
                 Row(verticalAlignment = Alignment.Bottom) {
                     Column(Modifier.weight(1f)) {
-                        Text(if (active) "Online time today" else "Tracked time today", color = Color(0xFFB9C6D8), fontSize = 12.sp)
+                        Text("Online time today", color = Color(0xFFB9C6D8), fontSize = 12.sp)
                         Text(workTime, color = Color.White, fontSize = 25.sp, fontWeight = FontWeight.SemiBold)
                     }
-                    Text(if (active) "● LIVE" else "AUTO", color = if (active) Color(0xFF7EE2A8) else Color(0xFFB9C6D8), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    if (active) {
+                        Text("● LIVE", color = Color(0xFF7EE2A8), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
                 }
             }
         }
@@ -324,70 +343,236 @@ private fun PresencePill(item: PlatformPresence, modifier: Modifier = Modifier) 
     val tint = when (item.state) {
         PresenceSignal.ONLINE -> Color(0xFF7EE2A8)
         PresenceSignal.OFFLINE -> Color(0xFFFF9A8F)
-        PresenceSignal.UNKNOWN -> Color(0xFFFFD180)
+        PresenceSignal.UNKNOWN -> Color(0xFFB9C6D8)
+    }
+    val status = when (item.state) {
+        PresenceSignal.ONLINE -> "Online"
+        PresenceSignal.OFFLINE -> "Offline"
+        PresenceSignal.UNKNOWN -> "No signal"
     }
     Surface(modifier = modifier, color = Color.White.copy(alpha = 0.08f), shape = RoundedCornerShape(16.dp)) {
-        Column(Modifier.padding(12.dp)) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 11.dp)) {
             Text(item.platform, color = Color.White, fontWeight = FontWeight.SemiBold)
-            Text(item.state.name.lowercase().replaceFirstChar(Char::uppercase), color = tint, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-            Text(item.source, color = Color(0xFF9FB0C6), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(status, color = tint, fontSize = 12.sp, fontWeight = FontWeight.Medium)
         }
     }
 }
 
 @Composable
-private fun DashboardHistory(offers: OfferDatabase, padding: PaddingValues, onOpenOffer: (Long) -> Unit) {
-    val records = offers.recent(200).map { it.withCurrentParsedStructure() }
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp, padding.calculateTopPadding() + 12.dp, 16.dp, padding.calculateBottomPadding() + 20.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        item { DashboardSection("Offer history", "Latest 200 priced captures") }
-        if (records.isEmpty()) item { DashboardEmpty("No offers yet.") }
-        else items(records, key = { it.id }) { record -> DashboardOfferCard(record) { onOpenOffer(record.id) } }
-    }
-}
-
-@Composable
-private fun DashboardCodes(meta: CourierMetaDatabase, padding: PaddingValues) {
+private fun DashboardHistory(
+    offers: OfferDatabase,
+    padding: PaddingValues,
+    onOpenOffer: (Long) -> Unit,
+) {
     var query by remember { mutableStateOf("") }
-    val records = meta.searchAccessCodes(query, 200)
+    var page by remember { mutableIntStateOf(0) }
+    val total = offers.offerCount(query)
+    val pageCount = maxOf(1, ceil(total / HISTORY_PAGE_SIZE.toDouble()).toInt())
+    if (page >= pageCount) page = pageCount - 1
+    val records = offers.searchPage(query, HISTORY_PAGE_SIZE, page * HISTORY_PAGE_SIZE)
+        .map { it.withCurrentParsedStructure() }
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp, padding.calculateTopPadding() + 12.dp, 16.dp, padding.calculateBottomPadding() + 20.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        item { DashboardSection("Building access", "Codes learned locally from delivery instructions") }
+        item { DashboardSection("Offer history", "$total captured offers") }
         item {
             OutlinedTextField(
                 value = query,
-                onValueChange = { query = it },
+                onValueChange = {
+                    query = it
+                    page = 0
+                },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                label = { Text("Search address or code") },
-                leadingIcon = { Icon(Icons.Rounded.Key, contentDescription = null) },
+                label = { Text("Search offers") },
+                placeholder = { Text("Venue, address, customer, platform…") },
+                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
             )
         }
+        if (records.isEmpty()) {
+            item { DashboardEmpty(if (query.isBlank()) "No offers yet." else "No offers match this search.") }
+        } else {
+            items(records, key = { it.id }) { record ->
+                DashboardOfferCard(record) { onOpenOffer(record.id) }
+            }
+        }
+        if (total > HISTORY_PAGE_SIZE) {
+            item {
+                PaginationRow(
+                    page = page,
+                    pageCount = pageCount,
+                    onPrevious = { if (page > 0) page-- },
+                    onNext = { if (page + 1 < pageCount) page++ },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DashboardAddresses(
+    meta: CourierMetaDatabase,
+    padding: PaddingValues,
+    onOpenAddress: (Long) -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    var page by remember { mutableIntStateOf(0) }
+    val context = LocalContext.current
+    val total = meta.addressCount(query)
+    val pageCount = maxOf(1, ceil(total / ADDRESS_PAGE_SIZE.toDouble()).toInt())
+    if (page >= pageCount) page = pageCount - 1
+    val records = meta.searchAddresses(query, ADDRESS_PAGE_SIZE, page * ADDRESS_PAGE_SIZE)
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp, padding.calculateTopPadding() + 12.dp, 16.dp, padding.calculateBottomPadding() + 20.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item { DashboardSection("Addresses", "$total buildings saved locally") }
         item {
-            Text(
-                "Only building address + access code are copied here. Customer names and raw instructions are not stored in this memory database.",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 12.sp,
+            OutlinedTextField(
+                value = query,
+                onValueChange = {
+                    query = it
+                    page = 0
+                },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Search addresses") },
+                placeholder = { Text("Street, customer, code…") },
+                leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
             )
         }
-        if (records.isEmpty()) item { DashboardEmpty(if (query.isBlank()) "No access codes learned yet." else "No matches.") }
-        else items(records, key = { it.id }) { item ->
-            Card(shape = RoundedCornerShape(18.dp)) {
-                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.primaryContainer) {
-                        Text(item.code, Modifier.padding(horizontal = 12.dp, vertical = 8.dp), fontWeight = FontWeight.Bold)
+        if (records.isEmpty()) {
+            item { DashboardEmpty(if (query.isBlank()) "No addresses captured yet." else "No addresses match this search.") }
+        } else {
+            items(records, key = { it.id }) { address ->
+                val codes = meta.codesForBuilding(address.buildingKey, 3).map { it.code }.distinct()
+                Card(onClick = { onOpenAddress(address.id) }, shape = RoundedCornerShape(18.dp)) {
+                    Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+                            Icon(Icons.Rounded.Place, contentDescription = null, modifier = Modifier.padding(10.dp))
+                        }
+                        Spacer(Modifier.size(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(address.displayAddress, fontWeight = FontWeight.SemiBold)
+                            val customer = address.latestCustomerName?.takeIf(String::isNotBlank)
+                            if (customer != null) {
+                                Text(customer, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+                            }
+                            Text(
+                                buildString {
+                                    append(address.platform)
+                                    append(" · seen ${address.seenCount}×")
+                                    if (codes.isNotEmpty()) append(" · ${codes.joinToString(" / ")}")
+                                },
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        IconButton(onClick = { context.openAddressInMaps(address.displayAddress) }) {
+                            Icon(Icons.Rounded.Map, contentDescription = "Open in maps")
+                        }
+                        Icon(Icons.Rounded.ChevronRight, contentDescription = null)
                     }
-                    Spacer(Modifier.size(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(item.displayAddress, fontWeight = FontWeight.SemiBold)
-                        Text("${item.platform} · seen ${item.seenCount}× · ${dashShortDate(item.lastSeenAt)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+                }
+            }
+        }
+        if (total > ADDRESS_PAGE_SIZE) {
+            item {
+                PaginationRow(
+                    page = page,
+                    pageCount = pageCount,
+                    onPrevious = { if (page > 0) page-- },
+                    onNext = { if (page + 1 < pageCount) page++ },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DashboardStats(
+    offers: OfferDatabase,
+    meta: CourierMetaDatabase,
+    padding: PaddingValues,
+    onHistory: () -> Unit,
+    onAddresses: () -> Unit,
+) {
+    val today = offers.summarySince(dashStartOfDay(0))
+    val seven = offers.summarySince(dashStartOfDay(6))
+    val thirty = offers.summarySince(dashStartOfDay(29))
+    val workToday = meta.workSummarySince(dashStartOfDay(0))
+    val workSeven = meta.workSummarySince(dashStartOfDay(6))
+    val workThirty = meta.workSummarySince(dashStartOfDay(29))
+    val wolt = offers.summarySince(dashStartOfDay(29), "Wolt")
+    val bolt = offers.summarySince(dashStartOfDay(29), "Bolt")
+    val days = offers.dailyStats(14)
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp, padding.calculateTopPadding() + 12.dp, 16.dp, padding.calculateBottomPadding() + 20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item { DashboardSection("Statistics", "Tap any period to open offer history") }
+        item { StatsPeriod("Today", today, workToday, onHistory) }
+        item { StatsPeriod("Last 7 days", seven, workSeven, onHistory) }
+        item { StatsPeriod("Last 30 days", thirty, workThirty, onHistory) }
+
+        item { DashboardSection("Platforms", "Last 30 days") }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                DashboardMetric("Wolt", wolt.count.toString(), dashAveragePrice(wolt), BrandCyan, Modifier.weight(1f), onHistory)
+                DashboardMetric("Bolt", bolt.count.toString(), dashAveragePrice(bolt), Success, Modifier.weight(1f), onHistory)
+            }
+        }
+
+        item { DashboardSection("Recent days", "Captured offers by day") }
+        if (days.isEmpty()) {
+            item { DashboardEmpty("No daily statistics yet.") }
+        } else {
+            items(days, key = { it.day }) { day ->
+                Card(onClick = onHistory, shape = RoundedCornerShape(18.dp)) {
+                    Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(day.day, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "Wolt ${day.woltCount} · Bolt ${day.boltCount}",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 11.sp,
+                            )
+                        }
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text("${day.count} offers", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                day.averagePriceCents?.let { "€%.2f avg".format(it / 100.0) } ?: "—",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 11.sp,
+                            )
+                        }
+                        Spacer(Modifier.size(8.dp))
+                        Icon(Icons.Rounded.ChevronRight, contentDescription = null)
                     }
+                }
+            }
+        }
+
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                FilledTonalButton(onClick = onHistory, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Rounded.History, contentDescription = null)
+                    Spacer(Modifier.size(6.dp))
+                    Text("History")
+                }
+                FilledTonalButton(onClick = onAddresses, modifier = Modifier.weight(1f)) {
+                    Icon(Icons.Rounded.Place, contentDescription = null)
+                    Spacer(Modifier.size(6.dp))
+                    Text("Addresses")
                 }
             }
         }
@@ -395,34 +580,25 @@ private fun DashboardCodes(meta: CourierMetaDatabase, padding: PaddingValues) {
 }
 
 @Composable
-private fun DashboardStats(offers: OfferDatabase, meta: CourierMetaDatabase, padding: PaddingValues) {
-    val today = offers.summarySince(dashStartOfDay(0))
-    val seven = offers.summarySince(dashStartOfDay(6))
-    val thirty = offers.summarySince(dashStartOfDay(29))
-    val workToday = meta.workSummarySince(dashStartOfDay(0))
-    val workSeven = meta.workSummarySince(dashStartOfDay(6))
-    val workThirty = meta.workSummarySince(dashStartOfDay(29))
-
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp, padding.calculateTopPadding() + 12.dp, 16.dp, padding.calculateBottomPadding() + 20.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item { DashboardSection("Statistics", "Offers + automatically detected online time") }
-        item { StatsPeriod("Today", today, workToday) }
-        item { StatsPeriod("Last 7 days", seven, workSeven) }
-        item { StatsPeriod("Last 30 days", thirty, workThirty) }
-    }
-}
-
-@Composable
-private fun StatsPeriod(label: String, summary: OfferSummary, work: AutomaticWorkSummary) {
-    Card(shape = RoundedCornerShape(20.dp)) {
+private fun StatsPeriod(
+    label: String,
+    summary: OfferSummary,
+    work: AutomaticWorkSummary,
+    onClick: () -> Unit,
+) {
+    Card(onClick = onClick, shape = RoundedCornerShape(20.dp)) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(label, fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(label, Modifier.weight(1f), fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
+                Icon(Icons.Rounded.ChevronRight, contentDescription = null)
+            }
             Row {
-                Text("${summary.count} offers", Modifier.weight(1f))
-                Text(dashAveragePrice(summary), fontWeight = FontWeight.Medium)
+                Text("Offers", Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(summary.count.toString(), fontWeight = FontWeight.Medium)
+            }
+            Row {
+                Text("Average offer", Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(dashAveragePrice(summary))
             }
             Row {
                 Text("Avg €/km", Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -432,12 +608,21 @@ private fun StatsPeriod(label: String, summary: OfferSummary, work: AutomaticWor
                 Text("Online time", Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(dashDuration(work.totalMillis))
             }
+            Row {
+                Text("Offers / hour", Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(dashOffersPerHour(summary.count, work.totalMillis))
+            }
         }
     }
 }
 
 @Composable
-private fun DashboardSettings(notificationOk: Boolean, accessibilityOk: Boolean, padding: PaddingValues, onBack: () -> Unit) {
+private fun DashboardSettings(
+    notificationOk: Boolean,
+    accessibilityOk: Boolean,
+    padding: PaddingValues,
+    onBack: () -> Unit,
+) {
     val context = LocalContext.current
     var autoOpen by remember { mutableStateOf(OfferState.autoOpen(context)) }
     var wakeScreen by remember { mutableStateOf(OfferState.wakeScreen(context)) }
@@ -451,7 +636,7 @@ private fun DashboardSettings(notificationOk: Boolean, accessibilityOk: Boolean,
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Settings", fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
-                    Text("Capture, automation and reliability", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Capture and reliability", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 TextButton(onClick = onBack) { Text("Done") }
             }
@@ -469,12 +654,12 @@ private fun DashboardSettings(notificationOk: Boolean, accessibilityOk: Boolean,
         item {
             Card(shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.padding(16.dp)) {
-                    SettingsSwitchRow("Auto-open real offer notifications", "Strict classifier; unrelated Wolt/Bolt notifications stay untouched.", autoOpen) {
+                    SettingsSwitchRow("Auto-open real offer notifications", "Strict classifier; unrelated notifications stay untouched.", autoOpen) {
                         autoOpen = it
                         OfferState.setAutoOpen(context, it)
                     }
                     HorizontalDivider(Modifier.padding(vertical = 12.dp))
-                    SettingsSwitchRow("Wake screen for offers", "Briefly wakes a sleeping screen after a matched offer notification.", wakeScreen) {
+                    SettingsSwitchRow("Wake screen for offers", "Briefly wakes a sleeping screen after a matched offer.", wakeScreen) {
                         wakeScreen = it
                         OfferState.setWakeScreen(context, it)
                     }
@@ -491,18 +676,16 @@ private fun DashboardSettings(notificationOk: Boolean, accessibilityOk: Boolean,
                 Text("Open Reliability Center")
             }
         }
-        item {
-            Text(
-                "Work sessions are automatic in 0.7.0. There is no Start/End shift control.",
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 12.sp,
-            )
-        }
     }
 }
 
 @Composable
-private fun SettingsStatusCard(label: String, ok: Boolean, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
+private fun SettingsStatusCard(
+    label: String,
+    ok: Boolean,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit,
+) {
     Card(onClick = onClick, shape = RoundedCornerShape(20.dp)) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(icon, contentDescription = null)
@@ -517,7 +700,12 @@ private fun SettingsStatusCard(label: String, ok: Boolean, icon: androidx.compos
 }
 
 @Composable
-private fun SettingsSwitchRow(title: String, subtitle: String, checked: Boolean, onChecked: (Boolean) -> Unit) {
+private fun SettingsSwitchRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onChecked: (Boolean) -> Unit,
+) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(title, fontWeight = FontWeight.Medium)
@@ -529,7 +717,14 @@ private fun SettingsSwitchRow(title: String, subtitle: String, checked: Boolean,
 }
 
 @Composable
-private fun DashboardMetric(label: String, value: String, subtitle: String, accent: Color, modifier: Modifier, onClick: () -> Unit) {
+private fun DashboardMetric(
+    label: String,
+    value: String,
+    subtitle: String,
+    accent: Color,
+    modifier: Modifier,
+    onClick: () -> Unit,
+) {
     Card(onClick = onClick, modifier = modifier, shape = RoundedCornerShape(20.dp)) {
         Column(Modifier.padding(16.dp)) {
             Box(Modifier.size(9.dp).background(accent, RoundedCornerShape(50)))
@@ -545,16 +740,39 @@ private fun DashboardMetric(label: String, value: String, subtitle: String, acce
 private fun DashboardOfferCard(record: OfferRecord, onClick: () -> Unit) {
     Card(onClick = onClick, shape = RoundedCornerShape(18.dp)) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Surface(shape = RoundedCornerShape(14.dp), color = if (record.platform == "Wolt") Color(0xFFE6F7FD) else Color(0xFFEAF8EE)) {
-                Icon(Icons.Rounded.Storefront, contentDescription = null, modifier = Modifier.padding(10.dp), tint = if (record.platform == "Wolt") BrandCyan else Success)
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = if (record.platform == "Wolt") Color(0xFFE6F7FD) else Color(0xFFEAF8EE),
+            ) {
+                Icon(
+                    Icons.Rounded.Storefront,
+                    contentDescription = null,
+                    modifier = Modifier.padding(10.dp),
+                    tint = if (record.platform == "Wolt") BrandCyan else Success,
+                )
             }
             Spacer(Modifier.size(12.dp))
             Column(Modifier.weight(1f)) {
-                Text(record.restaurant ?: record.platform, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("${record.platform} · ${dashShortDate(record.capturedAt)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
-                record.distanceMeters?.let { Text("${"%.1f".format(it / 1000.0)} km", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp) }
+                Text(
+                    record.restaurant ?: record.merchantNames.firstOrNull() ?: record.platform,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val route = record.dropoffAddresses.firstOrNull() ?: record.pickupAddresses.firstOrNull()
+                if (route != null) {
+                    Text(route, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                Text(
+                    "${record.platform} · ${dashShortDate(record.capturedAt)}" +
+                        (record.distanceMeters?.let { " · ${"%.1f".format(it / 1000.0)} km" } ?: ""),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp,
+                )
             }
             Text("€${"%.2f".format(record.priceCents / 100.0)}", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Spacer(Modifier.size(6.dp))
+            Icon(Icons.Rounded.ChevronRight, contentDescription = null)
         }
     }
 }
@@ -574,6 +792,31 @@ private fun DashboardEmpty(text: String) {
     }
 }
 
+@Composable
+private fun PaginationRow(
+    page: Int,
+    pageCount: Int,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit,
+) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        TextButton(onClick = onPrevious, enabled = page > 0) {
+            Icon(Icons.Rounded.ChevronLeft, contentDescription = null)
+            Text("Previous")
+        }
+        Text(
+            "Page ${page + 1} of $pageCount",
+            Modifier.weight(1f),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            fontSize = 12.sp,
+        )
+        TextButton(onClick = onNext, enabled = page + 1 < pageCount) {
+            Text("Next")
+            Icon(Icons.Rounded.ChevronRight, contentDescription = null)
+        }
+    }
+}
+
 private fun dashStartOfDay(daysBack: Int): Long = Calendar.getInstance().apply {
     add(Calendar.DAY_OF_YEAR, -daysBack)
     set(Calendar.HOUR_OF_DAY, 0)
@@ -582,12 +825,27 @@ private fun dashStartOfDay(daysBack: Int): Long = Calendar.getInstance().apply {
     set(Calendar.MILLISECOND, 0)
 }.timeInMillis
 
-private fun dashAveragePrice(summary: OfferSummary): String = summary.averagePriceCents?.let { "€%.2f".format(it / 100.0) } ?: "—"
-private fun dashPerKm(summary: OfferSummary): String = summary.averageEurPerKm?.let { "€%.2f/km".format(it) } ?: "—"
+private fun dashAveragePrice(summary: OfferSummary): String =
+    summary.averagePriceCents?.let { "€%.2f".format(it / 100.0) } ?: "—"
+
+private fun dashPerKm(summary: OfferSummary): String =
+    summary.averageEurPerKm?.let { "€%.2f/km".format(it) } ?: "—"
+
 private fun dashDuration(ms: Long): String {
     val minutes = (ms / 60_000L).coerceAtLeast(0L)
     val hours = minutes / 60L
     val rest = minutes % 60L
     return if (hours > 0) "${hours}h ${rest}m" else "${rest}m"
 }
-private fun dashShortDate(timestamp: Long): String = SimpleDateFormat("d MMM · HH:mm", Locale.getDefault()).format(Date(timestamp))
+
+private fun dashOffersPerHour(offers: Int, workMillis: Long): String {
+    if (workMillis < 60_000L) return "—"
+    val hours = workMillis / 3_600_000.0
+    return "%.1f".format(offers / hours)
+}
+
+private fun dashShortDate(timestamp: Long): String =
+    SimpleDateFormat("d MMM · HH:mm", Locale.getDefault()).format(Date(timestamp))
+
+private const val HISTORY_PAGE_SIZE = 50
+private const val ADDRESS_PAGE_SIZE = 40
