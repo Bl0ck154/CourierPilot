@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="ride_trace"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_ride_trace_short"
+        android:shortcutLongLabel="@string/shortcut_ride_trace_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.block154.courierpilot"
+            android:targetClass="com.block154.courierpilot.RouteTraceActivity" />
+    </shortcut>
+</shortcuts>
