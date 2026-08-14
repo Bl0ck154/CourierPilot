@@ -43,7 +43,7 @@ class OfferAccessibilityService : AccessibilityService() {
                 }
                 Intent.ACTION_USER_PRESENT -> {
                     val pending = OfferState.pending(this@OfferAccessibilityService)
-                    val platform = pending?.let { OfferState.platformLabel(it.packageName) }.orEmpty()
+                    val platform: String = pending?.let { OfferState.platformLabel(it.packageName) } ?: ""
                     CaptureEventLog.append(
                         this@OfferAccessibilityService,
                         stage = "unlocked",
