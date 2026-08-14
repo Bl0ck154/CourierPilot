@@ -30,8 +30,8 @@ android {
         applicationId = "com.block154.courierpilot"
         minSdk = 30
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.5.0"
     }
 
     signingConfigs {
@@ -61,4 +61,5 @@ android {
 
 dependencies {
     implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
+    testImplementation("junit:junit:4.13.2")
 }

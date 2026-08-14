@@ -3,6 +3,10 @@ package com.block154.courierpilot
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityService.ScreenshotResult
 import android.accessibilityservice.AccessibilityService.TakeScreenshotCallback
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.Handler
@@ -21,11 +25,44 @@ class OfferAccessibilityService : AccessibilityService() {
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
     private var captureInFlight = false
     private var lastHandledArmedAt = 0L
+    private var unlockReceiverRegistered = false
 
     private val attemptRunnable = Runnable { attemptCapture() }
 
+    private val unlockReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_ON -> {
+                    CaptureEventLog.append(
+                        this@OfferAccessibilityService,
+                        stage = "screen_on",
+                        message = "Screen became interactive while capture service is running",
+                        dedupeWindowMs = 5_000L,
+                    )
+                    scheduleAttempt(100L)
+                }
+                Intent.ACTION_USER_PRESENT -> {
+                    val pending = OfferState.pending(this@OfferAccessibilityService)
+                    val platform: String = pending?.let { OfferState.platformLabel(it.packageName) } ?: ""
+                    CaptureEventLog.append(
+                        this@OfferAccessibilityService,
+                        stage = "unlocked",
+                        platform = platform,
+                        message = if (pending == null) "Device unlocked; no pending offer" else "Device unlocked; resuming pending capture",
+                    )
+                    if (pending != null && OfferState.autoOpen(this@OfferAccessibilityService)) {
+                        reopenCourierAfterUnlock(pending)
+                    }
+                    scheduleAttempt(50L)
+                }
+            }
+        }
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
+        registerUnlockReceiver()
+        CaptureEventLog.append(this, "accessibility", "Accessibility capture service connected", dedupeWindowMs = 30_000L)
         handler.removeCallbacks(attemptRunnable)
         handler.post(attemptRunnable)
     }
@@ -38,12 +75,48 @@ class OfferAccessibilityService : AccessibilityService() {
         }
     }
 
-    override fun onInterrupt() = Unit
+    override fun onInterrupt() {
+        CaptureEventLog.append(this, "accessibility", "Accessibility service interrupted", dedupeWindowMs = 10_000L)
+    }
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        if (unlockReceiverRegistered) {
+            runCatching { unregisterReceiver(unlockReceiver) }
+            unlockReceiverRegistered = false
+        }
         recognizer.close()
+        CaptureEventLog.append(this, "accessibility", "Accessibility capture service destroyed")
         super.onDestroy()
+    }
+
+    private fun registerUnlockReceiver() {
+        if (unlockReceiverRegistered) return
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(unlockReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(unlockReceiver, filter)
+        }
+        unlockReceiverRegistered = true
+    }
+
+    private fun reopenCourierAfterUnlock(pending: PendingOffer) {
+        val platform = OfferState.platformLabel(pending.packageName)
+        runCatching {
+            val launch = packageManager.getLaunchIntentForPackage(pending.packageName)
+                ?: error("No launcher activity")
+            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            startActivity(launch)
+        }.onSuccess {
+            CaptureEventLog.append(this, "unlock_open", "Requested courier app after unlock", platform)
+        }.onFailure {
+            CaptureEventLog.append(this, "unlock_open_failed", it.javaClass.simpleName, platform)
+        }
     }
 
     private fun attemptCapture() {
@@ -53,14 +126,23 @@ class OfferAccessibilityService : AccessibilityService() {
             scheduleAttempt(IDLE_WATCHDOG_MS)
             return
         }
+        val platform = OfferState.platformLabel(pending.packageName)
 
         if (pending.armedAt != lastHandledArmedAt) {
             lastHandledArmedAt = pending.armedAt
             OfferState.markError(this, "")
+            CaptureEventLog.append(this, "watching", "Started watching for courier offer window", platform)
         }
 
         val target = findCourierWindow(pending)
         if (target == null) {
+            CaptureEventLog.append(
+                this,
+                stage = "window_missing",
+                platform = platform,
+                message = "Courier offer window is not currently available",
+                dedupeWindowMs = 5_000L,
+            )
             scheduleAttempt(WINDOW_RETRY_MS)
             return
         }
@@ -70,8 +152,22 @@ class OfferAccessibilityService : AccessibilityService() {
         val parsed = OfferParser.parse(uiText)
 
         if (parsed.priceCents != null) {
+            CaptureEventLog.append(
+                this,
+                stage = "price_accessibility",
+                platform = platform,
+                message = "Price detected in Accessibility tree",
+                dedupeWindowMs = 3_000L,
+            )
             captureCurrentFrameAndPersist(pending, target.windowId, uiText, parsed)
         } else {
+            CaptureEventLog.append(
+                this,
+                stage = "price_wait",
+                platform = platform,
+                message = "Price not exposed yet; checking current frame with OCR",
+                dedupeWindowMs = 5_000L,
+            )
             captureCurrentFrameForOcr(pending, target.windowId, uiText)
         }
     }
@@ -106,6 +202,13 @@ class OfferAccessibilityService : AccessibilityService() {
                     val bitmap = screenshotToBitmap(screenshot)
                     if (bitmap == null) {
                         captureInFlight = false
+                        CaptureEventLog.append(
+                            this@OfferAccessibilityService,
+                            "bitmap_failed",
+                            "Android screenshot buffer could not be converted",
+                            OfferState.platformLabel(pending.packageName),
+                            dedupeWindowMs = 5_000L,
+                        )
                         scheduleAttempt(adaptiveOcrDelay(pending))
                         return
                     }
@@ -117,6 +220,12 @@ class OfferAccessibilityService : AccessibilityService() {
                             if (combined.isNotBlank()) OfferState.saveUiText(this@OfferAccessibilityService, combined)
                             val parsed = OfferParser.parse(combined)
                             if (parsed.priceCents != null) {
+                                CaptureEventLog.append(
+                                    this@OfferAccessibilityService,
+                                    "price_ocr",
+                                    "Price detected by OCR fallback",
+                                    OfferState.platformLabel(pending.packageName),
+                                )
                                 persistOffer(bitmap, pending, combined, parsed)
                             } else {
                                 bitmap.recycle()
@@ -130,6 +239,13 @@ class OfferAccessibilityService : AccessibilityService() {
                             OfferState.markError(
                                 this@OfferAccessibilityService,
                                 "Waiting for price; OCR not ready: ${error.message ?: error.javaClass.simpleName}",
+                            )
+                            CaptureEventLog.append(
+                                this@OfferAccessibilityService,
+                                "ocr_failed",
+                                error.javaClass.simpleName,
+                                OfferState.platformLabel(pending.packageName),
+                                dedupeWindowMs = 5_000L,
                             )
                             scheduleAttempt(adaptiveOcrDelay(pending).coerceAtLeast(1_500L))
                         }
@@ -157,6 +273,13 @@ class OfferAccessibilityService : AccessibilityService() {
                     val bitmap = screenshotToBitmap(screenshot)
                     if (bitmap == null) {
                         captureInFlight = false
+                        CaptureEventLog.append(
+                            this@OfferAccessibilityService,
+                            "bitmap_failed",
+                            "Final screenshot buffer could not be converted",
+                            OfferState.platformLabel(pending.packageName),
+                            dedupeWindowMs = 5_000L,
+                        )
                         scheduleAttempt(500L)
                         return
                     }
@@ -185,6 +308,7 @@ class OfferAccessibilityService : AccessibilityService() {
         rawText: String,
         parsed: ParsedOffer,
     ) {
+        val platform = OfferState.platformLabel(pending.packageName)
         val current = OfferState.pending(this)
         val stillCurrent = current != null &&
             current.packageName == pending.packageName &&
@@ -193,6 +317,7 @@ class OfferAccessibilityService : AccessibilityService() {
         if (!stillCurrent) {
             bitmap.recycle()
             captureInFlight = false
+            CaptureEventLog.append(this, "stale_callback", "Discarded screenshot from superseded offer", platform)
             scheduleAttempt(100L)
             return
         }
@@ -207,7 +332,7 @@ class OfferAccessibilityService : AccessibilityService() {
 
         try {
             val saved = ScreenshotStore.save(this, bitmap, pending.sourceName)
-            OfferDatabase.get(this).insert(
+            val rowId = OfferDatabase.get(this).insert(
                 OfferRecord(
                     capturedAt = pending.armedAt,
                     platform = OfferParser.platformName(pending.packageName, pending.sourceName),
@@ -228,10 +353,17 @@ class OfferAccessibilityService : AccessibilityService() {
                 )
             )
             OfferState.markCapture(this, saved.filename)
+            CaptureEventLog.append(
+                this,
+                stage = "saved",
+                platform = platform,
+                message = "Offer saved successfully as record #$rowId (${parsed.deliveryCount ?: 1} delivery${if ((parsed.deliveryCount ?: 1) == 1) "" else "ies"})",
+            )
             OfferState.clear(this)
             lastHandledArmedAt = 0L
         } catch (t: Throwable) {
             OfferState.markError(this, "Offer save failed: ${t.message ?: t.javaClass.simpleName}")
+            CaptureEventLog.append(this, "save_failed", t.javaClass.simpleName, platform)
         } finally {
             bitmap.recycle()
             captureInFlight = false
@@ -271,6 +403,13 @@ class OfferAccessibilityService : AccessibilityService() {
             }
         }
         OfferState.markError(this, "Screenshot failed: $reason")
+        CaptureEventLog.append(
+            this,
+            "screenshot_failed",
+            reason,
+            OfferState.platformLabel(pending.packageName),
+            dedupeWindowMs = 5_000L,
+        )
         if (retry) scheduleAttempt(adaptiveOcrDelay(pending).coerceAtLeast(1_200L))
     }
 
@@ -290,15 +429,20 @@ class OfferAccessibilityService : AccessibilityService() {
 
     private fun collectVisibleText(root: AccessibilityNodeInfo): String {
         val queue = ArrayDeque<AccessibilityNodeInfo>()
-        val pieces = LinkedHashSet<String>()
+        val pieces = mutableListOf<String>()
         queue.add(root)
         var visited = 0
+
+        fun addPiece(value: CharSequence?) {
+            val cleaned = value?.toString()?.trim()?.takeIf { it.isNotEmpty() } ?: return
+            if (pieces.lastOrNull() != cleaned) pieces += cleaned
+        }
 
         while (queue.isNotEmpty() && visited < 700) {
             val node = queue.removeFirst()
             visited++
-            node.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let(pieces::add)
-            node.contentDescription?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let(pieces::add)
+            addPiece(node.text)
+            addPiece(node.contentDescription)
             for (i in 0 until node.childCount) node.getChild(i)?.let(queue::addLast)
         }
         return pieces.joinToString("\n")

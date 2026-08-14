@@ -23,6 +23,7 @@ internal object OfferParser {
     )
     private val distanceRegex = Regex("(?i)\\b(\\d+(?:[.,]\\d+)?)\\s*(km|m)\\b")
     private val estimateRegex = Regex("(?i)\\b(\\d{1,3})\\s*-\\s*(\\d{1,3})\\s*min\\b")
+    private val singleMinuteRegex = Regex("(?i)~?\\s*(\\d{1,3})\\s*min\\b")
     private val stackedHeaderRegex = Regex("(?i)^\\s*(\\d+)\\s+deliver(?:y|ies)\\s+from\\s*$")
     private val minuteOnlyRegex = Regex("(?i)^~?\\s*\\d{1,3}\\s*min$")
 
@@ -34,11 +35,7 @@ internal object OfferParser {
         val pickups = stops.filter { it.isMerchant }.map { it.address }.distinct()
         val customers = stops.filterNot { it.isMerchant }.mapNotNull { it.name }.distinct()
         val dropoffs = stops.filterNot { it.isMerchant }.map { it.address }.distinct()
-        val estimate = lines.firstNotNullOfOrNull { line ->
-            estimateRegex.find(line)?.let { match ->
-                match.groupValues[1].toIntOrNull() to match.groupValues[2].toIntOrNull()
-            }
-        }
+        val estimate = parseEstimate(lines)
         val deliveryCount = merchantSummary?.first
             ?: when {
                 customers.isNotEmpty() -> customers.size
@@ -69,14 +66,27 @@ internal object OfferParser {
         }
     }
 
-    private fun normalizedLines(text: String): List<String> {
-        val seen = LinkedHashSet<String>()
-        text.lineSequence()
-            .map { it.trim().replace(Regex("\\s+"), " ") }
-            .filter { it.isNotEmpty() }
-            .forEach(seen::add)
-        return seen.toList()
+    private fun parseEstimate(lines: List<String>): Pair<Int, Int>? {
+        lines.forEach { line ->
+            estimateRegex.find(line)?.let { match ->
+                val min = match.groupValues[1].toIntOrNull()
+                val max = match.groupValues[2].toIntOrNull()
+                if (min != null && max != null && min in 1..240 && max in min..240) return min to max
+            }
+        }
+
+        lines.firstOrNull { priceRegex.containsMatchIn(it) }?.let { priceLine ->
+            singleMinuteRegex.find(priceLine)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                ?.takeIf { it in 1..240 }
+                ?.let { return it to it }
+        }
+        return null
     }
+
+    private fun normalizedLines(text: String): List<String> = text.lineSequence()
+        .map { it.trim().replace(Regex("\\s+"), " ") }
+        .filter { it.isNotEmpty() }
+        .toList()
 
     private fun parseWoltMerchantSummary(lines: List<String>): Pair<Int, List<String>>? {
         lines.forEachIndexed { index, line ->
@@ -99,8 +109,6 @@ internal object OfferParser {
     }
 
     private fun parseBoltMerchant(lines: List<String>): String? {
-        // Bolt exposes the pickup venue/address but normally not route distance/customer details.
-        // Pair the first address-like line with the nearest plausible title immediately above it.
         lines.forEachIndexed { index, line ->
             if (!looksLikeAddress(line)) return@forEachIndexed
             for (i in index - 1 downTo maxOf(0, index - 3)) {
@@ -114,23 +122,33 @@ internal object OfferParser {
     private data class AddressStop(val name: String?, val address: String, val isMerchant: Boolean)
 
     private fun parseAddressStops(lines: List<String>, merchants: List<String>): List<AddressStop> {
-        val out = mutableListOf<AddressStop>()
+        val addresses = mutableListOf<AddressStop>()
+        var addressOrdinal = 0
+
         lines.forEachIndexed { index, line ->
             if (!looksLikeAddress(line)) return@forEachIndexed
-            var name: String? = null
-            for (i in index - 1 downTo maxOf(0, index - 4)) {
-                val candidate = lines[i]
-                if (isStopNameCandidate(candidate)) {
-                    name = candidate
-                    break
-                }
+
+            val candidates = (index - 1 downTo maxOf(0, index - 4))
+                .map { lines[it] }
+                .filter(::isStopNameCandidate)
+            val explicitMerchant = candidates.firstOrNull { candidate ->
+                merchants.any { known -> namesEquivalent(candidate, known) }
             }
-            val merchant = name != null && merchants.any { known ->
-                namesEquivalent(name, known)
+
+            // Accessibility/OCR can omit a repeated merchant label from the Timeline. Courier
+            // offer layouts list pickup stops before customer drop-offs, so the first N address
+            // rows (N = detected merchants) are a safe fallback for pickup classification.
+            val fallbackMerchant = explicitMerchant == null && addressOrdinal < merchants.size
+            val isMerchant = explicitMerchant != null || fallbackMerchant
+            val name = when {
+                explicitMerchant != null -> explicitMerchant
+                fallbackMerchant -> merchants.getOrNull(addressOrdinal)
+                else -> candidates.firstOrNull()
             }
-            out += AddressStop(name, line, merchant)
+            addresses += AddressStop(name, line, isMerchant)
+            addressOrdinal++
         }
-        return out.distinctBy { "${it.name}|${it.address}" }
+        return addresses.distinctBy { "${it.name}|${it.address}" }
     }
 
     private fun namesEquivalent(a: String, b: String): Boolean {
@@ -179,15 +197,14 @@ internal object OfferParser {
     }
 
     private fun parseDistanceMeters(text: String): Int? {
-        val matches = distanceRegex.findAll(text).mapNotNull { match ->
+        return distanceRegex.findAll(text).mapNotNull { match ->
             val value = match.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return@mapNotNull null
             val meters = when (match.groupValues[2].lowercase(Locale.ROOT)) {
                 "km" -> (value * 1000.0).toInt()
                 else -> value.toInt()
             }
             meters.takeIf { it in 1..MAX_DISTANCE_METERS }
-        }.toList()
-        return matches.firstOrNull()
+        }.firstOrNull()
     }
 
     private val GENERIC_LINES = setOf(
@@ -195,7 +212,7 @@ internal object OfferParser {
         "accept", "decline", "reject", "pickup", "dropoff", "delivery",
         "delivery from", "timeline", "route distance", "estimated",
         "expected earnings for the full delivery", "close drawer", "google map", "map marker",
-        "ready", "show map", "priimti", "atmesti", "užduotis", "uzduotis", "užsakymas", "uzsakymas",
+        "ready", "show map", "priimti", "atmesti", "užduotis", "uzduot", "užsakymas", "uzsakymas",
         "принять", "отклонить", "заказ", "задание", "прийняти", "відхилити", "замовлення", "завдання"
     )
 
