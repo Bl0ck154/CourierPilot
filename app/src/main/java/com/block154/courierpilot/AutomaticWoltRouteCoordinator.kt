@@ -77,11 +77,7 @@ internal object AutomaticWoltRouteCoordinator {
                         val comparison = runCatching {
                             RouteComparisonEngine(ValhallaRouteProvider(config)).compare(waypoints.map { it.point })
                         }.getOrElse { failure ->
-                            val failed = RouteComparison(
-                                Result.failure(failure),
-                                Result.failure(failure),
-                            )
-                            failed
+                            RouteComparison(Result.failure(failure), Result.failure(failure))
                         }
                         val anySuccess = comparison.pedestrian.isSuccess || comparison.cycleway.isSuccess
                         val reason = if (anySuccess) null else comparison.pedestrian.exceptionOrNull()?.javaClass?.simpleName ?: "route failed"
@@ -112,15 +108,26 @@ internal object AutomaticWoltRouteCoordinator {
         val label: String?,
     )
 
-    private fun buildStopSpecs(parsed: ParsedOffer): List<StopSpec> = buildList {
-        parsed.pickupAddresses.forEachIndexed { index, address ->
-            add(StopSpec(WaypointKind.PICKUP, address, parsed.merchantNames.getOrNull(index) ?: parsed.restaurant))
+    private fun buildStopSpecs(parsed: ParsedOffer): List<StopSpec> {
+        val ordered = parsed.orderedRouteStops.map { stop ->
+            StopSpec(
+                kind = if (stop.kind == ParsedRouteStopKind.PICKUP) WaypointKind.PICKUP else WaypointKind.DROPOFF,
+                address = stop.address,
+                label = stop.name,
+            )
         }
-        parsed.dropoffAddresses.forEachIndexed { index, address ->
-            add(StopSpec(WaypointKind.DROPOFF, address, parsed.customerNames.getOrNull(index)))
+        val fallback = buildList {
+            parsed.pickupAddresses.forEachIndexed { index, address ->
+                add(StopSpec(WaypointKind.PICKUP, address, parsed.merchantNames.getOrNull(index) ?: parsed.restaurant))
+            }
+            parsed.dropoffAddresses.forEachIndexed { index, address ->
+                add(StopSpec(WaypointKind.DROPOFF, address, parsed.customerNames.getOrNull(index)))
+            }
         }
-    }.filter { it.address.isNotBlank() }
-        .distinctBy { "${it.kind}|${it.address.trim().lowercase()}" }
+        return ordered.ifEmpty { fallback }
+            .filter { it.address.isNotBlank() }
+            .distinctBy { "${it.kind}|${it.address.trim().lowercase()}" }
+    }
 
     private fun resolveNext(
         context: Context,
