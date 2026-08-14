@@ -42,6 +42,33 @@ class OfferParserTest {
     }
 
     @Test
+    fun parsesWoltSingleWhenAccessibilityOmitsRepeatedTimelineMerchant() {
+        val parsed = OfferParser.parse(
+            """
+            €4.48
+            Expected earnings for the full delivery
+            Delivery from
+            Sushi Lounge (Dominikonų g.)
+            Route distance
+            8.4 km
+            Estimated
+            19 - 32 min
+            Timeline
+            1 min
+            Dominikonų g. 6, LT-01131 Vilnius
+            Rasa T.
+            19 min
+            Žirmūnų gatvė 54 81, Vilnius
+            """.trimIndent()
+        )
+
+        assertEquals(listOf("Sushi Lounge (Dominikonų g.)"), parsed.merchantNames)
+        assertEquals(listOf("Dominikonų g. 6, LT-01131 Vilnius"), parsed.pickupAddresses)
+        assertEquals(listOf("Rasa T."), parsed.customerNames)
+        assertEquals(listOf("Žirmūnų gatvė 54 81, Vilnius"), parsed.dropoffAddresses)
+    }
+
+    @Test
     fun parsesRealWoltStackedOffer() {
         val parsed = OfferParser.parse(
             """
