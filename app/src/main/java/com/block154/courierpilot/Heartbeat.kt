@@ -37,8 +37,13 @@ internal object HeartbeatScheduler {
     private const val ACTION_HEARTBEAT = "com.block154.courierpilot.action.HEARTBEAT"
     private const val REQUEST_CODE = 1544
 
+    /**
+     * Application.onCreate() can run many times over the lifetime of an installed app. Re-sending
+     * setInexactRepeating() with the same PendingIntent replaces the previous alarm and moves its
+     * next trigger to now + 4h. Only create the alarm here when it does not already exist.
+     */
     fun ensureScheduled(context: Context) {
-        if (HeartbeatSettings.enabled(context)) schedule(context)
+        if (HeartbeatSettings.enabled(context) && !isScheduled(context)) schedule(context)
     }
 
     fun schedule(context: Context) {
@@ -52,11 +57,22 @@ internal object HeartbeatScheduler {
     }
 
     fun cancel(context: Context) {
+        val existing = existingHeartbeatIntent(context) ?: return
         val alarm = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        alarm.cancel(heartbeatIntent(context))
+        alarm.cancel(existing)
+        existing.cancel()
     }
 
+    fun isScheduled(context: Context): Boolean = existingHeartbeatIntent(context) != null
+
     fun isHeartbeatAction(action: String?): Boolean = action == ACTION_HEARTBEAT
+
+    private fun existingHeartbeatIntent(context: Context): PendingIntent? = PendingIntent.getBroadcast(
+        context,
+        REQUEST_CODE,
+        Intent(context, HeartbeatReceiver::class.java).setAction(ACTION_HEARTBEAT),
+        PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
+    )
 
     private fun heartbeatIntent(context: Context): PendingIntent = PendingIntent.getBroadcast(
         context,
