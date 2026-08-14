@@ -1,0 +1,147 @@
+package com.block154.courierpilot
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class OfferParserTest {
+
+    @Test
+    fun parsesRealWoltSingleOffer() {
+        val parsed = OfferParser.parse(
+            """
+            €4.48
+            Expected earnings for the full delivery
+            Delivery from
+            Sushi Lounge (Dominikonų g.)
+            Route distance
+            8.4 km
+            Estimated
+            19 - 32 min
+            Timeline
+            Sushi Lounge (Dominikonų g.)
+            1 min
+            Dominikonų g. 6, LT-01131 Vilnius
+            Rasa T.
+            19 min
+            Žirmūnų gatvė 54 81, Vilnius
+            Accept
+            """.trimIndent()
+        )
+
+        assertEquals(448, parsed.priceCents)
+        assertEquals(8400, parsed.distanceMeters)
+        assertEquals(listOf("Sushi Lounge (Dominikonų g.)"), parsed.merchantNames)
+        assertEquals(listOf("Dominikonų g. 6, LT-01131 Vilnius"), parsed.pickupAddresses)
+        assertEquals(listOf("Rasa T."), parsed.customerNames)
+        assertEquals(listOf("Žirmūnų gatvė 54 81, Vilnius"), parsed.dropoffAddresses)
+        assertEquals(1, parsed.deliveryCount)
+        assertEquals(19, parsed.estimatedMinutesMin)
+        assertEquals(32, parsed.estimatedMinutesMax)
+    }
+
+    @Test
+    fun parsesRealWoltStackedOffer() {
+        val parsed = OfferParser.parse(
+            """
+            €6.16
+            Expected earnings for the full delivery
+            2 deliveries from
+            Rustam Mangal by Ugruzina, Sushi Masters
+            Route distance
+            9 km
+            Estimated
+            31 - 44 min
+            Timeline
+            Rustam Mangal by Ugruzina
+            4 min
+            Trakų g. 16, LT01132 Vilnius
+            Sushi Masters
+            10 min
+            Totorių g. 24, LT-01121 Vilnius
+            Arnas P.
+            24 min
+            S. Žukausko gatvė 1 Žukausko g. 1-111, Vilnius
+            Софья C.
+            37 min
+            Žirmūnų gatvė 106C, 09121 Vilnius
+            Accept
+            """.trimIndent()
+        )
+
+        assertEquals(616, parsed.priceCents)
+        assertEquals(9000, parsed.distanceMeters)
+        assertEquals(listOf("Rustam Mangal by Ugruzina", "Sushi Masters"), parsed.merchantNames)
+        assertEquals(
+            listOf("Trakų g. 16, LT01132 Vilnius", "Totorių g. 24, LT-01121 Vilnius"),
+            parsed.pickupAddresses,
+        )
+        assertEquals(listOf("Arnas P.", "Софья C."), parsed.customerNames)
+        assertEquals(2, parsed.deliveryCount)
+        assertEquals(31, parsed.estimatedMinutesMin)
+        assertEquals(44, parsed.estimatedMinutesMax)
+    }
+
+    @Test
+    fun parsesSecondRealWoltStackedOffer() {
+        val parsed = OfferParser.parse(
+            """
+            €5.35
+            Expected earnings for the full delivery
+            2 deliveries from
+            Daily Poison, Druska Miltai Vanduo (Jasinskio g.)
+            Route distance
+            5.5 km
+            Estimated
+            16 - 29 min
+            Timeline
+            Daily Poison
+            Ready
+            J. Jasinskio g. 14A - 101, LT01112 Vilnius
+            Druska Miltai Vanduo (Jasinskio g.)
+            7 min
+            Jasinskio g. 2, LT-01112 Vilnius
+            Vadim K.
+            6 min
+            T. Ševčenkos gatvė 16A, 03111 Vilnius
+            jolanta u.
+            13 min
+            Vytenio g. 50, 03202 Vilnius
+            Accept
+            """.trimIndent()
+        )
+
+        assertEquals(535, parsed.priceCents)
+        assertEquals(5500, parsed.distanceMeters)
+        assertEquals(listOf("Daily Poison", "Druska Miltai Vanduo (Jasinskio g.)"), parsed.merchantNames)
+        assertEquals(listOf("Vadim K.", "jolanta u."), parsed.customerNames)
+        assertEquals(2, parsed.deliveryCount)
+        assertEquals(16, parsed.estimatedMinutesMin)
+        assertEquals(29, parsed.estimatedMinutesMax)
+    }
+
+    @Test
+    fun parsesRealBoltOfferWithoutInventingDistance() {
+        val parsed = OfferParser.parse(
+            """
+            Decline
+            Show map
+            TIO BIGOTES Ispaniškos Empanados (Rūdninkų str.)
+            Rūdninkų 8-105, Vilnius
+            ~9 min
+            ~7 min
+            16 min, 4,45 €
+            """.trimIndent()
+        )
+
+        assertEquals(445, parsed.priceCents)
+        assertNull(parsed.distanceMeters)
+        assertEquals(listOf("TIO BIGOTES Ispaniškos Empanados (Rūdninkų str.)"), parsed.merchantNames)
+        assertEquals(listOf("Rūdninkų 8-105, Vilnius"), parsed.pickupAddresses)
+        assertEquals(16, parsed.estimatedMinutesMin)
+        assertEquals(16, parsed.estimatedMinutesMax)
+        assertTrue(parsed.customerNames.isEmpty())
+        assertTrue(parsed.dropoffAddresses.isEmpty())
+    }
+}
