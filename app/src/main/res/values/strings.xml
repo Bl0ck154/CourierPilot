@@ -3,4 +3,6 @@
     <string name="app_name">CourierPilot</string>
     <string name="accessibility_description">Waits for priced Wolt/Bolt offer screens, uses Accessibility/OCR when needed, saves the priced screenshot and records it in local history.</string>
     <string name="bolt_diagnostics_accessibility_description">Research-only one-shot Bolt screen tree dump. It runs only when explicitly armed from CourierPilot and may contain private on-screen delivery data.</string>
+    <string name="shortcut_ride_trace_short">Ride trace</string>
+    <string name="shortcut_ride_trace_long">Record GPS ride trace</string>
 </resources>
