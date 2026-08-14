@@ -196,8 +196,6 @@ internal object CourierSignals {
         val hasStructuredStop = parsed.restaurant != null || parsed.dropoffAddresses.isNotEmpty()
         val hasPrice = parsed.priceCents != null
 
-        // Accepted-delivery screens often contain addresses and euro amounts too. Require either
-        // explicit accept/decline controls, or Wolt's full-delivery earnings label, before arming.
         if (lower.contains("expected earnings for the full delivery") && hasPrice) return true
         if (hasDecision && (hasPrice || hasWoltOfferStructure) && (hasRouteEvidence || hasStructuredStop || hasWoltOfferStructure)) return true
         return hasStrongNotificationStylePhrase && hasDecision && (hasPrice || hasRouteEvidence)
@@ -297,14 +295,9 @@ internal object CourierSignals {
         return shortHash(payload)
     }
 
-    /** Kept for diagnostics/backward compatibility; new capture dedupe uses semantic fingerprint. */
-    fun offerFingerprint(packageName: String, text: String): String {
-        val normalized = text.lineSequence()
-            .map { it.trim().replace(Regex("\\s+"), " ").lowercase(Locale.ROOT) }
-            .filter(String::isNotEmpty)
-            .joinToString("\n")
-        return shortHash("$packageName\n$normalized")
-    }
+    /** Existing callers now receive the semantic fingerprint too. */
+    fun offerFingerprint(packageName: String, text: String): String =
+        offerFingerprint(packageName, OfferParser.parse(text), text)
 
     fun hasStrongOfferIdentity(parsed: ParsedOffer, text: String): Boolean {
         if (parsed.priceCents == null) return false
