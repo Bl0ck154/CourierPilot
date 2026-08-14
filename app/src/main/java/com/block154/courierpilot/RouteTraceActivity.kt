@@ -2,6 +2,7 @@ package com.block154.courierpilot
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -28,6 +29,8 @@ class RouteTraceActivity : Activity() {
     private lateinit var startButton: Button
     private lateinit var stopButton: Button
     private lateinit var shareButton: Button
+    private lateinit var deleteLatestButton: Button
+    private lateinit var deleteAllButton: Button
 
     private val refreshRunnable = object : Runnable {
         override fun run() {
@@ -118,12 +121,16 @@ class RouteTraceActivity : Activity() {
             addView(latestText.top(dp(7)))
             shareButton = button("Share latest as GeoJSON") { shareLatest() }
             addView(shareButton.top(dp(9)))
+            deleteLatestButton = button("Delete latest finished trace") { confirmDeleteLatest() }
+            addView(deleteLatestButton.top(dp(4)))
+            deleteAllButton = button("Delete all finished traces") { confirmDeleteAll() }
+            addView(deleteAllButton.top(dp(3)))
         }.top(dp(10)))
 
         root.addView(card().apply {
             addView(text("Privacy / scope", 15f, TEXT, true))
             addView(text(
-                "Raw GPS samples stay in route_research.db. Recording begins only from this visible screen and remains visibly represented by Android's foreground-service notification. 0.11 does not upload traces or map-match them automatically.",
+                "Raw GPS samples stay in route_research.db. Recording begins only from this visible screen and remains visibly represented by Android's foreground-service notification. Rich GeoJSON export includes point timestamps, accuracy and reported speed. Finished traces can be deleted here. 0.11 does not upload traces or map-match them automatically.",
                 12f,
                 MUTED,
             ).top(dp(6)))
@@ -199,6 +206,8 @@ class RouteTraceActivity : Activity() {
         if (latest == null) {
             latestText.text = "No trace yet."
             shareButton.isEnabled = false
+            deleteLatestButton.isEnabled = false
+            deleteAllButton.isEnabled = false
         } else {
             latestText.text = buildString {
                 append("Session #${latest.sessionId} · ${formatDateTime(latest.startedAt)}")
@@ -208,7 +217,10 @@ class RouteTraceActivity : Activity() {
                 }
                 append(if (latest.endedAt == null) " · open" else " · finished")
             }
+            val finished = latest.endedAt != null
             shareButton.isEnabled = latest.sampleCount >= 2
+            deleteLatestButton.isEnabled = finished && !state.recording
+            deleteAllButton.isEnabled = !state.recording
         }
     }
 
@@ -221,13 +233,41 @@ class RouteTraceActivity : Activity() {
             appendLine("CourierPilot GPS route trace #$id")
             appendLine("Samples: ${points.size}")
             appendLine()
-            append(GpsTraceExport.geoJson(id, points))
+            append(GpsTraceDetailedExport.geoJson(id, points))
         }
         startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
             type = "application/geo+json"
             putExtra(Intent.EXTRA_SUBJECT, "CourierPilot route trace #$id")
             putExtra(Intent.EXTRA_TEXT, body)
         }, "Share private GPS trace"))
+    }
+
+    private fun confirmDeleteLatest() {
+        val db = RouteResearchDatabase.get(this)
+        val latest = db.latestGpsSessionSummary() ?: return
+        if (latest.endedAt == null) return
+        AlertDialog.Builder(this)
+            .setTitle("Delete latest trace?")
+            .setMessage("Delete session #${latest.sessionId} and all of its stored GPS points from this device?")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Delete") { _, _ ->
+                val deleted = db.deleteGpsSession(latest.sessionId)
+                refreshStatus(if (deleted) "Deleted route trace #${latest.sessionId}." else "Trace was not deleted.")
+            }
+            .show()
+    }
+
+    private fun confirmDeleteAll() {
+        if (GpsTraceState.status(this).recording) return
+        AlertDialog.Builder(this)
+            .setTitle("Delete all finished traces?")
+            .setMessage("This permanently removes every finished GPS route-learning session and its points from this device. An active trace is never deleted by this action.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Delete all") { _, _ ->
+                val deleted = RouteResearchDatabase.get(this).deleteAllFinishedGpsSessions()
+                refreshStatus("Deleted $deleted finished trace${if (deleted == 1) "" else "s"}.")
+            }
+            .show()
     }
 
     private fun secondsAgo(timestamp: Long): Long = ((System.currentTimeMillis() - timestamp).coerceAtLeast(0L) / 1000L)
