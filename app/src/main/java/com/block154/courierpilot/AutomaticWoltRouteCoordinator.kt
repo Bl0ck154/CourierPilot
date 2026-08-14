@@ -1,8 +1,11 @@
 package com.block154.courierpilot
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import java.util.Collections
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 internal data class AutomaticRouteOutcome(
     val offerId: Long,
@@ -141,7 +144,7 @@ internal object AutomaticWoltRouteCoordinator {
             return
         }
         val spec = specs[index]
-        RouteResearchGeocoder.resolve(context, spec.address) { result ->
+        resolveStopWithTimeout(context, spec.address) { result ->
             result.onFailure {
                 complete(Result.failure(IllegalStateException("Could not geocode ${spec.kind.name.lowercase()} stop", it)))
             }.onSuccess { point ->
@@ -154,6 +157,26 @@ internal object AutomaticWoltRouteCoordinator {
                 )
                 resolveNext(context, specs, index + 1, resolved, complete)
             }
+        }
+    }
+
+    private fun resolveStopWithTimeout(
+        context: Context,
+        address: String,
+        callback: (Result<RoutePoint>) -> Unit,
+    ) {
+        val completed = AtomicBoolean(false)
+        val handler = Handler(Looper.getMainLooper())
+        val timeout = Runnable {
+            if (completed.compareAndSet(false, true)) {
+                callback(Result.failure(IllegalStateException("Geocoder timed out after ${GEOCODER_TIMEOUT_MS / 1000}s")))
+            }
+        }
+        handler.postDelayed(timeout, GEOCODER_TIMEOUT_MS)
+        RouteResearchGeocoder.resolve(context, address) { result ->
+            if (!completed.compareAndSet(false, true)) return@resolve
+            handler.removeCallbacks(timeout)
+            callback(result)
         }
     }
 
@@ -189,4 +212,6 @@ internal object AutomaticWoltRouteCoordinator {
         fix.accuracyMeters <= 100f -> 0.75
         else -> 0.6
     }
+
+    private const val GEOCODER_TIMEOUT_MS = 7_000L
 }
