@@ -10,26 +10,25 @@ import java.lang.ref.WeakReference
  */
 internal object LiveAdvisorHub {
     private var serviceRef = WeakReference<AccessibilityService>(null)
-    private var advisorRef = WeakReference<LiveOfferAdvisor>(null)
+    private var advisor: LiveOfferAdvisor? = null
 
     fun attach(context: Context) {
         val service = context as? AccessibilityService ?: return
-        if (serviceRef.get() === service && advisorRef.get() != null) return
-        advisorRef.get()?.destroy()
-        val advisor = LiveOfferAdvisor(service)
+        if (serviceRef.get() === service && advisor != null) return
+        advisor?.destroy()
         serviceRef = WeakReference(service)
-        advisorRef = WeakReference(advisor)
+        advisor = LiveOfferAdvisor(service)
     }
 
     /** Hide an older card while CourierPilot is collecting the clean screenshot for a new offer. */
     fun hideForCapture(context: Context) {
         attach(context)
-        advisorRef.get()?.hide()
+        advisor?.hide()
     }
 
     fun onOfferPersisted(offerId: Long, record: OfferRecord) {
         val service = serviceRef.get() ?: return
-        val advisor = advisorRef.get() ?: return
+        val currentAdvisor = advisor ?: return
         val parsed = ParsedOffer(
             priceCents = record.priceCents,
             distanceMeters = record.distanceMeters,
@@ -44,11 +43,11 @@ internal object LiveAdvisorHub {
         )
 
         DeliveryLifecycleTracking.onOfferCaptured(service, record.packageName, offerId, record.capturedAt)
-        advisor.showBase(record.platform, parsed)
+        currentAdvisor.showBase(record.platform, parsed)
         AutomaticWoltRouteCoordinator.start(service, offerId, record.platform, parsed) { outcome ->
             val comparison = outcome.comparison
-            if (comparison != null) advisorRef.get()?.updateRoute(comparison, outcome.waypoints.size)
-            else advisorRef.get()?.updateRouteUnavailable(outcome.failureReason ?: "unknown failure")
+            if (comparison != null) advisor?.updateRoute(comparison, outcome.waypoints.size)
+            else advisor?.updateRouteUnavailable(outcome.failureReason ?: "unknown failure")
         }
     }
 
