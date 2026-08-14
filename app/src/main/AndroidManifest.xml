@@ -15,13 +15,17 @@
         android:theme="@style/Theme.CourierPilot">
 
         <activity
-            android:name=".CourierPilotComposeActivity"
+            android:name=".CourierPilotDashboardActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".CourierPilotComposeActivity"
+            android:exported="false" />
 
         <activity
             android:name=".CourierPilotHomeActivity"
