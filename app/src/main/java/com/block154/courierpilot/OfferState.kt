@@ -26,16 +26,27 @@ internal object OfferState {
     private const val KEY_QUEUED_SOURCE = "queued_source"
     private const val KEY_QUEUED_ARMED_AT = "queued_armed_at"
     private const val KEY_QUEUED_NOTIFICATION = "queued_notification_key"
+    private const val KEY_CAPTURED_NOTIFICATION_PACKAGE = "captured_notification_package"
+    private const val KEY_CAPTURED_NOTIFICATION = "captured_notification_key"
+    private const val KEY_CAPTURED_NOTIFICATION_AT = "captured_notification_at"
     private const val KEY_LAST_CAPTURE = "last_capture"
     private const val KEY_LAST_UI_TEXT = "last_ui_text"
     private const val KEY_LAST_ERROR = "last_error"
     private const val KEY_AUTO_OPEN = "auto_open"
     private const val KEY_WAKE_SCREEN = "wake_screen"
     private const val MAX_PENDING_AGE_MS = 180_000L
+    private const val CAPTURED_NOTIFICATION_TTL_MS = 4L * 60L * 1000L
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
     fun arm(context: Context, packageName: String, sourceName: String, notificationKey: String = ""): ArmResult {
+        if (notificationKey.isNotBlank() &&
+            !notificationKey.startsWith("screen:") &&
+            wasCapturedNotification(context, packageName, notificationKey)
+        ) {
+            return ArmResult.DUPLICATE_UPDATE
+        }
+
         val existing = pending(context)
         if (existing == null) {
             writePending(context, packageName, sourceName, notificationKey, System.currentTimeMillis())
@@ -85,13 +96,18 @@ internal object OfferState {
     }
 
     /**
-     * Called after a successful capture. Record the final semantic identity before clearing the
-     * transaction so a notification-triggered capture and the still-visible screen cannot archive
-     * the same offer again through different trigger paths.
+     * Called only after a successful capture. Besides seeding the semantic screen deduper, retain
+     * the notification instance that produced the capture. Courier apps frequently repost/update
+     * the same StatusBarNotification after the price is already visible; without this tombstone a
+     * cleared transaction was armed again and produced a second/third screenshot + DB row.
      */
     fun clear(context: Context) {
         val current = readPending(context)
         if (current != null) {
+            if (current.notificationKey.isNotBlank() && !current.notificationKey.startsWith("screen:")) {
+                markCapturedNotification(context, current.packageName, current.notificationKey)
+            }
+
             val text = prefs(context).getString(KEY_LAST_UI_TEXT, "").orEmpty()
             if (text.isNotBlank()) {
                 val parsed = OfferParser.parse(text)
@@ -106,6 +122,49 @@ internal object OfferState {
         }
         clearCurrent(context)
         promoteQueued(context)
+    }
+
+    /**
+     * A removed offer notification ends the lifetime of its instance key. Releasing the tombstone
+     * here prevents a later genuine offer from being suppressed when a courier app reuses the same
+     * notification id/tag. The TTL remains a safety net if the OEM never delivers removal.
+     */
+    fun releaseCapturedNotification(context: Context, packageName: String, notificationKey: String) {
+        if (notificationKey.isBlank()) return
+        val p = prefs(context)
+        if (p.getString(KEY_CAPTURED_NOTIFICATION_PACKAGE, "") != packageName) return
+        if (p.getString(KEY_CAPTURED_NOTIFICATION, "") != notificationKey) return
+        p.edit()
+            .remove(KEY_CAPTURED_NOTIFICATION_PACKAGE)
+            .remove(KEY_CAPTURED_NOTIFICATION)
+            .remove(KEY_CAPTURED_NOTIFICATION_AT)
+            .apply()
+    }
+
+    private fun wasCapturedNotification(context: Context, packageName: String, notificationKey: String): Boolean {
+        val p = prefs(context)
+        val previousPackage = p.getString(KEY_CAPTURED_NOTIFICATION_PACKAGE, "").orEmpty()
+        val previousKey = p.getString(KEY_CAPTURED_NOTIFICATION, "").orEmpty()
+        val capturedAt = p.getLong(KEY_CAPTURED_NOTIFICATION_AT, 0L)
+        if (capturedAt == 0L || System.currentTimeMillis() - capturedAt > CAPTURED_NOTIFICATION_TTL_MS) {
+            if (capturedAt != 0L) {
+                p.edit()
+                    .remove(KEY_CAPTURED_NOTIFICATION_PACKAGE)
+                    .remove(KEY_CAPTURED_NOTIFICATION)
+                    .remove(KEY_CAPTURED_NOTIFICATION_AT)
+                    .apply()
+            }
+            return false
+        }
+        return previousPackage == packageName && previousKey == notificationKey
+    }
+
+    private fun markCapturedNotification(context: Context, packageName: String, notificationKey: String) {
+        prefs(context).edit()
+            .putString(KEY_CAPTURED_NOTIFICATION_PACKAGE, packageName)
+            .putString(KEY_CAPTURED_NOTIFICATION, notificationKey)
+            .putLong(KEY_CAPTURED_NOTIFICATION_AT, System.currentTimeMillis())
+            .apply()
     }
 
     private fun readPending(context: Context): PendingOffer? {
@@ -153,6 +212,15 @@ internal object OfferState {
             .remove(KEY_QUEUED_NOTIFICATION)
             .apply()
         if (armed != 0L && System.currentTimeMillis() - armed <= MAX_PENDING_AGE_MS) {
+            if (key.isNotBlank() && !key.startsWith("screen:") && wasCapturedNotification(context, pkg, key)) {
+                CaptureEventLog.append(
+                    context,
+                    stage = "queued_duplicate",
+                    platform = platformLabel(pkg),
+                    message = "Queued notification was already captured; discarded",
+                )
+                return
+            }
             writePending(context, pkg, source, key, armed)
             CaptureEventLog.append(
                 context,
