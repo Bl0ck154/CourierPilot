@@ -59,6 +59,21 @@ internal class RouteResearchDatabase private constructor(context: Context) :
 
         db.execSQL(
             """
+            CREATE TABLE delivery_timeline_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                offer_id INTEGER,
+                event_type TEXT NOT NULL,
+                occurred_at INTEGER NOT NULL,
+                stop_key TEXT,
+                source TEXT NOT NULL,
+                confidence REAL NOT NULL
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX idx_delivery_events_offer_time ON delivery_timeline_events(offer_id, occurred_at)")
+
+        db.execSQL(
+            """
             CREATE TABLE venue_wait_observations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 venue_key TEXT NOT NULL,
