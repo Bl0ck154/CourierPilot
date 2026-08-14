@@ -2,6 +2,7 @@ package com.block154.courierpilot
 
 import android.content.ContentValues
 import android.content.Context
+import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 
@@ -41,6 +42,18 @@ data class DaySummary(
     val averageEurPerKm: Double?,
 )
 
+data class ShiftRecord(
+    val id: Long,
+    val startedAt: Long,
+    val endedAt: Long?,
+)
+
+data class ShiftSummary(
+    val totalMillis: Long,
+    val shiftCount: Int,
+    val active: Boolean,
+)
+
 class OfferDatabase private constructor(context: Context) :
     SQLiteOpenHelper(context.applicationContext, DB_NAME, null, DB_VERSION) {
 
@@ -70,6 +83,7 @@ class OfferDatabase private constructor(context: Context) :
         )
         db.execSQL("CREATE INDEX idx_offers_captured_at ON offers(captured_at)")
         db.execSQL("CREATE INDEX idx_offers_platform ON offers(platform)")
+        createShiftsTable(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -82,6 +96,22 @@ class OfferDatabase private constructor(context: Context) :
             db.execSQL("ALTER TABLE offers ADD COLUMN estimated_min INTEGER")
             db.execSQL("ALTER TABLE offers ADD COLUMN estimated_max INTEGER")
         }
+        if (oldVersion < 3) {
+            createShiftsTable(db)
+        }
+    }
+
+    private fun createShiftsTable(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS shifts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                started_at INTEGER NOT NULL,
+                ended_at INTEGER
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_shifts_started_at ON shifts(started_at)")
     }
 
     fun insert(record: OfferRecord): Long {
@@ -106,43 +136,72 @@ class OfferDatabase private constructor(context: Context) :
         return writableDatabase.insertOrThrow("offers", null, values)
     }
 
-    fun recent(limit: Int = 30): List<OfferRecord> {
+    fun findById(id: Long): OfferRecord? {
+        readableDatabase.query(
+            "offers",
+            null,
+            "id = ?",
+            arrayOf(id.toString()),
+            null,
+            null,
+            null,
+            "1",
+        ).use { cursor ->
+            return if (cursor.moveToFirst()) cursor.toOfferRecord() else null
+        }
+    }
+
+    fun recent(limit: Int = 30): List<OfferRecord> = queryOffers(
+        selection = null,
+        args = null,
+        limit = limit,
+    )
+
+    fun recordsSince(since: Long, limit: Int = 5000): List<OfferRecord> = queryOffers(
+        selection = "captured_at >= ?",
+        args = arrayOf(since.toString()),
+        limit = limit,
+    )
+
+    private fun queryOffers(selection: String?, args: Array<String>?, limit: Int): List<OfferRecord> {
         val out = mutableListOf<OfferRecord>()
         readableDatabase.query(
             "offers",
             null,
-            null,
-            null,
+            selection,
+            args,
             null,
             null,
             "captured_at DESC",
-            limit.coerceIn(1, 1000).toString(),
+            limit.coerceIn(1, 5000).toString(),
         ).use { c ->
-            while (c.moveToNext()) {
-                fun nullableInt(name: String): Int? = c.getColumnIndexOrThrow(name).let { i -> if (c.isNull(i)) null else c.getInt(i) }
-                fun nullableString(name: String): String? = c.getColumnIndexOrThrow(name).let { i -> if (c.isNull(i)) null else c.getString(i) }
-                out += OfferRecord(
-                    id = c.getLong(c.getColumnIndexOrThrow("id")),
-                    capturedAt = c.getLong(c.getColumnIndexOrThrow("captured_at")),
-                    platform = c.getString(c.getColumnIndexOrThrow("platform")),
-                    packageName = c.getString(c.getColumnIndexOrThrow("package_name")),
-                    priceCents = c.getInt(c.getColumnIndexOrThrow("price_cents")),
-                    distanceMeters = nullableInt("distance_meters"),
-                    restaurant = nullableString("restaurant"),
-                    screenshotUri = c.getString(c.getColumnIndexOrThrow("screenshot_uri")),
-                    screenshotFilename = c.getString(c.getColumnIndexOrThrow("screenshot_filename")),
-                    rawText = c.getString(c.getColumnIndexOrThrow("raw_text")),
-                    merchantNames = decodeList(nullableString("merchant_names")),
-                    pickupAddresses = decodeList(nullableString("pickup_addresses")),
-                    customerNames = decodeList(nullableString("customer_names")),
-                    dropoffAddresses = decodeList(nullableString("dropoff_addresses")),
-                    deliveryCount = nullableInt("delivery_count"),
-                    estimatedMinutesMin = nullableInt("estimated_min"),
-                    estimatedMinutesMax = nullableInt("estimated_max"),
-                )
-            }
+            while (c.moveToNext()) out += c.toOfferRecord()
         }
         return out
+    }
+
+    private fun Cursor.toOfferRecord(): OfferRecord {
+        fun nullableInt(name: String): Int? = getColumnIndexOrThrow(name).let { i -> if (isNull(i)) null else getInt(i) }
+        fun nullableString(name: String): String? = getColumnIndexOrThrow(name).let { i -> if (isNull(i)) null else getString(i) }
+        return OfferRecord(
+            id = getLong(getColumnIndexOrThrow("id")),
+            capturedAt = getLong(getColumnIndexOrThrow("captured_at")),
+            platform = getString(getColumnIndexOrThrow("platform")),
+            packageName = getString(getColumnIndexOrThrow("package_name")),
+            priceCents = getInt(getColumnIndexOrThrow("price_cents")),
+            distanceMeters = nullableInt("distance_meters"),
+            restaurant = nullableString("restaurant"),
+            screenshotUri = getString(getColumnIndexOrThrow("screenshot_uri")),
+            screenshotFilename = getString(getColumnIndexOrThrow("screenshot_filename")),
+            rawText = getString(getColumnIndexOrThrow("raw_text")),
+            merchantNames = decodeList(nullableString("merchant_names")),
+            pickupAddresses = decodeList(nullableString("pickup_addresses")),
+            customerNames = decodeList(nullableString("customer_names")),
+            dropoffAddresses = decodeList(nullableString("dropoff_addresses")),
+            deliveryCount = nullableInt("delivery_count"),
+            estimatedMinutesMin = nullableInt("estimated_min"),
+            estimatedMinutesMax = nullableInt("estimated_max"),
+        )
     }
 
     fun summarySince(since: Long, platform: String? = null): OfferSummary {
@@ -196,9 +255,81 @@ class OfferDatabase private constructor(context: Context) :
         return out
     }
 
+    fun activeShift(): ShiftRecord? {
+        readableDatabase.query(
+            "shifts",
+            arrayOf("id", "started_at", "ended_at"),
+            "ended_at IS NULL",
+            null,
+            null,
+            null,
+            "started_at DESC",
+            "1",
+        ).use { c ->
+            if (!c.moveToFirst()) return null
+            return ShiftRecord(c.getLong(0), c.getLong(1), null)
+        }
+    }
+
+    fun startShift(now: Long = System.currentTimeMillis()): Long {
+        activeShift()?.let { return it.id }
+        return writableDatabase.insertOrThrow(
+            "shifts",
+            null,
+            ContentValues().apply { put("started_at", now) },
+        )
+    }
+
+    fun endActiveShift(now: Long = System.currentTimeMillis()): Boolean {
+        val active = activeShift() ?: return false
+        val safeEnd = now.coerceAtLeast(active.startedAt)
+        return writableDatabase.update(
+            "shifts",
+            ContentValues().apply { put("ended_at", safeEnd) },
+            "id = ? AND ended_at IS NULL",
+            arrayOf(active.id.toString()),
+        ) > 0
+    }
+
+    fun shiftsSince(since: Long, limit: Int = 400): List<ShiftRecord> {
+        val out = mutableListOf<ShiftRecord>()
+        readableDatabase.query(
+            "shifts",
+            arrayOf("id", "started_at", "ended_at"),
+            "started_at >= ? OR ended_at >= ? OR ended_at IS NULL",
+            arrayOf(since.toString(), since.toString()),
+            null,
+            null,
+            "started_at DESC",
+            limit.coerceIn(1, 1000).toString(),
+        ).use { c ->
+            while (c.moveToNext()) {
+                out += ShiftRecord(
+                    id = c.getLong(0),
+                    startedAt = c.getLong(1),
+                    endedAt = if (c.isNull(2)) null else c.getLong(2),
+                )
+            }
+        }
+        return out
+    }
+
+    fun shiftSummarySince(since: Long, now: Long = System.currentTimeMillis()): ShiftSummary {
+        val shifts = shiftsSince(since)
+        var total = 0L
+        var active = false
+        shifts.forEach { shift ->
+            val start = shift.startedAt.coerceAtLeast(since)
+            val end = (shift.endedAt ?: now).coerceAtLeast(start)
+            total += end - start
+            if (shift.endedAt == null) active = true
+        }
+        return ShiftSummary(totalMillis = total, shiftCount = shifts.size, active = active)
+    }
+
     companion object {
         private const val DB_NAME = "courier_offers.db"
-        private const val DB_VERSION = 2
+        private const val DB_VERSION = 3
         private const val LIST_SEPARATOR = "\u001F"
 
         @Volatile private var instance: OfferDatabase? = null
