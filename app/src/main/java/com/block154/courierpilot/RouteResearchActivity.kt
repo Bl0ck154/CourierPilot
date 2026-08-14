@@ -248,14 +248,18 @@ class RouteResearchActivity : Activity() {
     private fun runComparison() {
         if (runningRequest?.isDone == false) return
         val config = runCatching { RouteEndpointSettings.load(this).validated() }.getOrElse {
-            showStatus(it.message ?: "Configure and enable the endpoint first.", true); return
+            showStatus(it.message ?: "Configure and enable the endpoint first.", true)
+            return
         }
         val points = runCatching {
             listOf(
                 RoutePoint(parseCoordinate(fromLatField, "start latitude"), parseCoordinate(fromLonField, "start longitude")),
                 RoutePoint(parseCoordinate(toLatField, "end latitude"), parseCoordinate(toLonField, "end longitude")),
             ).also { RouteIntelligencePolicy.validate(RouteRequest(it, RouteProfile.PEDESTRIAN_SHORTCUT)) }
-        }.getOrElse { showStatus(it.message ?: "Invalid coordinates.", true); return }
+        }.getOrElse {
+            showStatus(it.message ?: "Invalid coordinates.", true)
+            return
+        }
 
         runButton.isEnabled = false
         showStatus("Requesting both candidates…", false)
@@ -279,7 +283,10 @@ class RouteResearchActivity : Activity() {
     }
 
     private fun saveVerdict(verdict: RouteComparisonVerdict) {
-        val comparison = currentComparison ?: run { validationStatusText.text = "Run a comparison first."; return }
+        val comparison = currentComparison ?: run {
+            validationStatusText.text = "Run a comparison first."
+            return
+        }
         val start = currentStart ?: return
         val end = currentEnd ?: return
         val id = RouteResearchDatabase.get(this).recordComparison(start, end, comparison, verdict, notesField.text.toString())
@@ -288,13 +295,18 @@ class RouteResearchActivity : Activity() {
     }
 
     private fun shareComparison() {
-        val comparison = currentComparison ?: run { showStatus("Run a comparison first.", true); return }
+        val comparison = currentComparison ?: run {
+            showStatus("Run a comparison first.", true)
+            return
+        }
         val body = buildString {
             appendLine("CourierPilot route research")
             currentStart?.let { appendLine("Start: ${it.latitude},${it.longitude}") }
             currentEnd?.let { appendLine("End: ${it.latitude},${it.longitude}") }
             appendLine(formatComparison(comparison))
-            appendLine(); appendLine("GeoJSON:"); append(RoutePolyline.comparisonGeoJson(comparison))
+            appendLine()
+            appendLine("GeoJSON:")
+            append(RoutePolyline.comparisonGeoJson(comparison))
         }
         startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
@@ -312,9 +324,11 @@ class RouteResearchActivity : Activity() {
                 append("\nLast sample: ${sample.nodeCount} nodes")
                 if (sample.truncated) append(" · tree truncated")
                 append(if (sample.screenshotAvailable) " · screenshot ✓" else " · screenshot missing")
-                append(if (sample.locationAvailable) " · GPS ✓") else append(" · GPS missing")
+                append(if (sample.locationAvailable) " · GPS ✓" else " · GPS missing")
                 sample.locationAgeMillis?.let { append(" (${it / 1000}s old)") }
-            } else append("\nNo saved Bolt sample yet.")
+            } else {
+                append("\nNo saved Bolt sample yet.")
+            }
         }
         boltSampleStatusText.setTextColor(if (armed) AMBER else MUTED)
     }
@@ -371,35 +385,58 @@ class RouteResearchActivity : Activity() {
     }
 
     private fun field(hint: String, value: String): EditText = EditText(this).apply {
-        this.hint = hint; setText(value); setTextColor(TEXT); setHintTextColor(MUTED); setSingleLine(true); textSize = 14f
-        setPadding(dp(12), dp(10), dp(12), dp(10)); background = rounded(Color.WHITE, BORDER, dp(10).toFloat())
+        this.hint = hint
+        setText(value)
+        setTextColor(TEXT)
+        setHintTextColor(MUTED)
+        setSingleLine(true)
+        textSize = 14f
+        setPadding(dp(12), dp(10), dp(12), dp(10))
+        background = rounded(Color.WHITE, BORDER, dp(10).toFloat())
     }
 
     private fun button(label: String, click: () -> Unit): Button = Button(this).apply {
-        text = label; textSize = 12f; isAllCaps = false; setTextColor(BLUE); setOnClickListener { click() }
+        text = label
+        textSize = 12f
+        isAllCaps = false
+        setTextColor(BLUE)
+        setOnClickListener { click() }
     }
 
     private fun section(title: String, subtitle: String): View = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL; addView(text(title, 18f, TEXT, true)); addView(text(subtitle, 12f, MUTED).top(dp(3)))
+        orientation = LinearLayout.VERTICAL
+        addView(text(title, 18f, TEXT, true))
+        addView(text(subtitle, 12f, MUTED).top(dp(3)))
     }
 
     private fun card(): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL; setPadding(dp(16), dp(15), dp(16), dp(15))
-        background = rounded(Color.WHITE, BORDER, dp(18).toFloat()); elevation = dp(1).toFloat()
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(16), dp(15), dp(16), dp(15))
+        background = rounded(Color.WHITE, BORDER, dp(18).toFloat())
+        elevation = dp(1).toFloat()
     }
 
     private fun text(value: String, size: Float, color: Int, bold: Boolean = false): TextView = TextView(this).apply {
-        text = value; textSize = size; setTextColor(color); includeFontPadding = false
+        text = value
+        textSize = size
+        setTextColor(color)
+        includeFontPadding = false
         if (bold) typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
     }
 
     private fun rounded(fill: Int, stroke: Int, radius: Float) = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE; setColor(fill); cornerRadius = radius; setStroke(dp(1), stroke)
+        shape = GradientDrawable.RECTANGLE
+        setColor(fill)
+        cornerRadius = radius
+        setStroke(dp(1), stroke)
     }
 
     private fun <T : View> T.top(value: Int): T {
         layoutParams = (layoutParams as? LinearLayout.LayoutParams)?.apply { topMargin = value }
-            ?: LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = value }
+            ?: LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = value }
         return this
     }
 
