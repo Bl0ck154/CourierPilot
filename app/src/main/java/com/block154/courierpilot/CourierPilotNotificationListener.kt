@@ -4,6 +4,7 @@ import android.app.ActivityOptions
 import android.app.Notification
 import android.app.PendingIntent
 import android.os.Build
+import android.os.PowerManager
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import java.util.Locale
@@ -15,26 +16,74 @@ class CourierPilotNotificationListener : NotificationListenerService() {
         "com.bolt.deliverycourier",
     )
 
+    override fun onListenerConnected() {
+        super.onListenerConnected()
+        CaptureEventLog.append(this, "listener", "Notification listener connected", dedupeWindowMs = 30_000L)
+    }
+
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (sbn.packageName == packageName) return
 
         val sourceName = resolveAppName(sbn.packageName)
         if (!isCourierSource(sbn.packageName, sourceName)) return
-        if (!looksLikeOfferNotification(sbn.notification)) return
+        val platform = OfferState.platformLabel(sbn.packageName)
 
-        val before = OfferState.pending(this)
-        OfferState.arm(this, sbn.packageName, sourceName, sbn.key)
-        val after = OfferState.pending(this)
-        val isNewCurrentOffer = after?.notificationKey == sbn.key && before?.notificationKey != sbn.key
+        if (!looksLikeOfferNotification(sbn.notification)) {
+            CaptureEventLog.append(
+                this,
+                stage = "notification_ignored",
+                platform = platform,
+                message = "Courier notification did not match offer keywords",
+                dedupeWindowMs = 10_000L,
+            )
+            return
+        }
 
-        if (OfferState.autoOpen(this) && isNewCurrentOffer) {
-            openOriginalNotification(sbn.notification.contentIntent, sourceName)
+        CaptureEventLog.append(this, "notification", "Offer-like notification received", platform)
+        val armResult = OfferState.arm(this, sbn.packageName, sourceName, sbn.key)
+        CaptureEventLog.append(
+            this,
+            stage = "armed",
+            platform = platform,
+            message = when (armResult) {
+                ArmResult.ARMED -> "New capture armed"
+                ArmResult.DUPLICATE_UPDATE -> "Duplicate notification update ignored"
+                ArmResult.REPLACED_SAME_PLATFORM -> "New notification replaced pending offer from same platform"
+                ArmResult.QUEUED_OTHER_PLATFORM -> "Offer queued behind active capture from other platform"
+            },
+        )
+
+        val shouldAct = armResult != ArmResult.DUPLICATE_UPDATE && armResult != ArmResult.QUEUED_OTHER_PLATFORM
+        if (shouldAct && OfferState.wakeScreen(this)) {
+            wakeScreenBriefly(platform)
+        }
+        if (shouldAct && OfferState.autoOpen(this)) {
+            openOriginalNotification(sbn.notification.contentIntent, sourceName, platform)
         }
     }
 
-    private fun openOriginalNotification(contentIntent: PendingIntent?, sourceName: String) {
+    @Suppress("DEPRECATION")
+    private fun wakeScreenBriefly(platform: String) {
+        try {
+            val power = getSystemService(POWER_SERVICE) as PowerManager
+            if (power.isInteractive) return
+            val lock = power.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                    PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                    PowerManager.ON_AFTER_RELEASE,
+                "$packageName:offerWake",
+            )
+            lock.acquire(3_000L)
+            CaptureEventLog.append(this, "wake", "Requested a brief screen wake", platform)
+        } catch (t: Throwable) {
+            CaptureEventLog.append(this, "wake_failed", t.javaClass.simpleName, platform)
+        }
+    }
+
+    private fun openOriginalNotification(contentIntent: PendingIntent?, sourceName: String, platform: String) {
         if (contentIntent == null) {
             OfferState.markError(this, "$sourceName notification has no content intent")
+            CaptureEventLog.append(this, "open_failed", "Notification has no content intent", platform)
             return
         }
 
@@ -49,10 +98,13 @@ class CourierPilotNotificationListener : NotificationListenerService() {
             } else {
                 contentIntent.send()
             }
+            CaptureEventLog.append(this, "open_requested", "Sent original courier notification action", platform)
         } catch (_: PendingIntent.CanceledException) {
             OfferState.markError(this, "Could not open $sourceName from its notification")
+            CaptureEventLog.append(this, "open_failed", "Courier notification action was cancelled", platform)
         } catch (t: Throwable) {
             OfferState.markError(this, "Could not open $sourceName: ${t.javaClass.simpleName}")
+            CaptureEventLog.append(this, "open_failed", t.javaClass.simpleName, platform)
         }
     }
 
