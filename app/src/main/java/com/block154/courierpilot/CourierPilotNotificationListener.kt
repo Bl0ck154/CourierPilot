@@ -1,64 +1,108 @@
 package com.block154.courierpilot
 
 import android.app.ActivityOptions
-import android.app.Notification
 import android.app.PendingIntent
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
-import java.util.Locale
 
 class CourierPilotNotificationListener : NotificationListenerService() {
 
-    private val knownCourierPackages = setOf(
-        "com.wolt.courierapp",
-        "com.bolt.deliverycourier",
-    )
+    private val handler = Handler(Looper.getMainLooper())
 
     override fun onListenerConnected() {
         super.onListenerConnected()
         CaptureEventLog.append(this, "listener", "Notification listener connected", dedupeWindowMs = 30_000L)
+        reconcileAllCourierPresence()
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        if (sbn.packageName == packageName) return
-
-        val sourceName = resolveAppName(sbn.packageName)
-        if (!isCourierSource(sbn.packageName, sourceName)) return
+        if (!CourierSignals.isCourierPackage(sbn.packageName)) return
         val platform = OfferState.platformLabel(sbn.packageName)
+        val notification = sbn.notification
 
-        if (!looksLikeOfferNotification(sbn.notification)) {
+        if (CourierSignals.isOfferNotification(notification)) {
+            CaptureEventLog.append(this, "notification", "Strict offer notification matched", platform)
+            val sourceName = resolveAppName(sbn.packageName)
+            val armResult = OfferState.arm(this, sbn.packageName, sourceName, sbn.key)
             CaptureEventLog.append(
                 this,
-                stage = "notification_ignored",
+                stage = "armed",
                 platform = platform,
-                message = "Courier notification did not match offer keywords",
-                dedupeWindowMs = 10_000L,
+                message = when (armResult) {
+                    ArmResult.ARMED -> "New capture armed"
+                    ArmResult.DUPLICATE_UPDATE -> "Duplicate notification update ignored"
+                    ArmResult.REPLACED_SAME_PLATFORM -> "New notification replaced pending offer from same platform"
+                    ArmResult.QUEUED_OTHER_PLATFORM -> "Offer queued behind active capture from other platform"
+                },
             )
+
+            val shouldAct = armResult != ArmResult.DUPLICATE_UPDATE && armResult != ArmResult.QUEUED_OTHER_PLATFORM
+            if (shouldAct && OfferState.wakeScreen(this)) wakeScreenBriefly(platform)
+            if (shouldAct && OfferState.autoOpen(this)) {
+                openOriginalNotification(notification.contentIntent, sourceName, platform)
+            }
             return
         }
 
-        CaptureEventLog.append(this, "notification", "Offer-like notification received", platform)
-        val armResult = OfferState.arm(this, sbn.packageName, sourceName, sbn.key)
+        val notificationText = CourierSignals.notificationText(notification)
+        when (val signal = CourierSignals.detectPresence(notificationText)) {
+            PresenceSignal.ONLINE, PresenceSignal.OFFLINE ->
+                CourierPresence.markExplicitNotification(this, sbn.packageName, signal)
+            PresenceSignal.UNKNOWN -> if (CourierSignals.isOngoingPresenceNotification(notification)) {
+                CourierPresence.markNotificationOnline(this, sbn.packageName)
+            }
+        }
+
         CaptureEventLog.append(
             this,
-            stage = "armed",
+            stage = "notification_ignored",
             platform = platform,
-            message = when (armResult) {
-                ArmResult.ARMED -> "New capture armed"
-                ArmResult.DUPLICATE_UPDATE -> "Duplicate notification update ignored"
-                ArmResult.REPLACED_SAME_PLATFORM -> "New notification replaced pending offer from same platform"
-                ArmResult.QUEUED_OTHER_PLATFORM -> "Offer queued behind active capture from other platform"
-            },
+            message = "Courier notification was not an offer; no auto-open/capture arm",
+            dedupeWindowMs = 20_000L,
         )
+    }
 
-        val shouldAct = armResult != ArmResult.DUPLICATE_UPDATE && armResult != ArmResult.QUEUED_OTHER_PLATFORM
-        if (shouldAct && OfferState.wakeScreen(this)) {
-            wakeScreenBriefly(platform)
+    override fun onNotificationRemoved(sbn: StatusBarNotification) {
+        if (!CourierSignals.isCourierPackage(sbn.packageName)) return
+        if (CourierSignals.isOfferNotification(sbn.notification)) return
+        if (!CourierSignals.isOngoingPresenceNotification(sbn.notification)) return
+
+        // Swiping/removing a persistent notification is not proof that the courier went offline.
+        // Give the app time to repost it, then degrade to UNKNOWN if it stays absent.
+        val packageName = sbn.packageName
+        handler.postDelayed({ reconcilePackagePresence(packageName) }, PRESENCE_REMOVAL_GRACE_MS)
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
+        super.onDestroy()
+    }
+
+    private fun reconcileAllCourierPresence() {
+        CourierSignals.courierPackages.forEach(::reconcilePackagePresence)
+    }
+
+    private fun reconcilePackagePresence(packageName: String) {
+        val active = runCatching { activeNotifications?.filter { it.packageName == packageName }.orEmpty() }
+            .getOrDefault(emptyList())
+        val nonOffer = active.filterNot { CourierSignals.isOfferNotification(it.notification) }
+
+        val explicit = nonOffer.asSequence()
+            .map { CourierSignals.detectPresence(CourierSignals.notificationText(it.notification)) }
+            .firstOrNull { it != PresenceSignal.UNKNOWN }
+        if (explicit != null) {
+            CourierPresence.markExplicitNotification(this, packageName, explicit)
+            return
         }
-        if (shouldAct && OfferState.autoOpen(this)) {
-            openOriginalNotification(sbn.notification.contentIntent, sourceName, platform)
+
+        if (nonOffer.any { CourierSignals.isOngoingPresenceNotification(it.notification) }) {
+            CourierPresence.markNotificationOnline(this, packageName)
+        } else {
+            CourierPresence.markNotificationUnknown(this, packageName)
         }
     }
 
@@ -90,61 +134,30 @@ class CourierPilotNotificationListener : NotificationListenerService() {
         try {
             if (Build.VERSION.SDK_INT >= 34) {
                 val options = ActivityOptions.makeBasic().apply {
-                    setPendingIntentBackgroundActivityStartMode(
-                        ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED,
-                    )
+                    setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
                 }
                 contentIntent.send(this, 0, null, null, null, null, options.toBundle())
             } else {
                 contentIntent.send()
             }
-            CaptureEventLog.append(this, "open_requested", "Sent original courier notification action", platform)
+            CaptureEventLog.append(this, "open_requested", "Sent original offer notification action", platform)
         } catch (_: PendingIntent.CanceledException) {
-            OfferState.markError(this, "Could not open $sourceName from its notification")
-            CaptureEventLog.append(this, "open_failed", "Courier notification action was cancelled", platform)
+            OfferState.markError(this, "Could not open $sourceName from its offer notification")
+            CaptureEventLog.append(this, "open_failed", "Offer notification action was cancelled", platform)
         } catch (t: Throwable) {
             OfferState.markError(this, "Could not open $sourceName: ${t.javaClass.simpleName}")
             CaptureEventLog.append(this, "open_failed", t.javaClass.simpleName, platform)
         }
     }
 
-    private fun resolveAppName(pkg: String): String {
-        return try {
-            val info = packageManager.getApplicationInfo(pkg, 0)
-            packageManager.getApplicationLabel(info).toString()
-        } catch (_: Throwable) {
-            pkg
-        }
+    private fun resolveAppName(pkg: String): String = try {
+        val info = packageManager.getApplicationInfo(pkg, 0)
+        packageManager.getApplicationLabel(info).toString()
+    } catch (_: Throwable) {
+        pkg
     }
 
-    private fun isCourierSource(pkg: String, appName: String): Boolean {
-        if (pkg in knownCourierPackages) return true
-        val identity = "$pkg $appName".lowercase(Locale.ROOT)
-        return identity.contains("wolt courier") ||
-            identity.contains("wolt partner") ||
-            identity.contains("bolt food courier") ||
-            identity.contains("bolt courier")
-    }
-
-    private fun looksLikeOfferNotification(notification: Notification): Boolean {
-        val e = notification.extras
-        val text = buildString {
-            append(e.getCharSequence(Notification.EXTRA_TITLE).orEmpty())
-            append(' ')
-            append(e.getCharSequence(Notification.EXTRA_TEXT).orEmpty())
-            append(' ')
-            append(e.getCharSequence(Notification.EXTRA_BIG_TEXT).orEmpty())
-            append(' ')
-            append(e.getCharSequence(Notification.EXTRA_SUB_TEXT).orEmpty())
-            append(' ')
-            append(notification.tickerText.orEmpty())
-        }.lowercase(Locale.ROOT)
-
-        val offerWords = listOf(
-            "task", "order", "delivery", "offer",
-            "užduot", "uzduot", "užsak", "uzsak", "pristat",
-            "задан", "заказ", "достав", "замов", "завдан",
-        )
-        return offerWords.any(text::contains)
+    companion object {
+        private const val PRESENCE_REMOVAL_GRACE_MS = 20_000L
     }
 }
