@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -25,37 +27,24 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".CourierPilotComposeActivity"
-            android:exported="false" />
+        <activity android:name=".CourierPilotComposeActivity" android:exported="false" />
+        <activity android:name=".CourierPilotHomeActivity" android:exported="false" />
+        <activity android:name=".CourierPilotActivity" android:exported="false" />
+        <activity android:name=".MainActivity" android:exported="false" />
+        <activity android:name=".OfferDetailsActivity" android:exported="false" />
+        <activity android:name=".AddressDetailsActivity" android:exported="false" />
+        <activity android:name=".ReliabilityActivity" android:exported="false" />
+        <activity android:name=".RouteResearchActivity" android:exported="false" />
 
-        <activity
-            android:name=".CourierPilotHomeActivity"
-            android:exported="false" />
-
-        <activity
-            android:name=".CourierPilotActivity"
-            android:exported="false" />
-
-        <activity
-            android:name=".MainActivity"
-            android:exported="false" />
-
-        <activity
-            android:name=".OfferDetailsActivity"
-            android:exported="false" />
-
-        <activity
-            android:name=".AddressDetailsActivity"
-            android:exported="false" />
-
-        <activity
-            android:name=".ReliabilityActivity"
-            android:exported="false" />
-
-        <activity
-            android:name=".RouteResearchActivity"
-            android:exported="false" />
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.researchfiles"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/research_file_paths" />
+        </provider>
 
         <receiver
             android:name=".HeartbeatReceiver"
