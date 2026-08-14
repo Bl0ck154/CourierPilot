@@ -23,6 +23,7 @@ internal object OfferParser {
     )
     private val distanceRegex = Regex("(?i)\\b(\\d+(?:[.,]\\d+)?)\\s*(km|m)\\b")
     private val estimateRegex = Regex("(?i)\\b(\\d{1,3})\\s*-\\s*(\\d{1,3})\\s*min\\b")
+    private val singleMinuteRegex = Regex("(?i)~?\\s*(\\d{1,3})\\s*min\\b")
     private val stackedHeaderRegex = Regex("(?i)^\\s*(\\d+)\\s+deliver(?:y|ies)\\s+from\\s*$")
     private val minuteOnlyRegex = Regex("(?i)^~?\\s*\\d{1,3}\\s*min$")
 
@@ -34,11 +35,7 @@ internal object OfferParser {
         val pickups = stops.filter { it.isMerchant }.map { it.address }.distinct()
         val customers = stops.filterNot { it.isMerchant }.mapNotNull { it.name }.distinct()
         val dropoffs = stops.filterNot { it.isMerchant }.map { it.address }.distinct()
-        val estimate = lines.firstNotNullOfOrNull { line ->
-            estimateRegex.find(line)?.let { match ->
-                match.groupValues[1].toIntOrNull() to match.groupValues[2].toIntOrNull()
-            }
-        }
+        val estimate = parseEstimate(lines)
         val deliveryCount = merchantSummary?.first
             ?: when {
                 customers.isNotEmpty() -> customers.size
@@ -67,6 +64,26 @@ internal object OfferParser {
             "bolt" in value -> "Bolt"
             else -> sourceName.ifBlank { packageName }
         }
+    }
+
+    private fun parseEstimate(lines: List<String>): Pair<Int, Int>? {
+        lines.forEach { line ->
+            estimateRegex.find(line)?.let { match ->
+                val min = match.groupValues[1].toIntOrNull()
+                val max = match.groupValues[2].toIntOrNull()
+                if (min != null && max != null && min in 1..240 && max in min..240) return min to max
+            }
+        }
+
+        // Bolt commonly renders the total offer as e.g. "16 min, 4,45 €" while pickup/drop-off
+        // legs above it have their own ~9 min / ~7 min values. Prefer the minute value on the same
+        // line as the price so we do not mistake one individual leg for total ETA.
+        lines.firstOrNull { priceRegex.containsMatchIn(it) }?.let { priceLine ->
+            singleMinuteRegex.find(priceLine)?.groupValues?.getOrNull(1)?.toIntOrNull()
+                ?.takeIf { it in 1..240 }
+                ?.let { return it to it }
+        }
+        return null
     }
 
     private fun normalizedLines(text: String): List<String> {
@@ -99,8 +116,6 @@ internal object OfferParser {
     }
 
     private fun parseBoltMerchant(lines: List<String>): String? {
-        // Bolt exposes the pickup venue/address but normally not route distance/customer details.
-        // Pair the first address-like line with the nearest plausible title immediately above it.
         lines.forEachIndexed { index, line ->
             if (!looksLikeAddress(line)) return@forEachIndexed
             for (i in index - 1 downTo maxOf(0, index - 3)) {
@@ -125,9 +140,7 @@ internal object OfferParser {
                     break
                 }
             }
-            val merchant = name != null && merchants.any { known ->
-                namesEquivalent(name, known)
-            }
+            val merchant = name != null && merchants.any { known -> namesEquivalent(name, known) }
             out += AddressStop(name, line, merchant)
         }
         return out.distinctBy { "${it.name}|${it.address}" }
