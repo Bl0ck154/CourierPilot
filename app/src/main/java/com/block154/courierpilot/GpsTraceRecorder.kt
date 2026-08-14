@@ -14,6 +14,7 @@ import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import androidx.core.app.ServiceCompat
@@ -46,18 +47,20 @@ internal object GpsTraceState {
     private const val KEY_SESSION_ID = "session_id"
     private const val KEY_STARTED_AT = "started_at"
     private const val KEY_LAST_SAMPLE_AT = "last_sample_at"
+    private const val KEY_HEARTBEAT_AT = "heartbeat_at"
     private const val KEY_SAMPLE_COUNT = "sample_count"
     private const val KEY_DISTANCE_M = "distance_m"
     private const val KEY_RECORDING = "recording"
-    private const val STALE_AFTER_MS = 45_000L
+    private const val STALE_AFTER_MS = 35_000L
 
     fun status(context: Context, now: Long = System.currentTimeMillis()): GpsTraceStatus {
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val sessionId = p.getLong(KEY_SESSION_ID, -1L).takeIf { it > 0 }
         val startedAt = p.getLong(KEY_STARTED_AT, 0L).takeIf { it > 0 }
         val lastSampleAt = p.getLong(KEY_LAST_SAMPLE_AT, 0L).takeIf { it > 0 }
+        val heartbeatAt = p.getLong(KEY_HEARTBEAT_AT, 0L).takeIf { it > 0 }
         val markedRecording = p.getBoolean(KEY_RECORDING, false)
-        val stale = markedRecording && lastSampleAt != null && now - lastSampleAt > STALE_AFTER_MS
+        val stale = markedRecording && (heartbeatAt == null || now - heartbeatAt > STALE_AFTER_MS)
         return GpsTraceStatus(
             sessionId = sessionId,
             startedAt = startedAt,
@@ -73,10 +76,17 @@ internal object GpsTraceState {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putLong(KEY_SESSION_ID, sessionId)
             .putLong(KEY_STARTED_AT, startedAt)
-            .putLong(KEY_LAST_SAMPLE_AT, startedAt)
+            .putLong(KEY_LAST_SAMPLE_AT, 0L)
+            .putLong(KEY_HEARTBEAT_AT, startedAt)
             .putInt(KEY_SAMPLE_COUNT, 0)
             .putLong(KEY_DISTANCE_M, java.lang.Double.doubleToRawLongBits(0.0))
             .putBoolean(KEY_RECORDING, true)
+            .apply()
+    }
+
+    fun heartbeat(context: Context, at: Long) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putLong(KEY_HEARTBEAT_AT, at)
             .apply()
     }
 
@@ -91,6 +101,7 @@ internal object GpsTraceState {
     fun end(context: Context) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putBoolean(KEY_RECORDING, false)
+            .putLong(KEY_HEARTBEAT_AT, System.currentTimeMillis())
             .apply()
     }
 }
@@ -137,11 +148,21 @@ internal object GpsTraceExport {
 
 class GpsTraceService : Service(), LocationListener {
     private lateinit var locationManager: LocationManager
+    private val handler = Handler(Looper.getMainLooper())
     private var sessionId: Long? = null
     private var lastAccepted: GpsTracePoint? = null
     private var sampleCount = 0
     private var distanceMeters = 0.0
-    private var lastNotificationAt = 0L
+
+    private val heartbeatRunnable = object : Runnable {
+        override fun run() {
+            if (sessionId == null) return
+            val now = System.currentTimeMillis()
+            GpsTraceState.heartbeat(this@GpsTraceService, now)
+            updateNotification()
+            handler.postDelayed(this, HEARTBEAT_MS)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -178,12 +199,6 @@ class GpsTraceService : Service(), LocationListener {
             }
         sampleCount++
         GpsTraceState.sample(this, point.recordedAt, sampleCount, distanceMeters)
-
-        val now = System.currentTimeMillis()
-        if (now - lastNotificationAt >= NOTIFICATION_REFRESH_MS) {
-            lastNotificationAt = now
-            notifyForeground(buildNotification())
-        }
     }
 
     override fun onProviderDisabled(provider: String) {
@@ -194,6 +209,7 @@ class GpsTraceService : Service(), LocationListener {
     override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
 
     override fun onDestroy() {
+        handler.removeCallbacks(heartbeatRunnable)
         runCatching { locationManager.removeUpdates(this) }
         finishOpenSession("service_destroyed")
         super.onDestroy()
@@ -202,6 +218,7 @@ class GpsTraceService : Service(), LocationListener {
     private fun startRecording() {
         if (sessionId != null) return
         if (!hasLocationPermission()) {
+            GpsTraceState.end(this)
             stopSelf()
             return
         }
@@ -217,6 +234,8 @@ class GpsTraceService : Service(), LocationListener {
         distanceMeters = 0.0
         lastAccepted = null
         GpsTraceState.begin(this, id, now)
+        handler.removeCallbacks(heartbeatRunnable)
+        handler.post(heartbeatRunnable)
 
         val provider = when {
             runCatching { locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) }.getOrDefault(false) -> LocationManager.GPS_PROVIDER
@@ -244,8 +263,14 @@ class GpsTraceService : Service(), LocationListener {
     }
 
     private fun stopRecording(reason: String) {
+        handler.removeCallbacks(heartbeatRunnable)
         runCatching { locationManager.removeUpdates(this) }
-        finishOpenSession(reason)
+        if (sessionId == null) {
+            runCatching { RouteResearchDatabase.get(this).closeOpenGpsSessions(System.currentTimeMillis()) }
+            GpsTraceState.end(this)
+        } else {
+            finishOpenSession(reason)
+        }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -305,7 +330,7 @@ class GpsTraceService : Service(), LocationListener {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setCategory(Notification.CATEGORY_SERVICE)
-            .addAction(Notification.Action.Builder(null, "Stop trace", stop).build())
+            .addAction(Notification.Action.Builder(R.drawable.ic_stat_courierpilot, "Stop trace", stop).build())
             .build()
     }
 
@@ -325,6 +350,6 @@ class GpsTraceService : Service(), LocationListener {
         const val ACTION_STOP = "com.block154.courierpilot.action.STOP_GPS_TRACE"
         private const val CHANNEL_ID = "courierpilot_route_trace"
         private const val NOTIFICATION_ID = 1710
-        private const val NOTIFICATION_REFRESH_MS = 10_000L
+        private const val HEARTBEAT_MS = 10_000L
     }
 }
