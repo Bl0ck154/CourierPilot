@@ -1,189 +1,168 @@
 # Route Intelligence Implementation Status
 
-Status: real-device Valhalla/Bolt research workflow implemented; automatic offer-time routing still disabled
+Status: 0.10 adds a fail-safe live advisor and opt-in automatic Wolt route experiment; Bolt coordinate recovery and personalized routing still require real evidence.
 
-This file distinguishes the testable 0.9 research tools from later production routing and personalized learning.
+This file distinguishes what is compiled and wired now from what remains research.
 
 ## Implemented now
 
-### Provider-neutral route domain
+### Core capture remains the hard boundary
 
-`RouteIntelligence.kt` defines:
+CourierPilot still saves the clean priced-offer screenshot and inserts the offer into `courier_offers.db` before any live-advisor, geocoder, GPS or Valhalla work starts.
 
-- route points;
-- route requests/results;
-- pedestrian-shortcut and cycleway-biased research profiles;
-- a provider-neutral `RouteProvider` boundary;
-- validation constraints;
-- `PRODUCTION_ENABLED = false`.
-
-Production offer capture does not depend on routing and remains functional if route research is disabled, offline or broken.
-
-### Protected Valhalla client
-
-`ValhallaRouteProvider`:
-
-- accepts only an explicitly enabled HTTPS endpoint;
-- sends the token via `Authorization: Bearer ...`;
-- uses bounded connect/read timeouts and a 2 MiB response limit;
-- returns non-2xx responses as failures;
-- preserves HTTP status, Valhalla warnings, distance, generic duration and encoded route shapes;
-- never writes the token or route coordinates into privacy-safe diagnostics.
-
-The validated deployment is available at `https://valhalla.zivkr.pp.ua`. The token remains VPS/device-only and is not committed to GitHub.
-
-The public gateway currently exposes protected `/route` and `/status`. The future `/trace_attributes` map-matching endpoint is intentionally not part of the 0.9 public surface.
-
-### Real-phone route validation
-
-`RouteResearchActivity` is now usable without manually discovering the phone coordinates elsewhere.
-
-It supports:
-
-1. one-shot foreground current-location acquisition;
-2. Android address geocoding for the test destination;
-3. manual coordinate editing as a fallback;
-4. pedestrian-shortcut and cycleway-biased requests to the self-hosted Valhalla service;
-5. distance, generic ETA and warnings;
-6. Polyline6 decoding;
-7. a native geometry-only comparison preview;
-8. shareable GeoJSON for deliberate private debugging;
-9. a local verdict plus optional note for each known Vilnius route.
-
-The preview is intentionally not presented as a full navigation map. Its purpose is to make detours and candidate differences visible while collecting a trusted corpus.
-
-See `ROUTE_RESEARCH_TESTING.md` for the exact phone workflow.
-
-### Foreground location boundary
-
-0.9 adds coarse/fine location permissions for explicit research actions only.
-
-`RouteResearchLocation` can:
-
-- request a fresh current location while the research activity is open;
-- choose between available GPS/network fixes;
-- expose accuracy, provider and fix age;
-- read the best cached fix for an armed Bolt research sample.
-
-There is no background-location permission and no continuous GPS logger wired into production in 0.9.
-
-### Destination geocoding
-
-`RouteResearchGeocoder` uses the Android geocoder as a best-effort research helper. The resulting coordinates remain visible/editable and must not be treated as infallible ground truth.
-
-The route-domain `AddressGeocoder` boundary is also present for later replacement with a more controlled provider if needed.
-
-### Local Vilnius validation corpus
-
-The isolated `route_research.db` now stores:
-
-- route comparisons;
-- both candidate results;
-- start/end coordinates;
-- user verdict (`pedestrian better`, `cycleway better`, `both usable`, `both bad`);
-- optional notes.
-
-The schema also reserves isolated research tables for later GPS samples, matched edge traversals, delivery lifecycle events, venue waits and Bolt ground truth. Production offer persistence never depends on this database.
-
-### Bolt full research sample
-
-The separate `BoltAccessibilityDiagnosticsService` remains scoped to `com.bolt.deliverycourier` and independent from `OfferAccessibilityService`.
-
-One explicit arm action is consumed exactly once. The resulting private sample can contain:
-
-- `accessibility-tree.txt` — bounded hierarchy including text/content descriptions/view IDs/screen bounds;
-- `screen.png` — screenshot of the same research frame when Android permits screenshot capture;
-- `metadata.json` — timestamp, screen dimensions and best available cached phone GPS with accuracy/age/provider.
-
-The tree remains capped at 1,500 nodes / roughly 180k characters. The sample stays in app-private storage until the user deliberately shares it through the restricted research `FileProvider` or clears it.
-
-IMPORTANT: the sample can contain customer, merchant and exact-location data. It is not copied into the normal privacy-safe Capture event log and should not be posted publicly.
-
-### Bolt map-coordinate recovery model
-
-`BoltMapRecoveryModel.kt` provides the conservative geometry layer for later analysis:
-
-- screen marker evidence;
-- current-location anchor;
-- local screen→geo projection;
-- map scale/orientation derived from two independently known screen+geographic anchors;
-- explicit refusal to project when scale/orientation evidence is missing.
-
-No Bolt pickup/drop-off coordinate is fabricated automatically in 0.9.
-
-### Future personal-routing models compiled but dormant
-
-The selective port from the superseded route-intelligence draft includes:
-
-- `RoutePlanning.kt` — resolved/unresolved waypoints with coordinate provenance/confidence;
-- `DeliveryTimeline.kt` — observed delivery lifecycle and pickup-wait derivation;
-- `OfferEconomics.kt` — transparent route-distance/time based €/km and effective €/h arithmetic;
-- `PersonalRouteLearning.kt` — conservative median segment times and venue waits with minimum sample thresholds;
-- `ValhallaMapMatchingContract.kt` — future `/trace_attributes` payload/parser for GPS→OSM edge matching.
-
-These models are scaffolding. They are not connected to automatic offer decisions.
-
-## Intentionally not implemented yet
-
-### Production offer-time routing
-
-`RouteIntelligencePolicy.PRODUCTION_ENABLED` remains `false`.
-
-Do not wire the network request into the offer-capture critical path until the Vilnius validation corpus demonstrates that the route candidates are trustworthy enough. A routing timeout/failure must never delay priced-offer persistence.
-
-### Automatic Wolt offer routing
-
-Wolt text addresses can already be parsed in many offers, but 0.9 does not automatically execute:
-
-`current GPS → pickup address → drop-off address → coordinates → Valhalla`
-
-The research geocoder proves the shape of this workflow; automatic wiring should follow only after route validation and address-resolution behavior are reviewed.
-
-### Bolt pickup/drop-off recovery
-
-Real samples are still the dependency.
-
-Collect several full Bolt samples and investigate in this order:
-
-1. hidden marker semantics/content descriptions;
-2. stable map/marker view IDs and bounds;
-3. current-location marker and route-line geometry;
-4. viewport/zoom/orientation clues;
-5. recover scale/orientation from independently known anchors where possible;
-6. compare recovered coordinates against eventual ground truth.
-
-Never fabricate a Bolt coordinate to make the pipeline look complete.
-
-### Continuous GPS / personal segment learning
-
-0.9 does not continuously record courier movement.
-
-Before enabling the future personalized ETA feature, implement an explicit user-controlled tracking lifecycle and verify battery/privacy behavior. Then expose the protected Valhalla `/trace_attributes` endpoint and map real GPS traces to OSM edges.
-
-Personal segment timing should only influence estimates after the configured minimum sample count is met; the current model requires five real traversals of a segment. Venue-wait statistics similarly require repeated real observations.
+Post-capture helpers are wrapped as best-effort work. A route failure cannot roll back an archived offer.
 
 ### Live offer advisor
 
-The intended later calculation is transparent rather than a magic rating:
+0.10 can show a temporary post-capture Accessibility overlay with:
 
-`offer price + real route distance/time + observed venue wait + handoff overhead → €/km and effective €/h`
+- platform price;
+- platform-provided distance and ETA when available;
+- transparent €/km;
+- transparent €/h range derived from the platform ETA;
+- optional voice summary;
+- an explicit Wolt-route toggle;
+- no Accept/Decline automation and no hidden GOOD/BAD verdict.
 
-No auto-accept/auto-reject behavior is planned as part of this research path.
+The overlay is hidden while a new offer screenshot is being collected so CourierPilot does not intentionally draw itself into the clean proof image.
 
-## Validation gates before active routing behavior
+### Ordered Wolt stop model
 
-- Android CI/tests green;
-- protected Valhalla `/route` smoke tests in Vilnius; **completed 2026-08-14**;
-- current-location button works on a real phone;
-- destination geocoding reviewed against known Vilnius addresses;
-- 10–20 known Vilnius route comparisons saved with verdicts;
-- stair-heavy/pathologically long candidates identified and rejected/tuned;
-- at least several full Bolt samples captured from real offers;
-- recovered Bolt coordinates, if implemented, checked against real ground truth;
-- production capture remains independent;
-- no raw Bolt sample is added to normal diagnostics/logs;
-- continuous/background location is not introduced accidentally.
+`OfferParser` now preserves the sequential route Timeline in `orderedRouteStops` instead of relying only on separate pickup/drop-off arrays.
 
-## Superseded draft
+This matters for stacked jobs such as:
 
-Old draft PR #13 contains the original broad route-intelligence scaffolding but has diverged substantially from current `main`. Useful model pieces have been selectively ported into the 0.9 work. The obsolete duplicate HTTP provider from that draft should not be merged.
+`current → pickup A → drop-off 1 → pickup B → drop-off 2`
+
+The automatic route coordinator uses this captured order when available and only falls back to pickup-list-then-drop-off-list when no ordered Timeline was parsed.
+
+### Opt-in automatic Wolt route experiment
+
+Automatic Wolt routing is **off by default** and is separate from merely configuring the manual Valhalla endpoint.
+
+When explicitly enabled after an offer was already persisted, `AutomaticWoltRouteCoordinator`:
+
+1. obtains one fresh foreground device-location fix;
+2. reparses the captured Wolt offer text;
+3. keeps the captured Timeline order;
+4. geocodes each required textual stop;
+5. fails closed if any required stop cannot be resolved;
+6. requests both `PEDESTRIAN_SHORTCUT` and `CYCLEWAY_BIASED` from the protected self-hosted Valhalla endpoint;
+7. returns both candidates without selecting a winner.
+
+Platform-provided and calculated route metrics remain separate.
+
+### Route provenance storage
+
+`route_research.db` is now schema version 2. It retains the existing manual validation corpus and adds isolated live-advisor research tables for:
+
+- advisor runs linked to the local offer ID;
+- platform price/distance/ETA snapshot;
+- current-location accuracy;
+- resolved ordered waypoints;
+- waypoint kind, coordinate provenance and confidence;
+- both Valhalla candidate summaries;
+- route failure reason when the run fails closed.
+
+This data is local and intentionally separate from privacy-safe Reliability diagnostics.
+
+### Conservative offer → outcome groundwork
+
+A durably persisted offer records `OFFER_CAPTURED` with confidence 1.0.
+
+Later lifecycle events are recorded only when explicit courier-screen text matches a recognized cue **and** the transition is monotonic:
+
+`OFFER_CAPTURED → ACCEPTED → ARRIVED_PICKUP → PICKED_UP → ARRIVED_DROPOFF → DELIVERED`
+
+`CANCELLED` can terminate permitted in-progress states. A disappearing offer or generic screen change is not evidence of acceptance/completion.
+
+This is intentionally sparse. Missing explicit UI cues produce missing lifecycle data rather than an invented outcome.
+
+### Manual Valhalla research remains available
+
+The 0.9 research harness is unchanged in purpose:
+
+- one-shot foreground current location;
+- destination address geocoding;
+- pedestrian vs cycleway comparison;
+- Polyline6 geometry preview;
+- GeoJSON sharing;
+- local route verdict and notes.
+
+The protected endpoint is `https://valhalla.zivkr.pp.ua`; the bearer token remains device/VPS-only.
+
+### Bolt full research sample remains available
+
+The separate `BoltAccessibilityDiagnosticsService` can capture one explicitly armed private sample containing:
+
+- bounded Accessibility tree;
+- matching screenshot when Android permits it;
+- screen dimensions/timestamp;
+- best cached phone GPS fix and its age/accuracy/provider.
+
+Raw Bolt research data may contain customer/location information and is never copied into normal privacy-safe diagnostics.
+
+### Compiled future models
+
+The repository also contains dormant/statistical groundwork for:
+
+- route waypoint provenance;
+- Bolt screen→geo transform with refusal when scale/orientation evidence is absent;
+- delivery timeline analysis;
+- route economics;
+- median personal segment speed estimates after minimum samples;
+- restaurant wait statistics after minimum samples;
+- Valhalla `/trace_attributes` map-matching contract.
+
+## Still blocked / not claimed complete
+
+### Preferred scooter route
+
+0.10 deliberately displays both stock Valhalla candidates. The app still needs a real Vilnius validation corpus before one profile can be tuned or preferred confidently.
+
+Do not relabel generic Valhalla duration as personalized Ninebot ETA.
+
+### Bolt pickup/drop-off coordinates
+
+Real Bolt samples are still the dependency. Investigate actual marker semantics/bounds/viewport evidence first and validate any recovered coordinates against ground truth.
+
+Never fabricate a coordinate merely to complete the product flow.
+
+### Reliable full delivery outcomes
+
+The explicit state machine is groundwork, not a complete accepted/completed detector. Platform wording and screen states need real-device samples. The tracker intentionally misses transitions rather than linking a later delivery to the wrong offer.
+
+### Continuous GPS and personalized ETA
+
+There is still no background-location permission and no continuous courier GPS logger.
+
+Before personalized routing can affect the advisor:
+
+1. implement an explicit user-controlled active-delivery/shift tracking lifecycle;
+2. test battery/privacy behavior;
+3. expose protected `/trace_attributes` if needed;
+4. map-match real traces;
+5. accumulate enough segment and venue-wait samples;
+6. only then replace generic estimates where sample support is sufficient.
+
+## Next evidence/development order
+
+1. Install/test 0.10 live advisor on real Wolt offers.
+2. Verify actual Wolt Timeline order and Android geocoding on stacked offers.
+3. Collect 10–20 Vilnius route comparisons / live route runs.
+4. Collect several full real Bolt map samples.
+5. Tune/choose routing profile only from that evidence.
+6. Extend explicit delivery lifecycle cues from real Wolt/Bolt screens.
+7. Add opt-in active-work GPS trace collection and map matching.
+8. Feed personal segment times + real venue waits into effective €/h only after minimum sample thresholds are met.
+
+## Safety invariants
+
+- clean offer persistence precedes advisor/network work;
+- automatic Wolt routing is independently switchable and off by default;
+- routing failure never blocks offer capture;
+- no auto-accept/auto-reject;
+- platform vs calculated metrics retain provenance;
+- no fabricated Bolt coordinate;
+- no continuous/background location permission in 0.10;
+- raw customer/address/GPS data stays out of privacy-safe diagnostics.
