@@ -167,7 +167,7 @@ class OfferDatabase private constructor(context: Context) :
 
     fun searchPage(query: String, limit: Int = 50, offset: Int = 0): List<OfferRecord> {
         val spec = searchSpec(query)
-        return queryOffers(spec.first, spec.second, limit, offset)
+        return queryOffers(spec.first, spec.second, limit.coerceIn(1, 200), offset)
     }
 
     fun offerCount(query: String = ""): Int {
@@ -211,7 +211,7 @@ class OfferDatabase private constructor(context: Context) :
             null,
             null,
             "captured_at DESC",
-            "${limit.coerceIn(1, 200)} OFFSET ${offset.coerceAtLeast(0)}",
+            "${limit.coerceIn(1, 5000)} OFFSET ${offset.coerceAtLeast(0)}",
         ).use { c ->
             while (c.moveToNext()) out += c.toOfferRecord()
         }
