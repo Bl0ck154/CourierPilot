@@ -1,8 +1,7 @@
 package com.block154.courierpilot
 
 /**
- * Kotlin stdlib provides orEmpty() for String?, but Android notification extras and
- * tickerText are CharSequence?. Keep notification text collection null-safe without
- * forcing conversions at each call site.
+ * Android notification/accessibility APIs commonly expose CharSequence?. Normalize it to String
+ * so classifier and package-name code does not accidentally propagate CharSequence types.
  */
-internal fun CharSequence?.orEmpty(): CharSequence = this ?: ""
+internal fun CharSequence?.orEmpty(): String = this?.toString() ?: ""
