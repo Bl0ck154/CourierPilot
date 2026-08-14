@@ -9,6 +9,13 @@ internal data class PendingOffer(
     val notificationKey: String = "",
 )
 
+internal enum class ArmResult {
+    ARMED,
+    DUPLICATE_UPDATE,
+    REPLACED_SAME_PLATFORM,
+    QUEUED_OTHER_PLATFORM,
+}
+
 internal object OfferState {
     private const val PREFS = "courier_offer_capture"
     private const val KEY_PACKAGE = "pending_package"
@@ -23,28 +30,27 @@ internal object OfferState {
     private const val KEY_LAST_UI_TEXT = "last_ui_text"
     private const val KEY_LAST_ERROR = "last_error"
     private const val KEY_AUTO_OPEN = "auto_open"
+    private const val KEY_WAKE_SCREEN = "wake_screen"
     private const val MAX_PENDING_AGE_MS = 180_000L
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
-    fun arm(context: Context, packageName: String, sourceName: String, notificationKey: String = "") {
+    fun arm(context: Context, packageName: String, sourceName: String, notificationKey: String = ""): ArmResult {
         val existing = pending(context)
         if (existing == null) {
             writePending(context, packageName, sourceName, notificationKey, System.currentTimeMillis())
-            return
+            return ArmResult.ARMED
         }
 
         if (notificationKey.isNotBlank() && existing.notificationKey == notificationKey) {
-            return // update of the same notification, do not reset the 3-minute timer
+            return ArmResult.DUPLICATE_UPDATE
         }
 
         if (existing.packageName == packageName) {
-            // A genuinely new notification from the same courier app supersedes stale pending state.
             writePending(context, packageName, sourceName, notificationKey, System.currentTimeMillis())
-            return
+            return ArmResult.REPLACED_SAME_PLATFORM
         }
 
-        // Keep the active capture stable, but remember one overlapping offer from the other app.
         prefs(context).edit()
             .putString(KEY_QUEUED_PACKAGE, packageName)
             .putString(KEY_QUEUED_SOURCE, sourceName)
@@ -52,6 +58,7 @@ internal object OfferState {
             .putLong(KEY_QUEUED_ARMED_AT, System.currentTimeMillis())
             .putString(KEY_LAST_ERROR, "${platformLabel(packageName)} offer queued while ${platformLabel(existing.packageName)} capture is active")
             .apply()
+        return ArmResult.QUEUED_OTHER_PLATFORM
     }
 
     fun pending(context: Context): PendingOffer? {
@@ -63,6 +70,12 @@ internal object OfferState {
         }
         val armedAt = p.getLong(KEY_ARMED_AT, 0L)
         if (armedAt == 0L || System.currentTimeMillis() - armedAt > MAX_PENDING_AGE_MS) {
+            CaptureEventLog.append(
+                context,
+                stage = "expired",
+                platform = platformLabel(packageName),
+                message = "Pending offer expired after 3 minutes without a detected price",
+            )
             clearCurrent(context)
             markError(context, "Offer expired before a price was detected; no screenshot was saved")
             promoteQueued(context)
@@ -122,6 +135,12 @@ internal object OfferState {
             .apply()
         if (armed != 0L && System.currentTimeMillis() - armed <= MAX_PENDING_AGE_MS) {
             writePending(context, pkg, source, key, armed)
+            CaptureEventLog.append(
+                context,
+                stage = "promoted",
+                platform = platformLabel(pkg),
+                message = "Queued offer promoted to active capture",
+            )
         }
     }
 
@@ -156,7 +175,13 @@ internal object OfferState {
         prefs(context).edit().putBoolean(KEY_AUTO_OPEN, enabled).apply()
     }
 
-    private fun platformLabel(packageName: String): String = when {
+    fun wakeScreen(context: Context): Boolean = prefs(context).getBoolean(KEY_WAKE_SCREEN, false)
+
+    fun setWakeScreen(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_WAKE_SCREEN, enabled).apply()
+    }
+
+    fun platformLabel(packageName: String): String = when {
         packageName.contains("wolt", ignoreCase = true) -> "Wolt"
         packageName.contains("bolt", ignoreCase = true) -> "Bolt"
         else -> "Courier"
