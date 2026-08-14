@@ -60,10 +60,29 @@ class RouteIntelligenceScaffoldingTest {
 
         val projected = transform.screenToGeo(ScreenPoint(600.0, 500.0))
 
-        // 100 px * 2 m/px = about 200 m east; latitude should remain effectively unchanged.
         assertTrue(abs(projected.latitude - 54.6872) < 0.00001)
         assertTrue(projected.longitude > 25.282)
         assertTrue(projected.longitude < 25.284)
+    }
+
+    @Test
+    fun twoKnownAnchorsCanRecoverScaleAndProjectBackToSecondPoint() {
+        val first = KnownMapAnchor(
+            screen = ScreenPoint(400.0, 800.0),
+            geo = RoutePoint(54.6872, 25.2797),
+        )
+        val second = KnownMapAnchor(
+            screen = ScreenPoint(600.0, 800.0),
+            geo = RoutePoint(54.6872, 25.2859),
+        )
+
+        val transform = LocalMapTransform.fromTwoAnchors(first, second)
+        val reconstructed = transform.screenToGeo(second.screen)
+
+        assertTrue(transform.metersPerPixel > 1.5)
+        assertTrue(transform.metersPerPixel < 2.5)
+        assertTrue(abs(reconstructed.latitude - second.geo.latitude) < 0.00002)
+        assertTrue(abs(reconstructed.longitude - second.geo.longitude) < 0.00002)
     }
 
     @Test
@@ -120,5 +139,19 @@ class RouteIntelligenceScaffoldingTest {
         assertEquals(1.2, estimate.euroPerKilometer, 0.001)
         assertEquals(17.142, estimate.effectiveEuroPerHour, 0.01)
         assertTrue(estimate.personalizedWaitApplied)
+    }
+
+    @Test
+    fun endpointConfigNormalizesRouteUrlAndRequiresHttps() {
+        val config = ValhallaEndpointConfig("https://routing.example.test/")
+        assertEquals("https://routing.example.test/route", config.routeUrl())
+
+        var failed = false
+        try {
+            ValhallaEndpointConfig("http://routing.example.test")
+        } catch (_: IllegalArgumentException) {
+            failed = true
+        }
+        assertTrue(failed)
     }
 }
