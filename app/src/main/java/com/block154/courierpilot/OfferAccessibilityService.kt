@@ -429,15 +429,20 @@ class OfferAccessibilityService : AccessibilityService() {
 
     private fun collectVisibleText(root: AccessibilityNodeInfo): String {
         val queue = ArrayDeque<AccessibilityNodeInfo>()
-        val pieces = LinkedHashSet<String>()
+        val pieces = mutableListOf<String>()
         queue.add(root)
         var visited = 0
+
+        fun addPiece(value: CharSequence?) {
+            val cleaned = value?.toString()?.trim()?.takeIf { it.isNotEmpty() } ?: return
+            if (pieces.lastOrNull() != cleaned) pieces += cleaned
+        }
 
         while (queue.isNotEmpty() && visited < 700) {
             val node = queue.removeFirst()
             visited++
-            node.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let(pieces::add)
-            node.contentDescription?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let(pieces::add)
+            addPiece(node.text)
+            addPiece(node.contentDescription)
             for (i in 0 until node.childCount) node.getChild(i)?.let(queue::addLast)
         }
         return pieces.joinToString("\n")
