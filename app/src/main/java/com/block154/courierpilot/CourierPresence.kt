@@ -2,7 +2,7 @@ package com.block154.courierpilot
 
 import android.content.Context
 
-data class PlatformPresence(
+internal data class PlatformPresence(
     val platform: String,
     val state: PresenceSignal,
     val source: String,
