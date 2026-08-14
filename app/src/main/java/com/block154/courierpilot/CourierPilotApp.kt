@@ -6,6 +6,7 @@ class CourierPilotApp : Application() {
     override fun onCreate() {
         super.onCreate()
         OfferDataRepair.runIfNeeded(this)
+        AddressBackfill.schedule(this)
         HeartbeatScheduler.ensureScheduled(this)
     }
 }
