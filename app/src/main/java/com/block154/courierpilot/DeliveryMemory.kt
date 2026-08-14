@@ -56,14 +56,11 @@ internal object DeliveryMemory {
             return
         }
 
-        // No code is present on the current screen. If we recognize the same building from a
-        // previous delivery, keep a local suggestion and show it once over the courier app.
-        val candidates = buildList {
-            addAll(addresses.asReversed())
-            previous?.let(::add)
-        }
+        // For suggestions, require an address on the current screen. The remembered previous
+        // address is intentionally used only above as a learning fallback when code/address are
+        // shown on separate delivery screens.
         var matched = false
-        for (address in candidates.distinct()) {
+        for (address in addresses.asReversed().distinct()) {
             val normalized = CourierSignals.normalizeBuildingAddress(address) ?: continue
             val known = database.codesForBuilding(normalized.first)
             if (known.isEmpty()) continue
