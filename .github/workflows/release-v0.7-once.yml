@@ -1,3 +1,4 @@
+# Final one-time 0.7.0 release trigger. Remove this workflow before merging.
 name: Build signed 0.7.0 once
 
 on:
@@ -67,7 +68,7 @@ jobs:
       - name: Upload signed release APK
         uses: actions/upload-artifact@v4
         with:
-          name: courierpilot-0.7.0-signed
+          name: courierpilot-0.7.0-signed-final
           path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 30
