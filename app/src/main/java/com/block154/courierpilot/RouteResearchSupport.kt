@@ -97,8 +97,12 @@ internal object RouteResearchGeocoder {
         if (Build.VERSION.SDK_INT >= 33) {
             geocoder.getFromLocationName(query, 1) { results ->
                 val first = results.firstOrNull()
-                if (first == null) callback(Result.failure(IllegalArgumentException("Address not found")))
-                else callback(Result.success(RoutePoint(first.latitude, first.longitude)))
+                val result = if (first == null) {
+                    Result.failure(IllegalArgumentException("Address not found"))
+                } else {
+                    Result.success(RoutePoint(first.latitude, first.longitude))
+                }
+                context.mainExecutor.execute { callback(result) }
             }
         } else {
             Thread {

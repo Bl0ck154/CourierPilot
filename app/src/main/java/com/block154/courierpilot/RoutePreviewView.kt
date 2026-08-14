@@ -6,7 +6,10 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
 import android.view.View
+import kotlin.math.PI
+import kotlin.math.cos
 import kotlin.math.max
+import kotlin.math.min
 
 /**
  * Lightweight geometry-only preview for research. It intentionally has no third-party map tiles;
@@ -61,19 +64,31 @@ internal class RoutePreviewView(context: Context) : View(context) {
 
         val all = pedestrian + cycleway
         if (all.size < 2) return
-        val minLat = all.minOf { it.latitude }
-        val maxLat = all.maxOf { it.latitude }
-        val minLon = all.minOf { it.longitude }
-        val maxLon = all.maxOf { it.longitude }
-        val latSpan = max(maxLat - minLat, 0.000001)
-        val lonSpan = max(maxLon - minLon, 0.000001)
+
+        val centerLat = all.map { it.latitude }.average()
+        val lonFactor = cos(centerLat * PI / 180.0).coerceAtLeast(0.01)
+        val projected = all.map { point ->
+            ProjectedPoint(point.longitude * lonFactor, point.latitude)
+        }
+        val minX = projected.minOf { it.x }
+        val maxX = projected.maxOf { it.x }
+        val minY = projected.minOf { it.y }
+        val maxY = projected.maxOf { it.y }
+        val spanX = max(maxX - minX, 0.000001)
+        val spanY = max(maxY - minY, 0.000001)
         val padding = dp(18f)
         val availableWidth = (width - 2 * padding).coerceAtLeast(1f)
         val availableHeight = (height - 2 * padding).coerceAtLeast(1f)
+        val scale = min(availableWidth / spanX.toFloat(), availableHeight / spanY.toFloat())
+        val usedWidth = spanX.toFloat() * scale
+        val usedHeight = spanY.toFloat() * scale
+        val offsetX = padding + (availableWidth - usedWidth) / 2f
+        val offsetY = padding + (availableHeight - usedHeight) / 2f
 
         fun map(point: RoutePoint): Pair<Float, Float> {
-            val px = padding + (((point.longitude - minLon) / lonSpan) * availableWidth).toFloat()
-            val py = padding + (((maxLat - point.latitude) / latSpan) * availableHeight).toFloat()
+            val projectedX = point.longitude * lonFactor
+            val px = offsetX + ((projectedX - minX).toFloat() * scale)
+            val py = offsetY + ((maxY - point.latitude).toFloat() * scale)
             return px to py
         }
 
@@ -95,6 +110,8 @@ internal class RoutePreviewView(context: Context) : View(context) {
             map(reference.last()).also { canvas.drawCircle(it.first, it.second, dp(6f), endpointPaint) }
         }
     }
+
+    private data class ProjectedPoint(val x: Double, val y: Double)
 
     private fun dp(value: Float): Float = value * resources.displayMetrics.density
 }
