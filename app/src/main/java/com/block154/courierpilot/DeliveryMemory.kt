@@ -12,6 +12,12 @@ internal object DeliveryMemory {
 
     fun observeScreen(context: Context, packageName: String, text: String) {
         if (text.isBlank()) return
+
+        val parsed = OfferParser.parse(text)
+        if (CourierSignals.looksLikeOfferScreen(text, parsed)) {
+            CourierPresence.markOfferOnline(context, packageName, "offer screen")
+        }
+
         val addresses = CourierSignals.likelyAddresses(text)
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val key = addressKey(packageName)
