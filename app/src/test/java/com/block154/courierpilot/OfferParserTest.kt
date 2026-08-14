@@ -197,6 +197,64 @@ class OfferParserTest {
     }
 
     @Test
+    fun detectsTwoDeliveriesFromOneWoltVenueEvenWithSingularHeader() {
+        val parsed = OfferParser.parse(
+            """
+            €7.42
+            Expected earnings for the full delivery
+            Delivery from
+            Sushi Lounge (Dominikonų g.)
+            Route distance
+            6.1 km
+            Estimated
+            22 - 35 min
+            Timeline
+            Sushi Lounge (Dominikonų g.)
+            Ready
+            Dominikonų g. 6, LT-01131 Vilnius
+            Rasa T.
+            14 min
+            Žirmūnų gatvė 54 81, Vilnius
+            Mantas K.
+            28 min
+            Kalvarijų g. 125, LT-08221 Vilnius
+            Accept
+            """.trimIndent()
+        )
+
+        assertEquals(742, parsed.priceCents)
+        assertEquals(listOf("Sushi Lounge (Dominikonų g.)"), parsed.merchantNames)
+        assertEquals(1, parsed.pickupAddresses.size)
+        assertEquals(listOf("Rasa T.", "Mantas K."), parsed.customerNames)
+        assertEquals(2, parsed.dropoffAddresses.size)
+        assertEquals(2, parsed.deliveryCount)
+    }
+
+    @Test
+    fun prefersWoltFullDeliveryEarningsOverOtherCurrencyAmounts() {
+        val parsed = OfferParser.parse(
+            """
+            €2.10
+            Some other visible amount
+            €7.42
+            Expected earnings for the full delivery
+            Delivery from
+            Sushi Lounge (Dominikonų g.)
+            Route distance
+            6.1 km
+            Timeline
+            Rasa T.
+            Žirmūnų gatvė 54 81, Vilnius
+            Mantas K.
+            Kalvarijų g. 125, LT-08221 Vilnius
+            """.trimIndent()
+        )
+
+        assertEquals(742, parsed.priceCents)
+        assertEquals(2, parsed.deliveryCount)
+    }
+
+    @Test
     fun parsesRealBoltOfferWithoutInventingDistance() {
         val parsed = OfferParser.parse(
             """
