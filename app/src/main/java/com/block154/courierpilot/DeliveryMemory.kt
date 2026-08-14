@@ -1,6 +1,7 @@
 package com.block154.courierpilot
 
 import android.content.Context
+import android.widget.Toast
 
 /**
  * Learns only the minimum useful delivery memory: building address + access code.
@@ -50,7 +51,7 @@ internal object DeliveryMemory {
         }
 
         // No code is present on the current screen. If we recognize the same building from a
-        // previous delivery, expose the known code(s) inside CourierPilot for one-tap copying.
+        // previous delivery, keep a local suggestion and show it once over the courier app.
         val candidates = buildList {
             addAll(addresses.asReversed())
             previous?.let(::add)
@@ -60,22 +61,30 @@ internal object DeliveryMemory {
             val normalized = CourierSignals.normalizeBuildingAddress(address) ?: continue
             val known = database.codesForBuilding(normalized.first)
             if (known.isEmpty()) continue
-            AccessCodeSuggestions.save(
-                context,
-                AccessCodeSuggestion(
-                    displayAddress = normalized.second,
-                    codes = known.map { it.code }.distinct(),
-                    platform = platform,
-                    updatedAt = System.currentTimeMillis(),
-                )
-            )
-            CaptureEventLog.append(
-                context,
-                stage = "access_code_match",
+            val codes = known.map { it.code }.distinct()
+            val oldSuggestion = AccessCodeSuggestions.latest(context)
+            val sameSuggestion = oldSuggestion?.displayAddress == normalized.second && oldSuggestion.codes == codes
+            val suggestion = AccessCodeSuggestion(
+                displayAddress = normalized.second,
+                codes = codes,
                 platform = platform,
-                message = "Known building access code matched locally",
-                dedupeWindowMs = 30_000L,
+                updatedAt = System.currentTimeMillis(),
             )
+            if (!sameSuggestion) {
+                AccessCodeSuggestions.save(context, suggestion)
+                Toast.makeText(
+                    context,
+                    "Known door code · ${normalized.second}: ${codes.joinToString(" / ")}",
+                    Toast.LENGTH_LONG,
+                ).show()
+                CaptureEventLog.append(
+                    context,
+                    stage = "access_code_match",
+                    platform = platform,
+                    message = "Known building access code matched locally",
+                    dedupeWindowMs = 30_000L,
+                )
+            }
             matched = true
             break
         }
