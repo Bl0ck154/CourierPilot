@@ -5,6 +5,10 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - refactor/ui-v2-audit-fixes
+    paths:
+      - 'docs/.release-0.6.0-trigger'
 
 permissions:
   contents: read
