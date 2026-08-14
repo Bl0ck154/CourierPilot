@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/Bl0ck154/CourierPilot/actions/workflows/build.yml"><img src="https://github.com/Bl0ck154/CourierPilot/actions/workflows/build.yml/badge.svg" alt="Build"></a>
-  <img src="https://img.shields.io/badge/version-0.5.0-53E09C" alt="Version 0.5.0">
+  <img src="https://img.shields.io/badge/version-0.5.1-53E09C" alt="Version 0.5.1">
   <img src="https://img.shields.io/badge/Android-11%2B-3DDC84?logo=android&logoColor=white" alt="Android 11+">
   <img src="https://img.shields.io/badge/Kotlin-native-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin">
   <img src="https://img.shields.io/badge/data-local--first-1f6feb" alt="Local-first">
@@ -20,7 +20,7 @@ It is deliberately conservative about capture: **an offer is not archived until 
 
 ### What it can record
 
-| | CourierPilot 0.5.0 |
+| | CourierPilot 0.5.1 |
 |---|---|
 | 💶 Price | Captured only when a real non-zero price is detected |
 | 📍 Distance | Stored when the courier app exposes it |
@@ -177,11 +177,13 @@ The repository does not contain the private release keystore. See [`docs/RELEASE
 
 ## Current release
 
-**CourierPilot 0.5.0** (`versionCode 5`)
+**CourierPilot 0.5.1** (`versionCode 6`)
 
-0.5.0 adds the Reliability Center, privacy-safe event logging, unlock recovery, optional screen wake, rich offer details, stacked-delivery statistics, venue statistics, manual shift tracking and parser regression coverage based on real Wolt/Bolt offer layouts.
+0.5.1 is the branding/public-repository polish release: it adds the real adaptive CourierPilot launcher icon and public-project presentation/CI without changing the 0.5 capture rules or local data model.
 
-Full notes: [`docs/RELEASE_0.5.0.md`](docs/RELEASE_0.5.0.md)
+The functional reliability, rich offer details, stacked-delivery statistics, venue statistics, manual shift tracking and parser regression coverage introduced in 0.5.0 remain unchanged.
+
+Full notes: [`docs/RELEASE_0.5.1.md`](docs/RELEASE_0.5.1.md)
 
 ## Known limitations
 
