@@ -44,6 +44,10 @@
             android:exported="false" />
 
         <activity
+            android:name=".AddressDetailsActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".ReliabilityActivity"
             android:exported="false" />
 
