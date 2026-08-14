@@ -3,6 +3,8 @@ name: Build signed release APK
 on:
   workflow_dispatch:
   push:
+    branches:
+      - 'ui-search-parser-v0.5.3'
     tags:
       - 'v*'
 
