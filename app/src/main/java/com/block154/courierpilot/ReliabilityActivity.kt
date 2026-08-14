@@ -1,10 +1,12 @@
 package com.block154.courierpilot
 
+import android.Manifest
 import android.app.Activity
 import android.app.ActivityManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -35,6 +37,15 @@ class ReliabilityActivity : Activity() {
     override fun onResume() {
         super.onResume()
         render()
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_POST_NOTIFICATIONS) {
+            val granted = grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
+            if (!granted) HeartbeatSettings.setEnabled(this, false)
+            render()
+        }
     }
 
     private fun render() {
@@ -116,6 +127,22 @@ class ReliabilityActivity : Activity() {
             "Best-effort 3-second screen wake. It does not unlock the phone or bypass the keyguard.",
             OfferState.wakeScreen(this),
         ) { OfferState.setWakeScreen(this, it) }.top(dp(8)))
+        root.addView(toggleCard(
+            "Periodic alive reminder",
+            "Every ${HeartbeatScheduler.INTERVAL_HOURS} hours. A normal non-persistent notification confirms CourierPilot is alive; it never stays permanently in the shade.",
+            HeartbeatSettings.enabled(this),
+        ) { enabled ->
+            if (
+                enabled &&
+                Build.VERSION.SDK_INT >= 33 &&
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ) {
+                HeartbeatSettings.setEnabled(this, true)
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_POST_NOTIFICATIONS)
+            } else {
+                HeartbeatSettings.setEnabled(this, enabled)
+            }
+        }.top(dp(8)))
 
         root.addView(sectionTitle("Current capture", "Useful when an offer was missed").top(dp(24)))
         val pending = OfferState.pending(this)
@@ -207,6 +234,7 @@ class ReliabilityActivity : Activity() {
             appendLine("Accessibility: ${hasAccessibilityAccess()}")
             appendLine("Ignoring battery optimizations: ${power.isIgnoringBatteryOptimizations(packageName)}")
             if (Build.VERSION.SDK_INT >= 28) appendLine("Background restricted: ${activityManager.isBackgroundRestricted}")
+            appendLine("Alive reminder: ${HeartbeatSettings.enabled(this@ReliabilityActivity)}")
             appendLine("Pending: ${pending?.let { OfferState.platformLabel(it.packageName) } ?: "none"}")
             appendLine("Last screenshot: ${OfferState.lastCapture(this@ReliabilityActivity)}")
             appendLine("Last error: ${OfferState.lastError(this@ReliabilityActivity)}")
@@ -305,6 +333,7 @@ class ReliabilityActivity : Activity() {
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     companion object {
+        private const val REQUEST_POST_NOTIFICATIONS = 1546
         private val BG = Color.parseColor("#F5F7FB")
         private val TEXT = Color.parseColor("#111827")
         private val MUTED = Color.parseColor("#6B7280")
