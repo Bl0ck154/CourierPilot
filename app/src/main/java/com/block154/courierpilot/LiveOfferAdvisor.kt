@@ -1,6 +1,7 @@
 package com.block154.courierpilot
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -8,7 +9,6 @@ import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.view.Gravity
-import android.view.View
 import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -39,10 +39,12 @@ internal object PlatformOfferEconomicsCalculator {
  */
 internal class LiveOfferAdvisor(private val service: AccessibilityService) {
     private val handler = Handler(Looper.getMainLooper())
-    private val windowManager = service.getSystemService(AccessibilityService.WINDOW_SERVICE) as WindowManager
+    private val windowManager = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var root: LinearLayout? = null
     private var routeText: TextView? = null
     private var platformText: TextView? = null
+    private var routeToggle: TextView? = null
+    private var voiceToggle: TextView? = null
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var pendingSpeech: String? = null
@@ -54,6 +56,7 @@ internal class LiveOfferAdvisor(private val service: AccessibilityService) {
         }
         handler.post {
             ensureView()
+            refreshControls()
             platformText?.text = formatBase(platform, parsed)
             routeText?.text = if (
                 platform.equals("Wolt", ignoreCase = true) && LiveAdvisorSettings.automaticWoltRouting(service)
@@ -67,6 +70,7 @@ internal class LiveOfferAdvisor(private val service: AccessibilityService) {
         if (!LiveAdvisorSettings.enabled(service)) return
         handler.post {
             ensureView()
+            refreshControls()
             val pedestrian = comparison.pedestrian.getOrNull()
             val cycleway = comparison.cycleway.getOrNull()
             routeText?.text = buildString {
@@ -91,18 +95,21 @@ internal class LiveOfferAdvisor(private val service: AccessibilityService) {
         if (!LiveAdvisorSettings.enabled(service)) return
         handler.post {
             ensureView()
+            refreshControls()
             routeText?.text = "Calculated route unavailable · ${reason.take(90)}"
             scheduleHide()
         }
     }
 
     fun hide() {
-        handler.removeCallbacksAndMessages(null)
+        handler.removeCallbacks(hideRunnable)
         val view = root ?: return
         runCatching { windowManager.removeView(view) }
         root = null
         routeText = null
         platformText = null
+        routeToggle = null
+        voiceToggle = null
     }
 
     fun destroy() {
@@ -151,6 +158,29 @@ internal class LiveOfferAdvisor(private val service: AccessibilityService) {
         })
         container.addView(topRow)
 
+        val controls = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(3), 0, 0)
+        }
+        routeToggle = controlText(dp(8)).apply {
+            setOnClickListener {
+                LiveAdvisorSettings.setAutomaticWoltRouting(service, !LiveAdvisorSettings.automaticWoltRouting(service))
+                refreshControls()
+            }
+        }
+        voiceToggle = controlText(dp(8)).apply {
+            setOnClickListener {
+                val enabled = !LiveAdvisorSettings.voiceEnabled(service)
+                LiveAdvisorSettings.setVoiceEnabled(service, enabled)
+                if (!enabled) tts?.stop()
+                refreshControls()
+            }
+        }
+        controls.addView(routeToggle, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        controls.addView(voiceToggle, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        container.addView(controls)
+
         platformText = TextView(service).apply {
             setTextColor(Color.WHITE)
             textSize = 15f
@@ -178,6 +208,18 @@ internal class LiveOfferAdvisor(private val service: AccessibilityService) {
         }
         runCatching { windowManager.addView(container, params) }
             .onSuccess { root = container }
+    }
+
+    private fun controlText(horizontalPadding: Int): TextView = TextView(service).apply {
+        setTextColor(Color.rgb(147, 197, 253))
+        textSize = 11f
+        setPadding(horizontalPadding, 4, horizontalPadding, 4)
+        gravity = Gravity.CENTER
+    }
+
+    private fun refreshControls() {
+        routeToggle?.text = "Wolt route ${if (LiveAdvisorSettings.automaticWoltRouting(service)) "ON" else "OFF"}"
+        voiceToggle?.text = "Voice ${if (LiveAdvisorSettings.voiceEnabled(service)) "ON" else "OFF"}"
     }
 
     private fun scheduleHide() {
