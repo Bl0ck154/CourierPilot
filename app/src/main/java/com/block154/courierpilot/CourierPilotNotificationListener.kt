@@ -25,6 +25,8 @@ class CourierPilotNotificationListener : NotificationListenerService() {
         val notification = sbn.notification
 
         if (CourierSignals.isOfferNotification(notification)) {
+            // Receiving a real offer is stronger proof of online state than a possibly stale ongoing notification.
+            CourierPresence.markOfferOnline(this, sbn.packageName, "offer notification")
             CaptureEventLog.append(this, "notification", "Strict offer notification matched", platform)
             val sourceName = resolveAppName(sbn.packageName)
             val armResult = OfferState.arm(this, sbn.packageName, sourceName, sbn.key)
