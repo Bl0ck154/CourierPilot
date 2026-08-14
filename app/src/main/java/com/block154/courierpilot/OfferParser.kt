@@ -36,15 +36,19 @@ internal object OfferParser {
         val customers = stops.filterNot { it.isMerchant }.mapNotNull { it.name }.distinct()
         val dropoffs = stops.filterNot { it.isMerchant }.map { it.address }.distinct()
         val estimate = parseEstimate(lines)
-        val deliveryCount = merchantSummary?.first
-            ?: when {
-                customers.isNotEmpty() -> customers.size
-                merchantNames.isNotEmpty() -> 1
-                else -> null
-            }
+
+        // Restaurant count and delivery count are different concepts. Wolt can batch two customer
+        // orders from one venue and still show the venue only once (and sometimes even keep the
+        // singular "Delivery from" heading). Count actual customer/drop-off stops as an independent
+        // signal and take the strongest available evidence.
+        val headerDeliveryCount = merchantSummary?.first ?: 0
+        val customerStopCount = stops.count { !it.isMerchant }
+        val baselineCount = if (merchantNames.isNotEmpty()) 1 else 0
+        val deliveryCount = maxOf(headerDeliveryCount, customerStopCount, baselineCount)
+            .takeIf { it > 0 }
 
         return ParsedOffer(
-            priceCents = parsePriceCents(text),
+            priceCents = parsePriceCents(text, lines),
             distanceMeters = parseDistanceMeters(text),
             restaurant = merchantNames.takeIf { it.isNotEmpty() }?.joinToString(", "),
             merchantNames = merchantNames,
@@ -138,14 +142,8 @@ internal object OfferParser {
             val nearestNamedStop = candidates.firstOrNull()
             val hasExplicitNonMerchantName = explicitMerchant == null && nearestNamedStop != null
 
-            // If an address is preceded by a customer/other stop name, it is a drop-off. This
-            // must win over ordinal fallback: Wolt may omit the pickup address entirely, and the
-            // first address Accessibility exposes can therefore already be the customer's address.
             if (hasExplicitNonMerchantName) pickupPhaseEnded = true
 
-            // Wolt sometimes omits the repeated merchant label inside Timeline. Only use the
-            // positional pickup fallback while we are still clearly in the pickup phase AND the
-            // address has no competing stop name immediately around it.
             val fallbackMerchant = explicitMerchant == null &&
                 nearestNamedStop == null &&
                 !pickupPhaseEnded &&
@@ -197,16 +195,30 @@ internal object OfferParser {
             Regex("(?i)\\bstr\\.?\\s*\\d").containsMatchIn(line)
     }
 
-    private fun parsePriceCents(text: String): Int? {
-        return priceRegex.findAll(text)
-            .mapNotNull { match ->
-                val raw = match.groupValues[1].ifBlank { match.groupValues[2] }.replace(',', '.')
-                runCatching {
-                    BigDecimal(raw).multiply(BigDecimal(100)).setScale(0, RoundingMode.HALF_UP).intValueExact()
-                }.getOrNull()
+    private fun parsePriceCents(text: String, lines: List<String>): Int? {
+        // Accessibility/OCR can expose more than one euro amount on a stacked Wolt screen.
+        // The total offer amount is the one semantically attached to this label, so prefer the
+        // closest amount around it instead of blindly taking the first currency token in raw text.
+        val earningsIndex = lines.indexOfFirst {
+            it.contains("expected earnings for the full delivery", ignoreCase = true)
+        }
+        if (earningsIndex >= 0) {
+            for (offset in listOf(-1, 0, 1, -2, 2)) {
+                val candidate = lines.getOrNull(earningsIndex + offset) ?: continue
+                firstValidPrice(candidate)?.let { return it }
             }
-            .firstOrNull { it in MIN_PRICE_CENTS..MAX_PRICE_CENTS }
+        }
+        return firstValidPrice(text)
     }
+
+    private fun firstValidPrice(value: String): Int? = priceRegex.findAll(value)
+        .mapNotNull { match ->
+            val raw = match.groupValues[1].ifBlank { match.groupValues[2] }.replace(',', '.')
+            runCatching {
+                BigDecimal(raw).multiply(BigDecimal(100)).setScale(0, RoundingMode.HALF_UP).intValueExact()
+            }.getOrNull()
+        }
+        .firstOrNull { it in MIN_PRICE_CENTS..MAX_PRICE_CENTS }
 
     private fun parseDistanceMeters(text: String): Int? {
         return distanceRegex.findAll(text).mapNotNull { match ->
