@@ -68,6 +68,29 @@ class ValhallaContractTest {
     }
 
     @Test
+    fun parsesHttpStatusAndWarningsWithoutLosingGeometry() {
+        val response = """
+            {
+              "trip": {
+                "summary": {"length": 2.578, "time": 1851.316},
+                "warnings": [{"text": "research warning"}],
+                "legs": [{"shape": "encoded-polyline"}]
+              }
+            }
+        """.trimIndent()
+
+        val result = ValhallaContract.parseRouteResponse(
+            RouteProfile.PEDESTRIAN_SHORTCUT,
+            response,
+            httpStatus = 200,
+        )
+
+        assertEquals(200, result.httpStatus)
+        assertEquals(listOf("research warning"), result.warnings)
+        assertEquals(listOf("encoded-polyline"), result.legShapes)
+    }
+
+    @Test
     fun productionRoutingRemainsDisabledDuringResearch() {
         assertFalse(RouteIntelligencePolicy.PRODUCTION_ENABLED)
         assertTrue(RouteIntelligencePolicy.MAX_POINTS >= 5)

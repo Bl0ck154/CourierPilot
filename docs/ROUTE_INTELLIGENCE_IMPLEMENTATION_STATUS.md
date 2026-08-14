@@ -1,6 +1,6 @@
 # Route Intelligence Implementation Status
 
-Status: groundwork implemented behind research-only boundaries
+Status: protected Valhalla research client implemented behind an explicit device-local gate
 
 This file describes what is already in the Android repository versus what still requires a real Valhalla server and real-device Bolt samples.
 
@@ -28,7 +28,42 @@ The production offer capture pipeline does not depend on routing and must remain
 - parse Valhalla distance, duration and per-leg encoded shapes;
 - preserve provider/profile provenance.
 
-There is deliberately no HTTP client wired into production yet. The app manifest still has no `INTERNET` permission.
+The contract is used by a manual research-only HTTPS client. Production offer capture still does not
+call it.
+
+### Protected Valhalla HTTP research client
+
+`ValhallaRouteProvider` now fulfills the existing `RouteProvider` contract and:
+
+- accepts only an explicitly enabled `https://` endpoint;
+- sends the token in `Authorization: Bearer ...`;
+- applies bounded connect/read timeouts and a 2 MiB response limit;
+- returns non-2xx responses as failures without logging the token or coordinates;
+- preserves HTTP status, Valhalla warnings and encoded per-leg shapes;
+- remains synchronous at the provider boundary while the research UI runs it off the main thread.
+
+Endpoint URL/token are entered on-device and stored in app-private `noBackupFilesDir`. They are not
+BuildConfig values, repository files, or part of shared diagnostics. Android cleartext traffic is
+disabled globally.
+
+From **Reliability → Route intelligence research → Open route comparison**, the user can:
+
+1. enter the protected self-hosted HTTPS base URL and bearer token;
+2. explicitly enable manual research requests;
+3. enter two coordinates (the validated Vilnius pair is prefilled);
+4. request pedestrian-shortcut and cycleway-biased candidates;
+5. inspect HTTP status, distance, generic ETA, warnings and full encoded polylines.
+
+The screen uses `FLAG_SECURE` because it can display a token and sensitive coordinates. It does not
+request device location.
+
+### Deployed research endpoint
+
+The validated deployment is available at `https://valhalla.zivkr.pp.ua` with a VPS-only bearer
+token. A localhost-only Nginx gateway restricts the public surface to `/route` and `/status`, applies
+per-client rate/concurrency/body limits and removes the Authorization header before proxying to
+Valhalla. Caddy provides public TLS. The token is generated and retained only under
+`/opt/valhalla/secrets/` on the VPS and must be entered manually on the device.
 
 ### Bolt Accessibility tree collection
 
@@ -63,21 +98,13 @@ IMPORTANT: the raw tree can contain customer/merchant/private delivery data. It 
 
 ## Intentionally not implemented yet
 
-### Network / Valhalla HTTP
+### Production offer-time routing
 
-Do this only after the self-hosted endpoint is deployed and validated.
+`RouteIntelligencePolicy.PRODUCTION_ENABLED` remains `false`. The manual research screen is the only
+caller of the network provider, and routing failure cannot delay or block offer persistence.
 
-Then add:
-
-- `INTERNET` permission;
-- HTTPS endpoint configuration;
-- authentication handling;
-- timeouts/cancellation;
-- a `ValhallaRouteProvider` implementation that fulfills the existing `RouteProvider` contract;
-- feature flag / settings gate;
-- failure-safe asynchronous execution.
-
-Routing failure must never delay or block offer persistence.
+Do not connect Valhalla to automatic offer handling until the 10–20 route Vilnius validation corpus
+has been reviewed and an Android-compliant bounded current-location model has been selected.
 
 ### Device GPS acquisition
 
@@ -116,7 +143,7 @@ These remain later phases after route geometry is trustworthy. See:
 
 - Android CI/tests green;
 - one-shot Bolt dump works on a real Bolt offer;
-- Valhalla server passes Vilnius pedestrian and bicycle smoke tests;
+- Valhalla server passes Vilnius pedestrian and bicycle smoke tests; **completed 2026-08-14**;
 - 10–20 real Vilnius route comparisons collected;
 - stair-heavy/pathologically long candidates rejected during validation;
 - production capture remains independent;

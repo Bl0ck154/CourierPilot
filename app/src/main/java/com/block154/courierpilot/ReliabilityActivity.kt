@@ -208,19 +208,28 @@ class ReliabilityActivity : Activity() {
             }
         }.top(dp(10)))
 
+        val routeEndpoint = RouteEndpointSettings.load(this)
         root.addView(card().apply {
             addView(text("Valhalla integration", 15f, TEXT, true))
             addView(text(
-                "Provider-neutral route models and the Valhalla pedestrian/cycleway request contract are compiled in, but production routing is intentionally disabled until the VPS endpoint and real Vilnius route tests exist.",
+                "The protected HTTPS client is available for manual pedestrian-versus-bicycle Vilnius comparisons. Production offer capture remains independent and disabled.",
                 12f,
                 MUTED,
             ).top(dp(5)))
             addView(text(
-                "No INTERNET or location permission was added in this groundwork build.",
+                if (routeEndpoint.enabled) "Manual endpoint enabled on this device" else "Manual endpoint disabled until explicitly configured",
                 12f,
-                MUTED,
+                if (routeEndpoint.enabled) GREEN else MUTED,
                 true,
             ).top(dp(6)))
+            addView(text(
+                "No location permission is used. URL/token stay in app-private no-backup storage and are excluded from diagnostics.",
+                12f,
+                MUTED,
+            ).top(dp(6)))
+            addView(linkButton("Open route comparison") {
+                startActivity(Intent(this@ReliabilityActivity, RouteResearchActivity::class.java))
+            }.top(dp(8)))
         }.top(dp(8)))
 
         root.addView(sectionTitle("Capture event log", "No customer names, addresses or raw offer text are written here").top(dp(24)))

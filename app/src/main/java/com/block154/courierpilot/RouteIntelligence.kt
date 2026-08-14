@@ -21,6 +21,8 @@ internal data class RouteResult(
     val distanceMeters: Int,
     val durationSeconds: Int,
     val legShapes: List<String>,
+    val httpStatus: Int? = null,
+    val warnings: List<String> = emptyList(),
 )
 
 /**
