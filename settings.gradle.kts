@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "CourierNotificationListener"
+rootProject.name = "CourierPilot"
 include(":app")

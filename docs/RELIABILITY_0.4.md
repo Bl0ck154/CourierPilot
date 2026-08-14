@@ -27,7 +27,7 @@ Database schema v2 keeps existing history and adds optional structured fields:
 
 The parser understands the real Wolt layouts observed in single and stacked offers, including `Delivery from` and `2 deliveries from` screens. Bolt fields stay empty when Bolt does not expose them rather than inventing values.
 
-Customer/drop-off data remains local in the app database and is not uploaded anywhere by Courier Offer Archive.
+Customer/drop-off data remains local in the app database and is not uploaded anywhere by CourierPilot.
 
 ## Background reliability
 
@@ -36,7 +36,7 @@ Notification Listener and Accessibility are Android-managed services; the app in
 For courier use, configure the app manually in Android/OEM settings:
 
 1. App info → Battery / Battery usage → choose Unrestricted / Allow background activity if available.
-2. Exclude Courier Offer Archive from battery optimization if the firmware exposes that option.
+2. Exclude CourierPilot from battery optimization if the firmware exposes that option.
 3. On Realme / ColorOS / OxygenOS also check Auto launch / background activity controls in App info or battery settings.
 4. Keep Notification Access and Accessibility enabled.
 

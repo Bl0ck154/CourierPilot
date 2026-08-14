@@ -1,4 +1,4 @@
-package com.block154.couriernotificationlistener
+package com.block154.courierpilot
 
 import android.content.ContentValues
 import android.content.Context

@@ -1,4 +1,4 @@
-package com.block154.couriernotificationlistener
+package com.block154.courierpilot
 
 import android.app.ActivityOptions
 import android.app.Notification
@@ -8,7 +8,7 @@ import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import java.util.Locale
 
-class CourierNotificationListener : NotificationListenerService() {
+class CourierPilotNotificationListener : NotificationListenerService() {
 
     private val knownCourierPackages = setOf(
         "com.wolt.courierapp",
