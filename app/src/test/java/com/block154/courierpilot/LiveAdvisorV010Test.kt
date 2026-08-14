@@ -37,7 +37,7 @@ class LiveAdvisorV010Test {
     }
 
     @Test
-    fun lifecycleDetectorRequiresExplicitCue() {
+    fun lifecycleDetectorRequiresExplicitCueAndMonotonicProgression() {
         assertEquals(
             DeliveryEventType.PICKED_UP,
             DeliveryLifecycleTracking.detect("Order picked up · navigate to customer")?.type,
@@ -48,6 +48,53 @@ class LiveAdvisorV010Test {
         )
         assertNull(DeliveryLifecycleTracking.detect("Restaurant · Customer · 2.4 km"))
         assertNull(DeliveryLifecycleTracking.detect("Accept · Decline · €7.20"))
+
+        assertTrue(DeliveryLifecycleTracking.canAdvance(DeliveryEventType.OFFER_CAPTURED, DeliveryEventType.ACCEPTED))
+        assertTrue(DeliveryLifecycleTracking.canAdvance(DeliveryEventType.ACCEPTED, DeliveryEventType.PICKED_UP))
+        assertTrue(DeliveryLifecycleTracking.canAdvance(DeliveryEventType.PICKED_UP, DeliveryEventType.DELIVERED))
+        assertEquals(false, DeliveryLifecycleTracking.canAdvance(DeliveryEventType.OFFER_CAPTURED, DeliveryEventType.DELIVERED))
+        assertEquals(false, DeliveryLifecycleTracking.canAdvance(DeliveryEventType.DELIVERED, DeliveryEventType.ACCEPTED))
+    }
+
+    @Test
+    fun parserPreservesTimelineStopOrderForStackedRouting() {
+        val parsed = OfferParser.parse(
+            """
+            2 deliveries from
+            A, B
+            Timeline
+            A
+            A g. 1, Vilnius
+            Customer One
+            C g. 3, Vilnius
+            B
+            B g. 2, Vilnius
+            Customer Two
+            D g. 4, Vilnius
+            Route distance
+            6.5 km
+            Estimated
+            25-35 min
+            Expected earnings for the full delivery
+            €9.00
+            Accept
+            Decline
+            """.trimIndent()
+        )
+
+        assertEquals(
+            listOf(
+                ParsedRouteStopKind.PICKUP,
+                ParsedRouteStopKind.DROPOFF,
+                ParsedRouteStopKind.PICKUP,
+                ParsedRouteStopKind.DROPOFF,
+            ),
+            parsed.orderedRouteStops.map { it.kind },
+        )
+        assertEquals(
+            listOf("A g. 1, Vilnius", "C g. 3, Vilnius", "B g. 2, Vilnius", "D g. 4, Vilnius"),
+            parsed.orderedRouteStops.map { it.address },
+        )
     }
 
     @Test
