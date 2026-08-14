@@ -12,8 +12,8 @@ import android.net.Uri
 internal object OfferDataRepair {
     private const val PREFS = "courier_offer_repairs"
     private const val KEY_REVISION = "parser_repair_revision"
-    private const val CURRENT_REVISION = 2
-    private const val DUPLICATE_WINDOW_MS = 2L * 60L * 1000L
+    private const val CURRENT_REVISION = 3
+    private const val EXACT_DUPLICATE_WINDOW_MS = 2L * 60L * 1000L
     private const val LIST_SEPARATOR = "\u001F"
 
     fun runIfNeeded(context: Context) {
@@ -24,7 +24,8 @@ internal object OfferDataRepair {
         val database = OfferDatabase.get(appContext)
         val sqlite = database.writableDatabase
         val records = database.recordsSince(0L, 5000).sortedBy { it.capturedAt }
-        val latestByFingerprint = mutableMapOf<String, OfferRecord>()
+        val latestByExactFingerprint = mutableMapOf<String, OfferRecord>()
+        val latestByBurstFingerprint = mutableMapOf<String, OfferRecord>()
         val duplicateScreenshotUris = mutableListOf<String>()
 
         sqlite.beginTransaction()
@@ -47,17 +48,25 @@ internal object OfferDataRepair {
                 sqlite.update("offers", values, "id = ?", arrayOf(original.id.toString()))
 
                 if (!CourierSignals.hasStrongOfferIdentity(parsed, original.rawText)) return@forEach
-                val fingerprint = CourierSignals.offerFingerprint(original.packageName, parsed, original.rawText)
-                val previous = latestByFingerprint[fingerprint]
-                val duplicate = previous != null &&
-                    original.capturedAt >= previous.capturedAt &&
-                    original.capturedAt - previous.capturedAt <= DUPLICATE_WINDOW_MS
 
-                if (duplicate) {
+                val exactFingerprint = CourierSignals.offerFingerprint(original.packageName, parsed, original.rawText)
+                val burstFingerprint = OfferDedupeIdentity.burstFingerprint(repaired)
+                val previousExact = latestByExactFingerprint[exactFingerprint]
+                val previousBurst = latestByBurstFingerprint[burstFingerprint]
+
+                val exactDuplicate = previousExact != null &&
+                    original.capturedAt >= previousExact.capturedAt &&
+                    original.capturedAt - previousExact.capturedAt <= EXACT_DUPLICATE_WINDOW_MS
+                val burstDuplicate = previousBurst != null &&
+                    original.capturedAt >= previousBurst.capturedAt &&
+                    original.capturedAt - previousBurst.capturedAt <= OfferDedupeIdentity.BURST_WINDOW_MS
+
+                if (exactDuplicate || burstDuplicate) {
                     sqlite.delete("offers", "id = ?", arrayOf(original.id.toString()))
                     duplicateScreenshotUris += original.screenshotUri
                 } else {
-                    latestByFingerprint[fingerprint] = original
+                    latestByExactFingerprint[exactFingerprint] = original
+                    latestByBurstFingerprint[burstFingerprint] = original
                 }
             }
             sqlite.setTransactionSuccessful()

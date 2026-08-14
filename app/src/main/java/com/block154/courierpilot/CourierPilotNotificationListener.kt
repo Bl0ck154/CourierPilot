@@ -36,7 +36,7 @@ class CourierPilotNotificationListener : NotificationListenerService() {
                 platform = platform,
                 message = when (armResult) {
                     ArmResult.ARMED -> "New capture armed"
-                    ArmResult.DUPLICATE_UPDATE -> "Duplicate notification update ignored"
+                    ArmResult.DUPLICATE_UPDATE -> "Duplicate/already captured notification update ignored"
                     ArmResult.REPLACED_SAME_PLATFORM -> "New notification replaced pending offer from same platform"
                     ArmResult.QUEUED_OTHER_PLATFORM -> "Offer queued behind active capture from other platform"
                 },
@@ -70,7 +70,12 @@ class CourierPilotNotificationListener : NotificationListenerService() {
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         if (!CourierSignals.isCourierPackage(sbn.packageName)) return
-        if (CourierSignals.isOfferNotification(sbn.notification)) return
+        if (CourierSignals.isOfferNotification(sbn.notification)) {
+            // A captured notification key is only a tombstone for this notification lifetime.
+            // Once Android removes it, allow the courier app to reuse the same id/tag for a new offer.
+            OfferState.releaseCapturedNotification(this, sbn.packageName, sbn.key)
+            return
+        }
         if (!CourierSignals.isOngoingPresenceNotification(sbn.notification)) return
 
         // Swiping/removing a persistent notification is not proof that the courier went offline.
