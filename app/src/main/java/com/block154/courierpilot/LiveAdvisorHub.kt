@@ -29,17 +29,20 @@ internal object LiveAdvisorHub {
     fun onOfferPersisted(offerId: Long, record: OfferRecord) {
         val service = serviceRef.get() ?: return
         val currentAdvisor = advisor ?: return
-        val parsed = ParsedOffer(
+        // Reparse the same captured screen text here so the sequential Timeline stop order remains
+        // available to the router without changing the stable offer-history DB schema.
+        val parsedFromScreen = OfferParser.parse(record.rawText)
+        val parsed = parsedFromScreen.copy(
             priceCents = record.priceCents,
             distanceMeters = record.distanceMeters,
-            restaurant = record.restaurant,
-            merchantNames = record.merchantNames,
-            pickupAddresses = record.pickupAddresses,
-            customerNames = record.customerNames,
-            dropoffAddresses = record.dropoffAddresses,
-            deliveryCount = record.deliveryCount,
-            estimatedMinutesMin = record.estimatedMinutesMin,
-            estimatedMinutesMax = record.estimatedMinutesMax,
+            restaurant = record.restaurant ?: parsedFromScreen.restaurant,
+            merchantNames = record.merchantNames.ifEmpty { parsedFromScreen.merchantNames },
+            pickupAddresses = record.pickupAddresses.ifEmpty { parsedFromScreen.pickupAddresses },
+            customerNames = record.customerNames.ifEmpty { parsedFromScreen.customerNames },
+            dropoffAddresses = record.dropoffAddresses.ifEmpty { parsedFromScreen.dropoffAddresses },
+            deliveryCount = record.deliveryCount ?: parsedFromScreen.deliveryCount,
+            estimatedMinutesMin = record.estimatedMinutesMin ?: parsedFromScreen.estimatedMinutesMin,
+            estimatedMinutesMax = record.estimatedMinutesMax ?: parsedFromScreen.estimatedMinutesMax,
         )
 
         DeliveryLifecycleTracking.onOfferCaptured(service, record.packageName, offerId, record.capturedAt)
