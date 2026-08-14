@@ -1,0 +1,49 @@
+name: Feature request
+description: Suggest an improvement for CourierPilot
+title: "[Feature] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature ideas are welcome. Please describe the courier problem first, then the proposed solution.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Courier problem
+      description: What real workflow or decision would this improve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What should CourierPilot do?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Capture reliability
+        - Wolt parsing
+        - Bolt parsing
+        - Offer details
+        - History
+        - Statistics
+        - Shift tracking
+        - Privacy / diagnostics
+        - UI / UX
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional context
+      description: Do not include unredacted customer data or private courier screenshots.

@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">CourierPilot icon</title>
+  <desc id="desc">A green location pin with a white navigation arrow and route marks on a dark background.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#142330"/>
+      <stop offset="1" stop-color="#09121b"/>
+    </linearGradient>
+    <linearGradient id="pin" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6ff0b0"/>
+      <stop offset="1" stop-color="#35c98b"/>
+    </linearGradient>
+  </defs>
+  <rect x="18" y="18" width="476" height="476" rx="104" fill="url(#bg)" stroke="#314251" stroke-width="6"/>
+  <path d="M256 91c-74 0-134 60-134 134 0 98 134 222 134 222s134-124 134-222c0-74-60-134-134-134Z" fill="none" stroke="url(#pin)" stroke-width="26" stroke-linejoin="round"/>
+  <path d="M199 215 334 166 286 301l-36-44-43 32Z" fill="#fff" stroke="#fff" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M99 369h62m37 36h67m47-27 101-28" fill="none" stroke="#fff" stroke-width="18" stroke-linecap="round" stroke-dasharray="28 24"/>
+</svg>

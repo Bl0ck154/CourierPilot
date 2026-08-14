@@ -1,94 +1,207 @@
-# CourierPilot
+<p align="center">
+  <img src="docs/assets/courierpilot-banner.svg" alt="CourierPilot — local-first Android journal for Wolt and Bolt courier offers" />
+</p>
 
-Android companion app for automatically archiving incoming Wolt/Bolt courier offers **only after a price is visible**, then building a local history and statistics from the captured offers.
+<p align="center">
+  <a href="https://github.com/Bl0ck154/CourierPilot/actions/workflows/build.yml"><img src="https://github.com/Bl0ck154/CourierPilot/actions/workflows/build.yml/badge.svg" alt="Build"></a>
+  <img src="https://img.shields.io/badge/version-0.5.0-53E09C" alt="Version 0.5.0">
+  <img src="https://img.shields.io/badge/Android-11%2B-3DDC84?logo=android&logoColor=white" alt="Android 11+">
+  <img src="https://img.shields.io/badge/Kotlin-native-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin">
+  <img src="https://img.shields.io/badge/data-local--first-1f6feb" alt="Local-first">
+</p>
 
-## Core behavior
+> **Unofficial project.** CourierPilot is not affiliated with, endorsed by, or sponsored by Wolt, Bolt, DoorDash, or any of their affiliates. Product names and trademarks belong to their respective owners.
 
-1. `NotificationListenerService` watches Wolt/Bolt new-task notifications.
-2. A matching notification arms capture for the courier app.
-3. `OfferAccessibilityService` waits until that courier app is the active window.
-4. Accessibility text is checked for a real `€ / EUR` price.
-5. If the courier UI does not expose the price to Accessibility, screenshots are taken **in memory only** and passed through on-device ML Kit OCR.
-6. No image is saved while the price is missing.
-7. As soon as a plausible non-zero price is detected, that current frame is saved to `Pictures/CourierOffers` and added to the local offer database.
-8. If no price appears, the pending offer can remain armed for up to **3 minutes**. An offer that expires without a detected price is not saved.
-9. Repeated notification updates do not reset an already active capture. While OCR/capture is active, another notification cannot overwrite that transaction.
+## Why CourierPilot?
 
-The Wolt/Bolt APKs are not modified. No root, Shizuku, ADB, Lucky Patcher or MediaProjection prompt is required.
+Courier apps show a lot of useful information at offer time, but that information is temporary. CourierPilot creates a private, searchable record of the offers **you actually saw** so you can review patterns later instead of relying on memory.
 
-## 0.3.0 UI
+It is deliberately conservative about capture: **an offer is not archived until a plausible non-zero price is visible.** Intermediate OCR screenshots stay in memory and are not written to the Gallery.
 
-The app now has three main screens:
+### What it can record
 
-- **Home** — capture health, today's offer metrics, 7-day summary, a contribution-style activity calendar and recent offers;
-- **History** — up to 200 recent captured offers grouped by day; tapping one opens its saved screenshot;
-- **Stats** — Today / 7 days / 30 days summaries, GitHub-style yearly contribution heatmap, recent offer activity by hour and Wolt/Bolt split.
+| | CourierPilot 0.5.0 |
+|---|---|
+| 💶 Price | Captured only when a real non-zero price is detected |
+| 📍 Distance | Stored when the courier app exposes it |
+| ⏱ Estimated time | Stored when available |
+| 🏪 Merchant | Best-effort merchant/venue extraction |
+| 🧭 Pickup / drop-off | Structured locally when available |
+| 👤 Customer name | Stored locally when available |
+| 📦 Stacked offers | Delivery count and multi-stop details supported |
+| 🖼 Original offer | Final priced screenshot saved to `Pictures/CourierOffers` |
+| 🕒 Work time | Manual `Start shift` / `End shift` tracking |
 
-Settings moved out of the dashboard. When both Notification Access and Accessibility are healthy, setup controls stay hidden and Home only shows a small `Capture active` status. If either permission is lost, an `Action required` card appears with the exact fix button.
+Fields that a courier platform does not expose are left empty rather than invented.
 
-Diagnostics are also hidden from the main screen and live under **Settings → Diagnostics**, where raw Accessibility/OCR text can be expanded only when needed.
+## Highlights
 
-## Offer history
+### Automatic priced-offer capture
 
-Every successfully captured priced offer stores:
+`NotificationListenerService` detects new Wolt/Bolt tasks and arms a capture transaction. `AccessibilityService` watches the matching courier window and parses visible UI text. If the price is not exposed through Accessibility, CourierPilot uses on-device ML Kit OCR as a fallback.
 
-- offer arrival time;
-- platform (`Wolt` or `Bolt`);
-- detected price;
-- detected distance when available;
-- best-effort restaurant name;
-- original screenshot filename and MediaStore URI;
-- raw Accessibility/OCR text for diagnostics and future parser improvements.
+The active transaction is protected from repeated notification updates and stale OCR callbacks, and can stay pending for up to three minutes while waiting for a price.
 
-## Statistics
+### Offer Details
 
-Available aggregates include:
+Each captured offer can include:
 
-- offer count;
-- average offer price;
-- average detected distance;
-- average €/km when distance is available;
-- Today / 7-day / 30-day periods;
+- platform and arrival time;
+- expected price;
+- route distance and calculated €/km when distance exists;
+- estimated time;
+- single vs stacked delivery count;
+- merchant names and pickup addresses;
+- customer names and drop-off addresses;
+- original screenshot;
+- optional raw Accessibility/OCR text for parser diagnostics.
+
+### Statistics that describe offers — not imaginary earnings
+
+CourierPilot can show:
+
+- Today / 7-day / 30-day offer summaries;
 - Wolt vs Bolt split;
-- daily activity for up to 365 days;
-- contribution-style yearly heatmap;
-- hourly activity based on recent captured offers.
+- average offer value;
+- average detected distance;
+- average €/km where distance exists;
+- single vs stacked counts;
+- represented delivery stops;
+- top detected venues;
+- hourly offer-arrival activity;
+- interactive 365-day contribution-style heatmap;
+- manually tracked work time.
 
-Hourly activity is intentionally **not called work hours** because the app does not yet know exact shift start/end times.
+`Offers / tracked hour` is intentionally an **offer-arrival metric**, not completed-delivery earnings per hour.
 
-## Setup
+### Reliability Center
 
-Install the APK and open **CourierPilot**.
+Android background behavior can be aggressive, especially on OEM builds. CourierPilot includes a dedicated Reliability screen with:
 
-Enable:
+- Notification Listener status;
+- Accessibility capture status;
+- battery-optimization / Doze state;
+- Android background restriction state;
+- current pending offer;
+- last screenshot / last error;
+- privacy-safe bounded capture event log;
+- shortcuts to the relevant Android settings;
+- shareable privacy-safe diagnostics.
 
-- **Notification access** for the app;
-- **Accessibility** → Courier offer screen capture.
+Pending capture can resume on device unlock. An optional **Wake screen for offers** setting briefly wakes the display without unlocking or bypassing the keyguard.
 
-Optional:
+## How capture works
 
-- Turn on **Automatically open Wolt/Bolt on offer notification** in Settings. The listener sends the courier notification's original `PendingIntent` when Android permits the background launch.
+```mermaid
+flowchart LR
+    A[Wolt / Bolt notification] --> B[Notification listener]
+    B --> C[Arm pending offer]
+    C --> D[Matching courier window]
+    D --> E{Price visible to Accessibility?}
+    E -- Yes --> H[Parse offer]
+    E -- No --> F[In-memory screenshot]
+    F --> G[ML Kit OCR]
+    G --> H
+    H --> I{Plausible non-zero price?}
+    I -- No --> D
+    I -- Yes --> J[Save final screenshot]
+    J --> K[Local SQLite history + statistics]
+```
 
-## Screenshot storage
+No Wolt/Bolt APK modification is involved. CourierPilot does **not** require root, Shizuku, ADB, Lucky Patcher, or a MediaProjection permission prompt.
 
-Only the final frame where a price has been detected is written to the Gallery. Intermediate OCR probe screenshots exist only as temporary in-memory bitmaps and are recycled after recognition.
+## Privacy model
 
-Saved images are written to:
+CourierPilot is designed as a local personal tool.
 
-`Pictures/CourierOffers`
+- Offer history is stored in the app's local SQLite database.
+- Final offer screenshots are stored in the user's Gallery under `Pictures/CourierOffers`.
+- Customer names and addresses are not written to the privacy-safe reliability event log.
+- Intermediate OCR probe screenshots are kept in memory only and recycled after recognition.
+- The app manifest does **not** request Android's `INTERNET` permission.
+- There is no CourierPilot account or cloud sync.
 
-## Limitations
+Raw Accessibility/OCR text can contain information visible on the courier screen, so it is kept for local diagnostics and should be treated as private data.
 
-- Requires Android 11 / API 30 or newer because the app uses `AccessibilityService.takeScreenshot()`.
-- If Wolt/Bolt marks the offer window as secure, Android can reject screenshot capture.
-- OCR uses the Google Play services ML Kit Latin text recognizer.
-- Captures are currently **serialized**: if a second Wolt/Bolt offer notification arrives while another offer is actively waiting for price/OCR, the active capture is kept rather than overwritten.
-- Restaurant extraction is best-effort until more real Wolt/Bolt samples are collected. The UI filters obvious navigation labels such as `Close drawer` instead of presenting them as restaurants.
-- Price parsing rejects `€0.00` and values outside a broad courier-offer range, but screens containing multiple plausible euro amounts still require real-world tuning.
-- Distance extraction currently uses the first plausible distance shown by Accessibility/OCR.
+## Installation
 
-## Build
+CourierPilot currently targets personal/sideloaded Android use.
 
-Current app version: `0.4.0` (`versionCode 4`).
+1. Install a signed CourierPilot APK.
+2. Open **CourierPilot**.
+3. Enable **Notification access** for CourierPilot.
+4. Enable **Accessibility → CourierPilot screen capture**.
+5. On phones with aggressive background management, review the **Reliability** screen and allow the app to keep running as needed.
 
-Signed release APKs are built only by manual workflow dispatch or a `v*` tag. Release-signing identity and verification details are documented in [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNING.md).
+Optional settings include automatic opening of the relevant courier app after a matching notification and briefly waking the screen for pending offers.
+
+> GitHub Releases have not been published yet. Signed release builds are produced by the repository's GitHub Actions workflow and use the permanent CourierPilot signing identity documented in [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNING.md).
+
+## Requirements
+
+- Android 11 / API 30 or newer;
+- Wolt Courier Partner and/or Bolt Courier app installed;
+- Notification Access permission;
+- Accessibility service enabled for offer capture.
+
+## Tech stack
+
+- **Kotlin** / native Android framework;
+- **NotificationListenerService** for incoming courier-task notifications;
+- **AccessibilityService** for window-aware UI extraction and screenshot capture;
+- **Google Play services ML Kit Text Recognition** for OCR fallback;
+- **SQLiteOpenHelper** for local offer and shift history;
+- **JUnit** parser regression tests;
+- **GitHub Actions** for signed release builds and certificate verification.
+
+The project intentionally stays small: no Compose, no Room, no account backend and no cloud database.
+
+## Build from source
+
+The project uses Java 17 and Android SDK 35.
+
+```bash
+gradle testDebugUnitTest
+```
+
+Release tasks intentionally fail unless all signing environment variables are present:
+
+```text
+ANDROID_KEYSTORE_PATH
+ANDROID_KEYSTORE_PASSWORD
+ANDROID_KEY_ALIAS
+ANDROID_KEY_PASSWORD
+```
+
+The repository does not contain the private release keystore. See [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNING.md) for the public signing identity and verification process.
+
+## Current release
+
+**CourierPilot 0.5.0** (`versionCode 5`)
+
+0.5.0 adds the Reliability Center, privacy-safe event logging, unlock recovery, optional screen wake, rich offer details, stacked-delivery statistics, venue statistics, manual shift tracking and parser regression coverage based on real Wolt/Bolt offer layouts.
+
+Full notes: [`docs/RELEASE_0.5.0.md`](docs/RELEASE_0.5.0.md)
+
+## Known limitations
+
+- Android/OEM background restrictions can still interrupt capture until the user grants the relevant system permissions.
+- A courier app can block screenshots with secure-window flags.
+- Merchant/address parsing is best-effort and may need tuning when Wolt/Bolt change their UI.
+- Captures are serialized: an active pending offer is not overwritten by another notification.
+- Bolt and Wolt expose different fields; missing fields remain empty.
+- CourierPilot records **offers shown**, not whether an offer was accepted, completed, cancelled, or ultimately paid.
+
+## Contributing
+
+Bug reports and parser samples are useful, especially after courier-app UI changes. When sharing diagnostics publicly, remove or redact customer names, phone numbers, exact addresses and screenshots containing personal information.
+
+For capture problems, the Reliability screen's privacy-safe diagnostics report is preferred over raw order data.
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for contribution guidelines.
+
+---
+
+<p align="center">
+  Built for real-world courier use — local data, inspectable behavior, and no invented metrics.
+</p>
