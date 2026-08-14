@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -57,10 +58,15 @@ class RouteTraceActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_LOCATION && grantResults.any { it == PackageManager.PERMISSION_GRANTED }) {
-            startTrace()
-        } else {
-            refreshStatus("Location permission is required to record a route trace.")
+        when (requestCode) {
+            REQUEST_LOCATION -> {
+                if (grantResults.any { it == PackageManager.PERMISSION_GRANTED }) ensureVisibleNotificationThenStart()
+                else refreshStatus("Location permission is required to record a route trace.")
+            }
+            REQUEST_NOTIFICATIONS -> {
+                if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) startTrace()
+                else refreshStatus("Notification permission is required so GPS recording remains visibly controllable.")
+            }
         }
     }
 
@@ -135,6 +141,17 @@ class RouteTraceActivity : Activity() {
             )
             return
         }
+        ensureVisibleNotificationThenStart()
+    }
+
+    private fun ensureVisibleNotificationThenStart() {
+        if (
+            Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
+            return
+        }
         startTrace()
     }
 
@@ -168,9 +185,9 @@ class RouteTraceActivity : Activity() {
                 append("RECORDING")
                 state.startedAt?.let { append(" · started ${formatTime(it)}") }
                 append("\n${state.sampleCount} points · ${"%.2f".format(Locale.US, state.distanceMeters / 1000.0)} km")
-                state.lastSampleAt?.let { append(" · last ${secondsAgo(it)}s ago") }
+                state.lastSampleAt?.let { append(" · last fix ${secondsAgo(it)}s ago") }
             }
-            state.stale -> "Previous recording stopped updating. Starting a new trace will close that stale DB session first."
+            state.stale -> "Previous recorder heartbeat is stale. Starting a new trace will close that open DB session first."
             else -> "Not recording."
         }
         statusText.text = status
@@ -258,6 +275,7 @@ class RouteTraceActivity : Activity() {
 
     companion object {
         private const val REQUEST_LOCATION = 1713
+        private const val REQUEST_NOTIFICATIONS = 1714
         private val BG = Color.parseColor("#F5F7FB")
         private val TEXT = Color.parseColor("#111827")
         private val MUTED = Color.parseColor("#6B7280")
