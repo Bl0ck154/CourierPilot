@@ -17,9 +17,9 @@
         </activity>
 
         <service
-            android:name=".CourierNotificationListener"
+            android:name=".CourierPilotNotificationListener"
             android:exported="false"
-            android:label="Courier offer notification listener"
+            android:label="CourierPilot notification access"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
@@ -29,7 +29,7 @@
         <service
             android:name=".OfferAccessibilityService"
             android:exported="false"
-            android:label="Courier offer screen capture"
+            android:label="CourierPilot screen capture"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />

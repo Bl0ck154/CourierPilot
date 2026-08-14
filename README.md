@@ -1,4 +1,4 @@
-# Courier Offer Archive
+# CourierPilot
 
 Android companion app for automatically archiving incoming Wolt/Bolt courier offers **only after a price is visible**, then building a local history and statistics from the captured offers.
 
@@ -58,7 +58,7 @@ Hourly activity is intentionally **not called work hours** because the app does 
 
 ## Setup
 
-Install the APK and open **Courier Offer Archive**.
+Install the APK and open **CourierPilot**.
 
 Enable:
 
@@ -89,6 +89,6 @@ Saved images are written to:
 
 ## Build
 
-Current app version: `0.3.0` (`versionCode 3`).
+Current app version: `0.4.0` (`versionCode 4`).
 
-A 0.3.0 debug APK was successfully built by GitHub Actions on 2026-08-13 with JDK 17 / Android 35 and uploaded as the `app-debug` artifact.
+Signed release APKs are built only by manual workflow dispatch or a `v*` tag. Release-signing identity and verification details are documented in [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNING.md).

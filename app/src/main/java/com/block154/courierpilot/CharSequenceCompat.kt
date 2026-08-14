@@ -1,4 +1,4 @@
-package com.block154.couriernotificationlistener
+package com.block154.courierpilot
 
 /**
  * Kotlin stdlib provides orEmpty() for String?, but Android notification extras and

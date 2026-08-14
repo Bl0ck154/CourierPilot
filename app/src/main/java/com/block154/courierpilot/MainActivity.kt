@@ -1,4 +1,4 @@
-package com.block154.couriernotificationlistener
+package com.block154.courierpilot
 
 import android.app.Activity
 import android.content.ComponentName
@@ -125,7 +125,7 @@ class MainActivity : Activity() {
     }
 
     private fun homeScreen(): View = scrollScreen { root ->
-        root.addView(topBar("Courier Offer Archive", "Your Wolt + Bolt offer journal", showSettings = true))
+        root.addView(topBar("CourierPilot", "Your Wolt + Bolt offer journal", showSettings = true))
 
         val notificationOk = hasNotificationAccess()
         val accessibilityOk = hasAccessibilityAccess()
@@ -286,7 +286,7 @@ class MainActivity : Activity() {
             }
         }
         root.addView(diag.withTop(dp(12)))
-        root.addView(text("Courier Offer Archive · v0.3.0", 12f, MUTED).apply { gravity = Gravity.CENTER }.withTop(dp(28)))
+        root.addView(text("CourierPilot · v0.4.0", 12f, MUTED).apply { gravity = Gravity.CENTER }.withTop(dp(28)))
     }
 
     private fun topBar(title: String, subtitle: String, showSettings: Boolean, showBack: Boolean = false): View {

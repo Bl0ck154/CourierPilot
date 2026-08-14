@@ -1,4 +1,4 @@
-package com.block154.couriernotificationlistener
+package com.block154.courierpilot
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityService.ScreenshotResult

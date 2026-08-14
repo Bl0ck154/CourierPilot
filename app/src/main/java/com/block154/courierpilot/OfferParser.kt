@@ -1,4 +1,4 @@
-package com.block154.couriernotificationlistener
+package com.block154.courierpilot
 
 import java.math.BigDecimal
 import java.math.RoundingMode
