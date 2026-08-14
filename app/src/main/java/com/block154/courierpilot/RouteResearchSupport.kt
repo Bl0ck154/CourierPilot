@@ -8,6 +8,8 @@ import android.location.Location
 import android.location.LocationManager
 import android.os.Build
 import android.os.CancellationSignal
+import android.os.Handler
+import android.os.Looper
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -35,25 +37,59 @@ internal object RouteResearchLocation {
             callback(Result.failure(IllegalStateException("No enabled location provider")))
             return
         }
+
         val completed = AtomicBoolean(false)
+        val handler = Handler(Looper.getMainLooper())
+        val signals = mutableListOf<CancellationSignal>()
         var remaining = providers.size
         var best: Location? = null
-        providers.forEach { provider ->
-            runCatching {
-                manager.getCurrentLocation(provider, CancellationSignal(), context.mainExecutor) { location ->
-                    if (location != null && (best == null || score(location) > score(best!!))) best = location
-                    remaining--
-                    if (remaining == 0 && completed.compareAndSet(false, true)) {
-                        val chosen = best
-                        if (chosen == null) callback(Result.failure(IllegalStateException("Could not obtain current location")))
-                        else callback(Result.success(chosen.toFix()))
-                    }
+
+        fun finish(result: Result<CurrentLocationFix>) {
+            if (!completed.compareAndSet(false, true)) return
+            handler.removeCallbacksAndMessages(TIMEOUT_TOKEN)
+            signals.forEach { runCatching { it.cancel() } }
+            callback(result)
+        }
+
+        fun finishFromBest(fallback: Throwable? = null) {
+            val chosen = best
+            if (chosen != null) finish(Result.success(chosen.toFix()))
+            else finish(Result.failure(fallback ?: IllegalStateException("Could not obtain current location")))
+        }
+
+        handler.postAtTime(
+            {
+                if (!completed.get()) {
+                    finishFromBest(IllegalStateException("Current location timed out after ${CURRENT_LOCATION_TIMEOUT_MS / 1000}s"))
                 }
-            }.onFailure {
-                remaining--
-                if (remaining == 0 && completed.compareAndSet(false, true)) {
-                    val chosen = best
-                    if (chosen == null) callback(Result.failure(it)) else callback(Result.success(chosen.toFix()))
+            },
+            TIMEOUT_TOKEN,
+            android.os.SystemClock.uptimeMillis() + CURRENT_LOCATION_TIMEOUT_MS,
+        )
+
+        providers.forEach { provider ->
+            val signal = CancellationSignal()
+            signals += signal
+            runCatching {
+                manager.getCurrentLocation(provider, signal, context.mainExecutor) { location ->
+                    if (completed.get()) return@getCurrentLocation
+                    if (location != null && (best == null || score(location) > score(best!!))) best = location
+
+                    // Good fresh GPS is more useful to a time-sensitive offer than waiting for a
+                    // second provider merely to shave a few meters off an already solid fix.
+                    if (location != null && location.hasAccuracy() && location.accuracy <= EARLY_ACCEPT_ACCURACY_METERS) {
+                        finish(Result.success(location.toFix()))
+                        return@getCurrentLocation
+                    }
+
+                    remaining--
+                    if (remaining == 0) finishFromBest()
+                }
+            }.onFailure { failure ->
+                context.mainExecutor.execute {
+                    if (completed.get()) return@execute
+                    remaining--
+                    if (remaining == 0) finishFromBest(failure)
                 }
             }
         }
@@ -80,6 +116,10 @@ internal object RouteResearchLocation {
         ageMillis = (System.currentTimeMillis() - time).coerceAtLeast(0L),
         provider = provider.orEmpty(),
     )
+
+    private const val CURRENT_LOCATION_TIMEOUT_MS = 8_000L
+    private const val EARLY_ACCEPT_ACCURACY_METERS = 25f
+    private val TIMEOUT_TOKEN = Any()
 }
 
 internal object RouteResearchGeocoder {
