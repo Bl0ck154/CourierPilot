@@ -1,6 +1,7 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
 }
 
 val releaseSigningVariables = listOf(
@@ -53,6 +54,10 @@ android {
         }
     }
 
+    buildFeatures {
+        compose = true
+    }
+
     testOptions {
         unitTests.isIncludeAndroidResources = true
     }
@@ -72,6 +77,15 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
 
 dependencies {
     implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
+
+    val composeBom = platform("androidx.compose:compose-bom:2026.06.00")
+    implementation(composeBom)
+    implementation("androidx.activity:activity-compose:1.13.0")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.16.1")
 }
