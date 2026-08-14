@@ -6,7 +6,7 @@ import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 
-data class AutomaticWorkSession(
+internal data class AutomaticWorkSession(
     val id: Long,
     val startedAt: Long,
     val endedAt: Long?,
@@ -14,13 +14,13 @@ data class AutomaticWorkSession(
     val endReason: String?,
 )
 
-data class AutomaticWorkSummary(
+internal data class AutomaticWorkSummary(
     val totalMillis: Long,
     val sessionCount: Int,
     val active: Boolean,
 )
 
-data class AccessCodeRecord(
+internal data class AccessCodeRecord(
     val id: Long,
     val buildingKey: String,
     val displayAddress: String,
@@ -36,7 +36,7 @@ data class AccessCodeRecord(
  * offer-history schema makes the feature easy to remove/migrate and avoids rewriting proven capture
  * tables merely to add automatic presence tracking and building access codes.
  */
-class CourierMetaDatabase private constructor(context: Context) :
+internal class CourierMetaDatabase private constructor(context: Context) :
     SQLiteOpenHelper(context.applicationContext, DB_NAME, null, DB_VERSION) {
 
     override fun onCreate(db: SQLiteDatabase) {
