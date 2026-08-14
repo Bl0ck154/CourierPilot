@@ -253,7 +253,7 @@ class CourierPilotHomeActivity : Activity() {
 
         search.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = renderResults(s?.toString().orEmpty())
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = renderResults(s?.toString() ?: "")
             override fun afterTextChanged(s: Editable?) = Unit
         })
         renderResults(historyQuery)
@@ -421,7 +421,6 @@ class CourierPilotHomeActivity : Activity() {
         background = roundedDrawable(SURFACE, BORDER, dp(16).toFloat())
         contentDescription = "Settings"
         setPadding(dp(13), dp(13), dp(13), dp(13))
-        scaleType = ImageButton.ScaleType.CENTER_INSIDE
         setOnClickListener { click() }
         elevation = dp(1).toFloat()
     }.also { it.layoutParams = LinearLayout.LayoutParams(dp(50), dp(50)) }
