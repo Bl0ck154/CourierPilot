@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   tag:
@@ -25,3 +26,8 @@ jobs:
               -f ref='refs/tags/v0.11.3' \
               -f sha="$TARGET_SHA"
           fi
+
+      - name: Dispatch permanent signed release workflow on v0.11.3
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run build.yml --repo "$GITHUB_REPOSITORY" --ref v0.11.3
