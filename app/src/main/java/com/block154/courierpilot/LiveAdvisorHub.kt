@@ -9,15 +9,27 @@ import java.lang.ref.WeakReference
  * remains usable without an attached service; advisor work simply becomes a no-op in that case.
  */
 internal object LiveAdvisorHub {
+    private data class CurrentAdvisorOffer(
+        val offerId: Long,
+        val record: OfferRecord,
+        val parsed: ParsedOffer,
+    )
+
     private var serviceRef = WeakReference<AccessibilityService>(null)
     private var advisor: LiveOfferAdvisor? = null
+    private var currentOffer: CurrentAdvisorOffer? = null
 
     fun attach(context: Context) {
         val service = context as? AccessibilityService ?: return
         if (serviceRef.get() === service && advisor != null) return
         advisor?.destroy()
         serviceRef = WeakReference(service)
-        advisor = LiveOfferAdvisor(service)
+        advisor = LiveOfferAdvisor(service) { platform, enabled ->
+            if (!enabled) return@LiveOfferAdvisor
+            val current = currentOffer ?: return@LiveOfferAdvisor
+            if (!current.record.platform.equals(platform, ignoreCase = true)) return@LiveOfferAdvisor
+            startRouteForOffer(service, current)
+        }
     }
 
     /** Hide an older card while CourierPilot is collecting the clean screenshot for a new offer. */
@@ -45,12 +57,23 @@ internal object LiveAdvisorHub {
             estimatedMinutesMax = record.estimatedMinutesMax ?: parsedFromScreen.estimatedMinutesMax,
         )
 
+        val current = CurrentAdvisorOffer(offerId, record, parsed)
+        currentOffer = current
+
         DeliveryLifecycleTracking.onOfferCaptured(service, record.packageName, offerId, record.capturedAt)
+        currentAdvisor.showBase(record.platform, parsed)
+        startRouteForOffer(service, current)
+    }
+
+    private fun startRouteForOffer(service: AccessibilityService, current: CurrentAdvisorOffer) {
+        val record = current.record
+        val parsed = current.parsed
+        if (!LiveAdvisorSettings.routeEnabled(service, record.platform)) return
 
         // With experimental Bolt routing enabled, preserve a clean research bundle automatically.
         // The bitmap comes from the already-persisted proof screenshot, so the advisor can never
         // contaminate the map image with its own overlay.
-        if (record.platform.equals("Bolt", ignoreCase = true) && LiveAdvisorSettings.automaticBoltRouting(service)) {
+        if (record.platform.equals("Bolt", ignoreCase = true)) {
             val root = service.rootInActiveWindow
             if (root?.packageName?.toString() == CourierSignals.BOLT_PACKAGE) {
                 runCatching {
@@ -62,18 +85,18 @@ internal object LiveAdvisorHub {
                     )
                 }
             }
+            AutomaticBoltRouteCoordinator.start(service, current.offerId, record.platform, parsed) { outcome ->
+                advisor?.updateBoltRoute(outcome)
+            }
+            return
         }
 
-        currentAdvisor.showBase(record.platform, parsed)
-
-        AutomaticWoltRouteCoordinator.start(service, offerId, record.platform, parsed) { outcome ->
-            val comparison = outcome.comparison
-            if (comparison != null) advisor?.updateRoute(comparison, outcome.waypoints.size)
-            else advisor?.updateRouteUnavailable(outcome.failureReason ?: "unknown failure")
-        }
-
-        AutomaticBoltRouteCoordinator.start(service, offerId, record.platform, parsed) { outcome ->
-            advisor?.updateBoltRoute(outcome)
+        if (record.platform.equals("Wolt", ignoreCase = true)) {
+            AutomaticWoltRouteCoordinator.start(service, current.offerId, record.platform, parsed) { outcome ->
+                val comparison = outcome.comparison
+                if (comparison != null) advisor?.updateRoute(comparison, outcome.waypoints.size)
+                else advisor?.updateRouteUnavailable(outcome.failureReason ?: "unknown failure")
+            }
         }
     }
 
