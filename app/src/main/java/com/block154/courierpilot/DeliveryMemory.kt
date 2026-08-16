@@ -11,7 +11,6 @@ import android.widget.Toast
  */
 internal object DeliveryMemory {
     private const val PREFS = "courierpilot_delivery_memory"
-    private const val ADDRESS_OBSERVATION_BURST_MS = 2L * 60L * 1000L
 
     private data class DetectedAddress(
         val raw: String,
@@ -49,33 +48,25 @@ internal object DeliveryMemory {
 
         allAddresses.forEach { detected ->
             val rawAddress = detected.raw
-            val customer = customerForAddress(parsed, rawAddress)
+            val screenDetails = DeliveryScreenDetailsExtractor.forAddress(text, rawAddress)
+            val customer = customerForAddress(parsed, rawAddress) ?: screenDetails?.customerName
             val merchant = merchantForAddress(parsed, rawAddress)
+            val detailsText = screenDetails?.asDetailsText() ?: addressContext(text, rawAddress)
+
             runCatching {
-                val canonicalBeforeSave = AddressMemoryResolver.canonicalize(context, database, rawAddress)
-                    ?: detected.normalized
-                val burstKey = canonicalBeforeSave.first
-                val saved = if (shouldStoreObservation(context, packageName, burstKey)) {
-                    AddressMemoryResolver.saveObservation(
-                        context = context,
-                        database = database,
-                        address = rawAddress,
-                        platform = platform,
-                        customerName = customer,
-                        detailsText = addressContext(text, rawAddress),
-                        rawText = text,
-                    )
-                } else {
-                    AddressMemoryResolver.findSaved(context, database, rawAddress)?.let { existing ->
-                        SmartAddressSaveResult(
-                            addressId = existing.id,
-                            buildingKey = existing.buildingKey,
-                            displayAddress = existing.displayAddress,
-                            inserted = false,
-                            localAliasMatched = existing.buildingKey != detected.normalized.first,
-                        )
-                    }
-                }
+                // Always let the resolver see the newest frame. It updates latest details/raw text on
+                // the saved building while internally suppressing duplicate observation rows for a
+                // short burst. This matters when a partial Bolt screen is followed by the richer
+                // customer-details sheet with instructions/apartment/floor a few seconds later.
+                val saved = AddressMemoryResolver.saveObservation(
+                    context = context,
+                    database = database,
+                    address = rawAddress,
+                    platform = platform,
+                    customerName = customer,
+                    detailsText = detailsText,
+                    rawText = text,
+                )
 
                 if (saved != null) {
                     merchant?.let {
@@ -217,22 +208,8 @@ internal object DeliveryMemory {
         }
         if (index < 0) return null
         val from = (index - 2).coerceAtLeast(0)
-        val to = (index + 10).coerceAtMost(lines.size)
+        val to = (index + 14).coerceAtMost(lines.size)
         return lines.subList(from, to).joinToString("\n").take(4_000)
-    }
-
-    private fun shouldStoreObservation(
-        context: Context,
-        packageName: String,
-        buildingKey: String,
-        now: Long = System.currentTimeMillis(),
-    ): Boolean {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val observationKey = "obs_${packageName.hashCode()}_${buildingKey.hashCode()}"
-        val previousAt = prefs.getLong(observationKey, 0L)
-        if (previousAt > 0L && now - previousAt in 0L until ADDRESS_OBSERVATION_BURST_MS) return false
-        prefs.edit().putLong(observationKey, now).apply()
-        return true
     }
 
     private fun addressKey(packageName: String): String = "last_address_${packageName.replace('.', '_')}"
