@@ -53,6 +53,30 @@ internal object AddressMetadataCleanup {
             }
         }
 
+        // Collect address rows before entering the write transaction. Some OEM SQLite builds are
+        // unhappy when the same table is updated while an active cursor is iterating it.
+        val clearLatestCustomerIds = mutableListOf<Long>()
+        db.query(
+            "addresses",
+            arrayOf("id", "latest_customer_name"),
+            "latest_customer_name IS NOT NULL",
+            null,
+            null,
+            null,
+            null,
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val addressId = cursor.getLong(0)
+                val customer = cursor.getString(1) ?: continue
+                val normalized = normalize(customer)
+                val copiedVenue = normalized in venueNamesByAddress[addressId].orEmpty()
+                val removedEntity = normalized in removedCustomerNamesByAddress[addressId].orEmpty()
+                if (copiedVenue || removedEntity || isUiGarbage(customer)) {
+                    clearLatestCustomerIds += addressId
+                }
+            }
+        }
+
         db.beginTransaction()
         try {
             badCustomerEntityIds.forEach { id ->
@@ -64,31 +88,13 @@ internal object AddressMetadataCleanup {
                 "entity_type = ?",
                 arrayOf(CourierMetaDatabase.ENTITY_VENUE),
             )
-
-            db.query(
-                "addresses",
-                arrayOf("id", "latest_customer_name"),
-                "latest_customer_name IS NOT NULL",
-                null,
-                null,
-                null,
-                null,
-            ).use { cursor ->
-                while (cursor.moveToNext()) {
-                    val addressId = cursor.getLong(0)
-                    val customer = cursor.getString(1) ?: continue
-                    val normalized = normalize(customer)
-                    val copiedVenue = normalized in venueNamesByAddress[addressId].orEmpty()
-                    val removedEntity = normalized in removedCustomerNamesByAddress[addressId].orEmpty()
-                    if (copiedVenue || removedEntity || isUiGarbage(customer)) {
-                        db.update(
-                            "addresses",
-                            ContentValues().apply { putNull("latest_customer_name") },
-                            "id = ?",
-                            arrayOf(addressId.toString()),
-                        )
-                    }
-                }
+            clearLatestCustomerIds.forEach { addressId ->
+                db.update(
+                    "addresses",
+                    ContentValues().apply { putNull("latest_customer_name") },
+                    "id = ?",
+                    arrayOf(addressId.toString()),
+                )
             }
             db.setTransactionSuccessful()
         } finally {
