@@ -7,7 +7,7 @@ import kotlin.math.ceil
 internal object AddressBackfill {
     private const val PREFS = "courierpilot_address_backfill"
     private const val KEY_REVISION = "revision"
-    private const val CURRENT_REVISION = 5
+    private const val CURRENT_REVISION = 6
     private const val PAGE_SIZE = 200
 
     fun schedule(context: Context) {
@@ -34,8 +34,7 @@ internal object AddressBackfill {
         val offers = OfferDatabase.get(context)
         val meta = CourierMetaDatabase.get(context)
 
-        // The old in-database repair uses the legacy strict parser. v0.11.4 has one source of truth:
-        // AddressDataRepair + AddressMemoryResolver.
+        // AddressDataRepair owns canonical identity and legacy OCR cleanup.
         AddressDataRepair.runIfNeeded(context)
 
         val total = offers.offerCount()
@@ -63,6 +62,7 @@ internal object AddressBackfill {
                 customerName = null,
                 detailsText = record.merchantNames.getOrNull(index)?.let { "Pickup · $it" },
                 rawText = record.rawText,
+                evidence = AddressEvidenceSource.CAPTURED_OFFER,
                 now = record.capturedAt,
             ) ?: return@forEachIndexed
             val venue = record.merchantNames.getOrNull(index)
@@ -88,6 +88,7 @@ internal object AddressBackfill {
                 customerName = customer,
                 detailsText = "Drop-off from captured offer",
                 rawText = record.rawText,
+                evidence = AddressEvidenceSource.CAPTURED_OFFER,
                 now = record.capturedAt,
             ) ?: return@forEachIndexed
             if (!customer.isNullOrBlank()) {
