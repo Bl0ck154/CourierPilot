@@ -1,10 +1,13 @@
 package com.block154.courierpilot.ui
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 
 val Ink = Color(0xFF0B1220)
@@ -58,6 +61,13 @@ private val DarkColors = darkColorScheme(
 fun CourierPilotTheme(content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
-        content = content,
-    )
+    ) {
+        // CourierPilot targets API 35, where Android enforces edge-to-edge. Keep all interactive
+        // Compose content inside safeDrawing so status/navigation bars and display cutouts never
+        // cover titles, back buttons, bottom actions, or scrolling content. Nested Material 3
+        // components consume these insets and therefore do not apply them a second time.
+        Box(Modifier.safeDrawingPadding()) {
+            content()
+        }
+    }
 }
