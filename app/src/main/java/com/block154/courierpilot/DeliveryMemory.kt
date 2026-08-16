@@ -8,6 +8,10 @@ import android.widget.Toast
  *
  * Address memory stores observations of courier screens. It must never imply that the courier
  * physically visited a building merely because an offer displayed that address.
+ *
+ * v0.13 separates text provenance. Accessibility can contribute durable address evidence; OCR-
+ * augmented text is useful to the live offer parser/advisor but is never allowed to mutate address
+ * memory.
  */
 internal object DeliveryMemory {
     private const val PREFS = "courierpilot_delivery_memory"
@@ -15,9 +19,15 @@ internal object DeliveryMemory {
     private data class DetectedAddress(
         val raw: String,
         val normalized: Pair<String, String>,
+        val evidence: AddressEvidenceSource,
     )
 
-    fun observeScreen(context: Context, packageName: String, text: String) {
+    fun observeScreen(
+        context: Context,
+        packageName: String,
+        text: String,
+        source: ScreenTextSource = ScreenTextSource.ACCESSIBILITY,
+    ) {
         if (text.isBlank()) return
 
         LiveAdvisorHub.attach(context)
@@ -29,38 +39,37 @@ internal object DeliveryMemory {
             CourierPresence.markOfferOnline(context, packageName, "offer screen")
         }
 
-        // Accepted-delivery detail sheets have an explicit Address section plus nearby metadata such
-        // as Apartment, Floor and Bag/Unit. Once that structured shape is recognized, its Address
-        // value is authoritative and the broad compact-line detector must not reinterpret metadata
-        // rows as independent buildings.
-        val screenDetails = DeliveryScreenDetailsExtractor.extract(text)
-        val compactAddresses = if (screenDetails == null) {
-            DeliveryAddressNormalizer.likelyAddressLines(text)
-        } else {
-            emptyList()
-        }
-        val detectedAddresses = (
-            listOfNotNull(screenDetails?.address) +
-                CourierSignals.likelyAddresses(text) +
-                compactAddresses
-            )
-            .filterNot(DeliveryAddressNormalizer::isRejectedAddressArtifact)
-            .distinct()
-        val allAddresses = (detectedAddresses + parsed.pickupAddresses + parsed.dropoffAddresses)
-            .mapNotNull { raw ->
-                if (DeliveryAddressNormalizer.isRejectedAddressArtifact(raw)) return@mapNotNull null
-                DeliveryAddressNormalizer.normalize(raw)?.let { DetectedAddress(raw, it) }
-            }
-            .distinctBy { it.normalized.first }
+        // OCR may enrich the live offer card, but it cannot create/update buildings, customers,
+        // access codes or aliases. This is the hard provenance boundary that was missing before.
+        if (source != ScreenTextSource.ACCESSIBILITY) return
 
+        val platform = OfferState.platformLabel(packageName)
+        val database = CourierMetaDatabase.get(context)
+        val screenDetails = DeliveryScreenDetailsExtractor.extract(text)
+        val candidates = AddressEvidenceExtractor.fromAccessibility(text, parsed, screenDetails)
+
+        val allAddresses = candidates.mapNotNull { candidate ->
+            val normalized = DeliveryAddressNormalizer.normalize(candidate.raw) ?: return@mapNotNull null
+            val evidence = if (candidate.evidence == AddressEvidenceSource.ACCESSIBILITY_COMPACT_PENDING) {
+                val existing = AddressMemoryResolver.findSaved(context, database, candidate.raw)
+                when {
+                    existing != null -> AddressEvidenceSource.ACCESSIBILITY_COMPACT_PENDING
+                    CompactAddressConfirmationGate.confirm(packageName, candidate.raw) ->
+                        AddressEvidenceSource.ACCESSIBILITY_COMPACT_CONFIRMED
+                    else -> return@mapNotNull null
+                }
+            } else {
+                candidate.evidence
+            }
+            DetectedAddress(candidate.raw, normalized, evidence)
+        }.distinctBy { it.normalized.first }
+
+        val detectedAddresses = allAddresses.map { it.raw }
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val key = addressKey(packageName)
         val previous = prefs.getString(key, null)
         val fallback = detectedAddresses.lastOrNull() ?: previous
         if (detectedAddresses.isNotEmpty()) prefs.edit().putString(key, detectedAddresses.last()).apply()
-
-        val platform = OfferState.platformLabel(packageName)
-        val database = CourierMetaDatabase.get(context)
 
         allAddresses.forEach { detected ->
             val rawAddress = detected.raw
@@ -73,10 +82,8 @@ internal object DeliveryMemory {
             val detailsText = matchedScreenDetails?.asDetailsText() ?: addressContext(text, rawAddress)
 
             runCatching {
-                // Always let the resolver see the newest frame. It updates latest details/raw text on
-                // the saved building while internally suppressing duplicate observation rows for a
-                // short burst. This matters when a partial Bolt screen is followed by the richer
-                // customer-details sheet with instructions/apartment/floor a few seconds later.
+                // Always let the resolver see the newest trusted Accessibility frame. It updates
+                // latest details/raw text while internally suppressing duplicate observation rows.
                 val saved = AddressMemoryResolver.saveObservation(
                     context = context,
                     database = database,
@@ -85,6 +92,7 @@ internal object DeliveryMemory {
                     customerName = customer,
                     detailsText = detailsText,
                     rawText = text,
+                    evidence = detected.evidence,
                 )
 
                 if (saved != null) {
