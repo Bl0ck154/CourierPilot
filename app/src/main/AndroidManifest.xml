@@ -39,6 +39,7 @@
         <activity android:name=".OfferDetailsActivity" android:exported="false" />
         <activity android:name=".AddressDetailsActivity" android:exported="false" />
         <activity android:name=".ReliabilityActivity" android:exported="false" />
+        <activity android:name=".DeveloperToolsActivity" android:exported="false" />
         <activity android:name=".RouteResearchActivity" android:exported="false" />
         <activity android:name=".RouteTraceActivity" android:exported="true" />
 
