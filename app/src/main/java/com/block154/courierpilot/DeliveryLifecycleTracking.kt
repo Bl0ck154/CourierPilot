@@ -69,6 +69,15 @@ internal object DeliveryLifecycleTracking {
         }
     }
 
+    /** Current trusted lifecycle state for this courier app, if CourierPilot has an active task. */
+    fun currentState(context: Context, packageName: String): DeliveryEventType? {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val prefix = keyPrefix(packageName)
+        if (prefs.getLong("${prefix}_offer", -1L) <= 0L) return null
+        return prefs.getString("${prefix}_last_event", null)
+            ?.let { runCatching { DeliveryEventType.valueOf(it) }.getOrNull() }
+    }
+
     internal fun canAdvance(from: DeliveryEventType, to: DeliveryEventType): Boolean = when (from) {
         DeliveryEventType.OFFER_CAPTURED -> to in setOf(DeliveryEventType.ACCEPTED, DeliveryEventType.CANCELLED)
         DeliveryEventType.ACCEPTED -> to in setOf(
