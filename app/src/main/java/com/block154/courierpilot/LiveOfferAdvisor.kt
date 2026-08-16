@@ -38,7 +38,10 @@ internal object PlatformOfferEconomicsCalculator {
  * Small TYPE_ACCESSIBILITY_OVERLAY card shown only after CourierPilot has persisted the original
  * offer screenshot. It never clicks, accepts, rejects or covers capture with its own UI.
  */
-internal class LiveOfferAdvisor(private val service: AccessibilityService) {
+internal class LiveOfferAdvisor(
+    private val service: AccessibilityService,
+    private val onRouteToggleChanged: ((platform: String, enabled: Boolean) -> Unit)? = null,
+) {
     private val handler = Handler(Looper.getMainLooper())
     private val windowManager = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var root: LinearLayout? = null
@@ -187,12 +190,14 @@ internal class LiveOfferAdvisor(private val service: AccessibilityService) {
                 routeText?.apply {
                     if (enabled) {
                         visibility = View.VISIBLE
-                        text = "Route ON · applies from the next offer"
+                        text = "Route · starting…"
                     } else {
                         visibility = View.GONE
                         text = ""
                     }
                 }
+                onRouteToggleChanged?.invoke(currentPlatform, enabled)
+                scheduleHide()
             }
         }
         topRow.addView(routeToggle, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
