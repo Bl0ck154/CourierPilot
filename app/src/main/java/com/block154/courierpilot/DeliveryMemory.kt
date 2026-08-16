@@ -5,13 +5,8 @@ import android.widget.Toast
 
 /**
  * Learns local delivery context for customer buildings seen in the courier apps.
- *
- * Address memory stores observations of customer-side courier screens. It must never imply that the
- * courier physically visited a building merely because an offer displayed that address.
- *
- * OCR-augmented text is useful to the live offer parser/advisor but is never allowed to mutate
- * address memory. Accessibility text must additionally pass DeliveryAddressPersistenceGate so
- * restaurant/menu screens cannot teach durable addresses.
+ * OCR never mutates durable address memory. Accessibility text must additionally pass the
+ * platform-aware DeliveryAddressPersistenceGate.
  */
 internal object DeliveryMemory {
     private const val PREFS = "courierpilot_delivery_memory"
@@ -39,15 +34,13 @@ internal object DeliveryMemory {
             CourierPresence.markOfferOnline(context, packageName, "offer screen")
         }
 
-        // OCR may enrich the live offer card, but it cannot advance delivery lifecycle state or
-        // create/update buildings, customers, access codes or aliases. Otherwise a hallucinated OCR
-        // pickup cue could unlock durable persistence for a later restaurant frame.
+        // OCR may enrich live offer parsing, but cannot advance lifecycle or mutate address memory.
         if (source != ScreenTextSource.ACCESSIBILITY) return
         LiveAdvisorHub.observeScreen(context, packageName, text)
 
         val platform = OfferState.platformLabel(packageName)
         val database = CourierMetaDatabase.get(context)
-        val screenDetails = DeliveryScreenDetailsExtractor.extract(text)
+        val screenDetails = DeliveryScreenDetailsExtractor.extractForPlatform(packageName, text)
         val persistence = DeliveryAddressPersistenceGate.evaluate(context, packageName, text, screenDetails)
         if (!persistence.allowed) {
             CaptureEventLog.append(
@@ -98,12 +91,16 @@ internal object DeliveryMemory {
                 val detailsAddress = details.address ?: return@takeIf false
                 DeliveryAddressNormalizer.matchScore(detailsAddress, rawAddress) >= 0.86
             }
-            val customer = customerForAddress(parsed, rawAddress) ?: matchedScreenDetails?.customerName
+            // Customer identities are persisted only when the trusted customer screen itself exposes
+            // them. Parsed offer cards are deliberately not used here; they produced UI labels and
+            // merchant names such as `Address details`, `Notes` and `Ekomarket (...)` in old builds.
+            val customer = matchedScreenDetails?.customerName
+                ?.trim()
+                ?.takeIf(String::isNotEmpty)
+                ?.takeUnless(AddressMetadataCleanup::isUiGarbage)
             val detailsText = matchedScreenDetails?.asDetailsText() ?: addressContext(text, rawAddress)
 
             runCatching {
-                // Always let the resolver see the newest trusted customer frame. It updates latest
-                // details/raw text while internally suppressing duplicate observation rows.
                 val saved = AddressMemoryResolver.saveObservation(
                     context = context,
                     database = database,
@@ -124,8 +121,6 @@ internal object DeliveryMemory {
                             platform = platform,
                         )
                     }
-                    // Only a genuinely new local identity reaches the network fallback. Repeated
-                    // normal captures stay entirely local.
                     AddressGeoAliasResolver.scheduleForPossibleAlias(context, database, saved, rawAddress)
                 }
             }.onFailure {
@@ -140,7 +135,6 @@ internal object DeliveryMemory {
         }
 
         // Access-code learning may reuse only a very recent customer address from the same platform.
-        // The old unbounded fallback could attach a code from a later screen/order to stale data.
         val observations = CourierSignals.extractAccessCodeObservations(text, fallback)
             .mapNotNull { observation ->
                 val canonical = AddressMemoryResolver.canonicalize(context, database, observation.displayAddress)
@@ -214,17 +208,6 @@ internal object DeliveryMemory {
             break
         }
         if (!matched && detectedAddresses.isNotEmpty()) AccessCodeSuggestions.clear(context)
-    }
-
-    private fun customerForAddress(parsed: ParsedOffer, address: String): String? {
-        val identity = DeliveryAddressNormalizer.identity(address) ?: return null
-        val index = parsed.dropoffAddresses.indexOfFirst {
-            DeliveryAddressNormalizer.matchScore(it, identity.display) >= 0.99
-        }
-        return parsed.customerNames.getOrNull(index)
-            ?.takeUnless { it.equals("Customer", ignoreCase = true) }
-            ?.trim()
-            ?.takeIf(String::isNotEmpty)
     }
 
     private fun addressContext(text: String, address: String): String? {
