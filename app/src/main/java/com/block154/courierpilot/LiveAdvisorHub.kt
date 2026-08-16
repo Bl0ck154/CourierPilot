@@ -46,11 +46,34 @@ internal object LiveAdvisorHub {
         )
 
         DeliveryLifecycleTracking.onOfferCaptured(service, record.packageName, offerId, record.capturedAt)
+
+        // With experimental Bolt routing enabled, preserve a clean research bundle automatically.
+        // The bitmap comes from the already-persisted proof screenshot, so the advisor can never
+        // contaminate the map image with its own overlay.
+        if (record.platform.equals("Bolt", ignoreCase = true) && LiveAdvisorSettings.automaticBoltRouting(service)) {
+            val root = service.rootInActiveWindow
+            if (root?.packageName?.toString() == CourierSignals.BOLT_PACKAGE) {
+                runCatching {
+                    BoltAccessibilityDiagnostics.savePersistedOfferSample(
+                        context = service,
+                        root = root,
+                        screenshotUri = record.screenshotUri,
+                        location = RouteResearchLocation.bestLastKnown(service),
+                    )
+                }
+            }
+        }
+
         currentAdvisor.showBase(record.platform, parsed)
+
         AutomaticWoltRouteCoordinator.start(service, offerId, record.platform, parsed) { outcome ->
             val comparison = outcome.comparison
             if (comparison != null) advisor?.updateRoute(comparison, outcome.waypoints.size)
             else advisor?.updateRouteUnavailable(outcome.failureReason ?: "unknown failure")
+        }
+
+        AutomaticBoltRouteCoordinator.start(service, offerId, record.platform, parsed) { outcome ->
+            advisor?.updateBoltRoute(outcome)
         }
     }
 
