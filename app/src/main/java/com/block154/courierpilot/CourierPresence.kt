@@ -13,18 +13,15 @@ internal data class PlatformPresence(
 /**
  * Tracks Wolt/Bolt online state without a manual Start shift button.
  *
- * Ongoing notifications are useful positive evidence. Notification disappearance is deliberately
- * UNKNOWN rather than OFFLINE: it removes that platform from time accounting until a new positive
- * signal arrives, but never claims that the courier actually went offline.
+ * Presence is intentionally evidence-based. A foreground-service/persistent notification only
+ * proves that Android keeps part of the courier app alive; it does not prove that the courier is
+ * accepting orders. Real offers and explicit online/offline wording are strong signals.
  */
 internal object CourierPresence {
     private const val PREFS = "courierpilot_presence"
     private const val KEY_ACTIVE_PLATFORMS = "active_platforms"
     private const val STRONG_SCREEN_HOLD_MS = 2L * 60L * 1000L
-
-    fun markNotificationOnline(context: Context, packageName: String, now: Long = System.currentTimeMillis()) {
-        update(context, packageName, PresenceSignal.ONLINE, "persistent notification", strong = false, now = now)
-    }
+    private const val LEGACY_PERSISTENT_SOURCE = "persistent notification"
 
     fun markOfferOnline(
         context: Context,
@@ -36,7 +33,7 @@ internal object CourierPresence {
     }
 
     fun markNotificationUnknown(context: Context, packageName: String, now: Long = System.currentTimeMillis()) {
-        update(context, packageName, PresenceSignal.UNKNOWN, "notification disappeared", strong = false, now = now)
+        update(context, packageName, PresenceSignal.UNKNOWN, "notification not explicit", strong = false, now = now)
     }
 
     fun markScreen(context: Context, packageName: String, signal: PresenceSignal, now: Long = System.currentTimeMillis()) {
@@ -74,6 +71,7 @@ internal object CourierPresence {
     }
 
     fun platformPresence(context: Context, packageName: String): PlatformPresence {
+        repairLegacyPersistentOnline(context, packageName)
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val prefix = prefix(packageName)
         val raw = prefs.getString("${prefix}_state", PresenceSignal.UNKNOWN.name) ?: PresenceSignal.UNKNOWN.name
@@ -90,6 +88,27 @@ internal object CourierPresence {
         platformPresence(context, CourierSignals.BOLT_PACKAGE),
     )
 
+    /**
+     * Releases false ONLINE values written by pre-0.14 builds from an unqualified sticky
+     * notification. This runs lazily once when presence is next read after upgrade and also removes
+     * that platform from automatic work-time accounting.
+     */
+    private fun repairLegacyPersistentOnline(context: Context, packageName: String) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val key = prefix(packageName)
+        val state = prefs.getString("${key}_state", PresenceSignal.UNKNOWN.name)
+        val source = prefs.getString("${key}_source", "")
+        if (state != PresenceSignal.ONLINE.name || source != LEGACY_PERSISTENT_SOURCE) return
+        update(
+            context = context,
+            packageName = packageName,
+            state = PresenceSignal.UNKNOWN,
+            source = "legacy persistent notification discarded",
+            strong = false,
+            now = System.currentTimeMillis(),
+        )
+    }
+
     private fun update(
         context: Context,
         packageName: String,
@@ -104,7 +123,7 @@ internal object CourierPresence {
         val currentRaw = prefs.getString("${key}_state", PresenceSignal.UNKNOWN.name) ?: PresenceSignal.UNKNOWN.name
         val current = runCatching { PresenceSignal.valueOf(currentRaw) }.getOrDefault(PresenceSignal.UNKNOWN)
 
-        // A stale/hanging ongoing notification must not immediately undo an explicit screen OFFLINE.
+        // A weak notification signal must never immediately undo an explicit screen OFFLINE state.
         if (!strong && state == PresenceSignal.ONLINE && current == PresenceSignal.OFFLINE && now < currentStrongUntil) return
 
         prefs.edit()
