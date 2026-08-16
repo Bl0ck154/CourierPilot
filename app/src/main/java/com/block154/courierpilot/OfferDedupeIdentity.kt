@@ -65,13 +65,21 @@ internal object OfferDedupeIdentity {
             firstMerchants.any { left -> secondMerchants.any { right -> tokenMatches(left, right) } }
         if (firstMerchants.isNotEmpty() && secondMerchants.isNotEmpty() && !venueMatches) return false
 
-        val firstAddresses = addressTokens(first)
-        val secondAddresses = addressTokens(second)
-        val addressMatches = firstAddresses.isNotEmpty() && secondAddresses.isNotEmpty() &&
-            firstAddresses.any(secondAddresses::contains)
+        val firstPickups = addressTokens(first.pickupAddresses)
+        val secondPickups = addressTokens(second.pickupAddresses)
+        val pickupMatches = overlaps(firstPickups, secondPickups)
+        if (firstPickups.isNotEmpty() && secondPickups.isNotEmpty() && !pickupMatches) return false
 
-        val firstHasRouteIdentity = firstDistance != null || firstMerchants.isNotEmpty() || firstAddresses.isNotEmpty()
-        val secondHasRouteIdentity = secondDistance != null || secondMerchants.isNotEmpty() || secondAddresses.isNotEmpty()
+        val firstDropoffs = addressTokens(first.dropoffAddresses)
+        val secondDropoffs = addressTokens(second.dropoffAddresses)
+        val dropoffMatches = overlaps(firstDropoffs, secondDropoffs)
+        if (firstDropoffs.isNotEmpty() && secondDropoffs.isNotEmpty() && !dropoffMatches) return false
+
+        val addressMatches = pickupMatches || dropoffMatches
+        val firstHasRouteIdentity = firstDistance != null || firstMerchants.isNotEmpty() ||
+            firstPickups.isNotEmpty() || firstDropoffs.isNotEmpty()
+        val secondHasRouteIdentity = secondDistance != null || secondMerchants.isNotEmpty() ||
+            secondPickups.isNotEmpty() || secondDropoffs.isNotEmpty()
 
         if (elapsed <= SPARSE_FRAME_WINDOW_MS && (!firstHasRouteIdentity || !secondHasRouteIdentity)) {
             return true
@@ -82,7 +90,11 @@ internal object OfferDedupeIdentity {
         }
 
         val countCompatible = firstCount == null || secondCount == null || countMatches
-        return addressMatches || (venueMatches && distanceMatches && countCompatible)
+        if (firstDropoffs.isNotEmpty() && secondDropoffs.isNotEmpty()) {
+            return dropoffMatches && countCompatible
+        }
+
+        return pickupMatches && venueMatches && distanceMatches && countCompatible
     }
 
     private fun OfferRecord.asParsedOffer(): ParsedOffer = ParsedOffer(
@@ -104,10 +116,11 @@ internal object OfferDedupeIdentity {
             .filter(String::isNotEmpty)
             .distinct()
 
-    private fun addressTokens(record: OfferRecord): Set<String> =
-        (record.pickupAddresses + record.dropoffAddresses)
-            .mapNotNull { DeliveryAddressNormalizer.key(it) }
-            .toSet()
+    private fun addressTokens(values: List<String>): Set<String> =
+        values.mapNotNull { DeliveryAddressNormalizer.key(it) }.toSet()
+
+    private fun overlaps(first: Set<String>, second: Set<String>): Boolean =
+        first.isNotEmpty() && second.isNotEmpty() && first.any(second::contains)
 
     private fun tokenMatches(left: String, right: String): Boolean =
         left == right || (left.length >= 5 && right.length >= 5 && (left.contains(right) || right.contains(left)))
