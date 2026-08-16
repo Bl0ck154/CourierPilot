@@ -26,6 +26,23 @@ class PresenceAndStorageV014Test {
     }
 
     @Test
+    fun legacyPersistentNotificationOnlineStateSelfHealsToUnknown() {
+        val context = RuntimeEnvironment.getApplication()
+        val prefs = context.getSharedPreferences("courierpilot_presence", 0)
+        prefs.edit()
+            .clear()
+            .putString("bolt_state", PresenceSignal.ONLINE.name)
+            .putString("bolt_source", "persistent notification")
+            .putStringSet("active_platforms", emptySet())
+            .commit()
+
+        val presence = CourierPresence.platformPresence(context, CourierSignals.BOLT_PACKAGE)
+
+        assertEquals(PresenceSignal.UNKNOWN, presence.state)
+        assertEquals("legacy persistent notification discarded", presence.source)
+    }
+
+    @Test
     fun galleryScreenshotSavingIsOffByDefaultAndUserControlled() {
         val context = RuntimeEnvironment.getApplication()
         context.getSharedPreferences("courierpilot_capture_storage", 0).edit().clear().commit()
