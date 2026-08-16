@@ -4,63 +4,64 @@ import android.content.ContentValues
 import android.content.Context
 
 /**
- * Re-runs canonical building merges when address normalization rules evolve.
+ * Re-runs canonical building merges when address identity rules evolve.
  *
- * This deliberately lives outside the SQLite schema version: changing how apartment/post-code
- * variants map to one building must also repair already-saved rows when no table shape changed.
+ * Revision 3 deliberately uses the broad DeliveryAddressNormalizer instead of the legacy strict
+ * CourierSignals parser. That lets an installed database converge postcode/no-postcode, omitted
+ * street marker, diacritic-free and conservative typo variants into one physical building.
  */
 internal object AddressDataRepair {
     private const val PREFS = "courierpilot_address_repairs"
     private const val KEY_REVISION = "canonical_revision"
-    private const val CURRENT_REVISION = 2
+    private const val CURRENT_REVISION = 3
     private const val OBSERVATION_BURST_MS = 2L * 60L * 1000L
 
     fun runIfNeeded(context: Context) {
         val appContext = context.applicationContext
         val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         if (prefs.getInt(KEY_REVISION, 0) >= CURRENT_REVISION) return
-
         repair(appContext)
         prefs.edit().putInt(KEY_REVISION, CURRENT_REVISION).apply()
     }
 
+    private data class AddressRow(
+        val id: Long,
+        val display: String,
+        val platform: String,
+        val firstSeenAt: Long,
+        val lastSeenAt: Long,
+        val seenCount: Int,
+        val latestCustomer: String?,
+        val latestDetails: String?,
+        val latestRaw: String?,
+        val identity: DeliveryAddressIdentity,
+    )
+
+    private data class CodeRow(
+        val id: Long,
+        val display: String,
+        val code: String,
+        val platform: String,
+        val firstSeenAt: Long,
+        val lastSeenAt: Long,
+        val seenCount: Int,
+        val identity: DeliveryAddressIdentity,
+    )
+
     private fun repair(context: Context) {
-        data class AddressRow(
-            val id: Long,
-            val platform: String,
-            val firstSeenAt: Long,
-            val lastSeenAt: Long,
-            val seenCount: Int,
-            val latestCustomer: String?,
-            val latestDetails: String?,
-            val latestRaw: String?,
-            val canonicalKey: String,
-            val canonicalDisplay: String,
-        )
-
-        data class CodeRow(
-            val id: Long,
-            val code: String,
-            val platform: String,
-            val firstSeenAt: Long,
-            val lastSeenAt: Long,
-            val seenCount: Int,
-            val canonicalKey: String,
-            val canonicalDisplay: String,
-        )
-
         val db = CourierMetaDatabase.get(context).writableDatabase
         val addresses = mutableListOf<AddressRow>()
         db.query("addresses", null, null, null, null, null, "id ASC").use { cursor ->
             while (cursor.moveToNext()) {
                 val display = cursor.getString(cursor.getColumnIndexOrThrow("display_address"))
-                val normalized = DeliveryAddressNormalizer.normalize(display) ?: continue
+                val identity = DeliveryAddressNormalizer.identity(display) ?: continue
                 fun nullable(name: String): String? {
                     val index = cursor.getColumnIndexOrThrow(name)
                     return if (cursor.isNull(index)) null else cursor.getString(index)
                 }
                 addresses += AddressRow(
                     id = cursor.getLong(cursor.getColumnIndexOrThrow("id")),
+                    display = display,
                     platform = cursor.getString(cursor.getColumnIndexOrThrow("platform")),
                     firstSeenAt = cursor.getLong(cursor.getColumnIndexOrThrow("first_seen_at")),
                     lastSeenAt = cursor.getLong(cursor.getColumnIndexOrThrow("last_seen_at")),
@@ -68,8 +69,7 @@ internal object AddressDataRepair {
                     latestCustomer = nullable("latest_customer_name"),
                     latestDetails = nullable("latest_details"),
                     latestRaw = nullable("latest_raw_text"),
-                    canonicalKey = normalized.first,
-                    canonicalDisplay = normalized.second,
+                    identity = identity,
                 )
             }
         }
@@ -78,18 +78,28 @@ internal object AddressDataRepair {
         db.query("access_codes", null, null, null, null, null, "id ASC").use { cursor ->
             while (cursor.moveToNext()) {
                 val display = cursor.getString(cursor.getColumnIndexOrThrow("display_address"))
-                val normalized = DeliveryAddressNormalizer.normalize(display) ?: continue
+                val identity = DeliveryAddressNormalizer.identity(display) ?: continue
                 codes += CodeRow(
                     id = cursor.getLong(cursor.getColumnIndexOrThrow("id")),
+                    display = display,
                     code = cursor.getString(cursor.getColumnIndexOrThrow("code")),
                     platform = cursor.getString(cursor.getColumnIndexOrThrow("platform")),
                     firstSeenAt = cursor.getLong(cursor.getColumnIndexOrThrow("first_seen_at")),
                     lastSeenAt = cursor.getLong(cursor.getColumnIndexOrThrow("last_seen_at")),
                     seenCount = cursor.getInt(cursor.getColumnIndexOrThrow("seen_count")),
-                    canonicalKey = normalized.first,
-                    canonicalDisplay = normalized.second,
+                    identity = identity,
                 )
             }
+        }
+
+        val addressGroups = fuzzyGroups(addresses) { left, right ->
+            left.identity.houseNumber.equals(right.identity.houseNumber, ignoreCase = true) &&
+                DeliveryAddressNormalizer.isLikelySameBuilding(left.display, right.display)
+        }
+        val codeGroups = fuzzyGroups(codes) { left, right ->
+            left.code == right.code &&
+                left.identity.houseNumber.equals(right.identity.houseNumber, ignoreCase = true) &&
+                DeliveryAddressNormalizer.isLikelySameBuilding(left.display, right.display)
         }
 
         db.beginTransaction()
@@ -97,7 +107,7 @@ internal object AddressDataRepair {
             addresses.forEach { row ->
                 db.update(
                     "addresses",
-                    ContentValues().apply { put("building_key", "__canonical_address_${row.id}") },
+                    ContentValues().apply { put("building_key", "__address_identity_v3_${row.id}") },
                     "id = ?",
                     arrayOf(row.id.toString()),
                 )
@@ -105,15 +115,17 @@ internal object AddressDataRepair {
             codes.forEach { row ->
                 db.update(
                     "access_codes",
-                    ContentValues().apply { put("building_key", "__canonical_code_${row.id}") },
+                    ContentValues().apply { put("building_key", "__code_identity_v3_${row.id}") },
                     "id = ?",
                     arrayOf(row.id.toString()),
                 )
             }
 
-            addresses.groupBy { it.canonicalKey }.values.forEach { group ->
+            addressGroups.forEach { group ->
                 val survivor = group.minByOrNull { it.id } ?: return@forEach
                 val latest = group.maxByOrNull { it.lastSeenAt } ?: survivor
+                val preferredDisplay = group.map { it.display }.reduce(DeliveryAddressNormalizer::preferredDisplay)
+                val canonical = DeliveryAddressNormalizer.identity(preferredDisplay) ?: survivor.identity
 
                 group.filter { it.id != survivor.id }.forEach { duplicate ->
                     db.execSQL(
@@ -130,12 +142,12 @@ internal object AddressDataRepair {
                 db.update(
                     "addresses",
                     ContentValues().apply {
-                        put("building_key", survivor.canonicalKey)
-                        put("display_address", latest.canonicalDisplay)
+                        put("building_key", canonical.key)
+                        put("display_address", canonical.display)
                         put("platform", latest.platform)
                         put("first_seen_at", group.minOf { it.firstSeenAt })
                         put("last_seen_at", group.maxOf { it.lastSeenAt })
-                        put("seen_count", group.sumOf { it.seenCount }.coerceAtLeast(1))
+                        put("seen_count", group.maxOf { it.seenCount }.coerceAtLeast(1))
                         latest.latestCustomer?.let { put("latest_customer_name", it) }
                         latest.latestDetails?.let { put("latest_details", it) }
                         latest.latestRaw?.let { put("latest_raw_text", it) }
@@ -145,30 +157,29 @@ internal object AddressDataRepair {
                 )
             }
 
-            codes.groupBy { "${it.canonicalKey}|${it.code}" }.values.forEach { group ->
+            codeGroups.forEach { group ->
                 val survivor = group.minByOrNull { it.id } ?: return@forEach
                 val latest = group.maxByOrNull { it.lastSeenAt } ?: survivor
+                val preferredDisplay = group.map { it.display }.reduce(DeliveryAddressNormalizer::preferredDisplay)
+                val canonical = DeliveryAddressNormalizer.identity(preferredDisplay) ?: survivor.identity
                 group.filter { it.id != survivor.id }.forEach { duplicate ->
                     db.delete("access_codes", "id = ?", arrayOf(duplicate.id.toString()))
                 }
                 db.update(
                     "access_codes",
                     ContentValues().apply {
-                        put("building_key", survivor.canonicalKey)
-                        put("display_address", latest.canonicalDisplay)
+                        put("building_key", canonical.key)
+                        put("display_address", canonical.display)
                         put("platform", latest.platform)
                         put("first_seen_at", group.minOf { it.firstSeenAt })
                         put("last_seen_at", group.maxOf { it.lastSeenAt })
-                        put("seen_count", group.sumOf { it.seenCount }.coerceAtLeast(1))
+                        put("seen_count", group.maxOf { it.seenCount }.coerceAtLeast(1))
                     },
                     "id = ?",
                     arrayOf(survivor.id.toString()),
                 )
             }
 
-            // Accessibility can emit several progressively richer frames for the same offer. These
-            // are screen observations, not physical visits, so keep one row per address/platform
-            // burst even when raw text differs between frames.
             db.execSQL(
                 """
                 DELETE FROM address_observations
@@ -184,8 +195,6 @@ internal object AddressDataRepair {
                 """.trimIndent()
             )
 
-            // After canonical rows merge, `seen_count` must describe distinct captured screen bursts,
-            // not the sum of duplicate legacy rows such as address-with-postcode + address-without.
             db.execSQL(
                 """
                 UPDATE addresses
@@ -199,10 +208,33 @@ internal object AddressDataRepair {
                 END
                 """.trimIndent()
             )
-
             db.setTransactionSuccessful()
         } finally {
             db.endTransaction()
         }
+    }
+
+    private fun <T> fuzzyGroups(values: List<T>, matches: (T, T) -> Boolean): List<List<T>> {
+        if (values.isEmpty()) return emptyList()
+        val parent = IntArray(values.size) { it }
+        fun root(index: Int): Int {
+            var current = index
+            while (parent[current] != current) {
+                parent[current] = parent[parent[current]]
+                current = parent[current]
+            }
+            return current
+        }
+        fun union(a: Int, b: Int) {
+            val ra = root(a)
+            val rb = root(b)
+            if (ra != rb) parent[rb] = ra
+        }
+        for (i in values.indices) {
+            for (j in i + 1 until values.size) {
+                if (matches(values[i], values[j])) union(i, j)
+            }
+        }
+        return values.indices.groupBy { root(it) }.values.map { indexes -> indexes.map { values[it] } }
     }
 }
