@@ -29,6 +29,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.BarChart
+import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.History
@@ -654,6 +655,14 @@ private fun DashboardSettings(
     val context = LocalContext.current
     var autoOpen by remember { mutableStateOf(OfferState.autoOpen(context)) }
     var wakeScreen by remember { mutableStateOf(OfferState.wakeScreen(context)) }
+    var liveAdvisor by remember { mutableStateOf(LiveAdvisorSettings.enabled(context)) }
+    var voice by remember { mutableStateOf(LiveAdvisorSettings.voiceEnabled(context)) }
+    var woltRoute by remember { mutableStateOf(LiveAdvisorSettings.automaticWoltRouting(context)) }
+    var boltRoute by remember { mutableStateOf(LiveAdvisorSettings.automaticBoltRouting(context)) }
+    var saveScreenshots by remember { mutableStateOf(CaptureStorageSettings.saveOfferScreenshots(context)) }
+    var developerTaps by remember { mutableIntStateOf(0) }
+    var developerEnabled by remember { mutableStateOf(DeveloperModeSettings.enabled(context)) }
+    val routeReady = runCatching { RouteEndpointSettings.load(context).validated() }.isSuccess
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -664,24 +673,26 @@ private fun DashboardSettings(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Settings", fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
-                    Text("Capture and reliability", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Offers, routes, storage and Android access", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 TextButton(onClick = onBack) { Text("Done") }
             }
         }
-        item {
-            SettingsStatusCard("Notification access", notificationOk, Icons.Rounded.NotificationsActive) {
-                context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-            }
-        }
-        item {
-            SettingsStatusCard("Accessibility capture", accessibilityOk, Icons.Rounded.Shield) {
-                context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-            }
-        }
+
+        item { DashboardSection("Offers", "What CourierPilot does when an offer appears") }
         item {
             Card(shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.padding(16.dp)) {
+                    SettingsSwitchRow("Live offer card", "Show price, ETA and calculated route metrics over Wolt/Bolt.", liveAdvisor) {
+                        liveAdvisor = it
+                        LiveAdvisorSettings.setEnabled(context, it)
+                    }
+                    HorizontalDivider(Modifier.padding(vertical = 12.dp))
+                    SettingsSwitchRow("Voice readout", "Read the compact offer summary aloud when the live card appears.", voice) {
+                        voice = it
+                        LiveAdvisorSettings.setVoiceEnabled(context, it)
+                    }
+                    HorizontalDivider(Modifier.padding(vertical = 12.dp))
                     SettingsSwitchRow("Auto-open real offer notifications", "Strict classifier; unrelated notifications stay untouched.", autoOpen) {
                         autoOpen = it
                         OfferState.setAutoOpen(context, it)
@@ -694,6 +705,61 @@ private fun DashboardSettings(
                 }
             }
         }
+
+        item { DashboardSection("Calculated routes", if (routeReady) "Private route service ready" else "Route service needs developer provisioning") }
+        item {
+            Card(shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.padding(16.dp)) {
+                    SettingsSwitchRow(
+                        "Wolt calculated route",
+                        if (routeReady) "Use phone GPS + visible Wolt stops for Valhalla comparison." else "Unavailable until the private route service is provisioned.",
+                        woltRoute,
+                        enabled = routeReady,
+                    ) {
+                        woltRoute = it
+                        LiveAdvisorSettings.setAutomaticWoltRouting(context, it)
+                    }
+                    HorizontalDivider(Modifier.padding(vertical = 12.dp))
+                    SettingsSwitchRow(
+                        "Bolt calculated route",
+                        if (routeReady) "Calculate to pickup and recover customer map point only when evidence is sufficient." else "Unavailable until the private route service is provisioned.",
+                        boltRoute,
+                        enabled = routeReady,
+                    ) {
+                        boltRoute = it
+                        LiveAdvisorSettings.setAutomaticBoltRouting(context, it)
+                    }
+                }
+            }
+        }
+
+        item { DashboardSection("Storage", "OCR does not require saving images to your gallery") }
+        item {
+            Card(shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.padding(16.dp)) {
+                    SettingsSwitchRow(
+                        "Save offer screenshots",
+                        "Off by default. When off, OCR uses an in-memory frame and discards it immediately; no PNG is added to Pictures/CourierOffers.",
+                        saveScreenshots,
+                    ) {
+                        saveScreenshots = it
+                        CaptureStorageSettings.setSaveOfferScreenshots(context, it)
+                    }
+                }
+            }
+        }
+
+        item { DashboardSection("Android access", "Required for background offer capture") }
+        item {
+            SettingsStatusCard("Notification access", notificationOk, Icons.Rounded.NotificationsActive) {
+                context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+            }
+        }
+        item {
+            SettingsStatusCard("Accessibility capture", accessibilityOk, Icons.Rounded.Shield) {
+                context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+        }
         item {
             FilledTonalButton(
                 onClick = { context.startActivity(Intent(context, ReliabilityActivity::class.java)) },
@@ -701,7 +767,41 @@ private fun DashboardSettings(
             ) {
                 Icon(Icons.Rounded.Shield, contentDescription = null)
                 Spacer(Modifier.size(8.dp))
-                Text("Open Reliability Center")
+                Text("Reliability Center")
+            }
+        }
+
+        if (developerEnabled) {
+            item {
+                FilledTonalButton(
+                    onClick = { context.startActivity(Intent(context, DeveloperToolsActivity::class.java)) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Rounded.BugReport, contentDescription = null)
+                    Spacer(Modifier.size(8.dp))
+                    Text("Developer tools")
+                }
+            }
+        }
+
+        item {
+            TextButton(
+                onClick = {
+                    if (!developerEnabled) {
+                        developerTaps++
+                        if (developerTaps >= 7) {
+                            DeveloperModeSettings.setEnabled(context, true)
+                            developerEnabled = true
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    "CourierPilot ${dashAppVersion(context)}",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp,
+                )
             }
         }
     }
@@ -732,15 +832,16 @@ private fun SettingsSwitchRow(
     title: String,
     subtitle: String,
     checked: Boolean,
+    enabled: Boolean = true,
     onChecked: (Boolean) -> Unit,
 ) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
-            Text(title, fontWeight = FontWeight.Medium)
+            Text(title, fontWeight = FontWeight.Medium, color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
             Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
         }
         Spacer(Modifier.size(12.dp))
-        Switch(checked = checked, onCheckedChange = onChecked)
+        Switch(checked = checked, onCheckedChange = onChecked, enabled = enabled)
     }
 }
 
@@ -874,6 +975,10 @@ private fun dashOffersPerHour(offers: Int, workMillis: Long): String {
 
 private fun dashShortDate(timestamp: Long): String =
     SimpleDateFormat("d MMM · HH:mm", Locale.getDefault()).format(Date(timestamp))
+
+private fun dashAppVersion(context: android.content.Context): String = runCatching {
+    context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
+}.getOrDefault("")
 
 private const val HISTORY_PAGE_SIZE = 50
 private const val ADDRESS_PAGE_SIZE = 40
