@@ -214,10 +214,14 @@ class OfferAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun observeCourierScreen(packageName: String, text: String) {
+    private fun observeCourierScreen(
+        packageName: String,
+        text: String,
+        source: ScreenTextSource = ScreenTextSource.ACCESSIBILITY,
+    ) {
         if (text.isBlank()) return
         CourierPresence.markScreen(this, packageName, CourierSignals.detectPresence(text))
-        DeliveryMemory.observeScreen(this, packageName, text)
+        DeliveryMemory.observeScreen(this, packageName, text, source)
     }
 
     private fun armFromVisibleOffer(packageName: String, text: String, parsed: ParsedOffer): Boolean {
@@ -262,7 +266,7 @@ class OfferAccessibilityService : AccessibilityService() {
                     recognizer.process(InputImage.fromBitmap(bitmap, 0))
                         .addOnSuccessListener { result ->
                             val combined = mergeText(accessibilityText, result.text)
-                            observeCourierScreen(window.packageName, combined)
+                            observeCourierScreen(window.packageName, combined, ScreenTextSource.OCR_AUGMENTED)
                             if (combined.isNotBlank()) OfferState.saveUiText(this@OfferAccessibilityService, combined)
                             val parsed = OfferParser.parse(combined)
                             val armed = armFromVisibleOffer(window.packageName, combined, parsed)
@@ -307,7 +311,7 @@ class OfferAccessibilityService : AccessibilityService() {
                     recognizer.process(InputImage.fromBitmap(bitmap, 0))
                         .addOnSuccessListener { result ->
                             val combined = mergeText(accessibilityText, result.text)
-                            observeCourierScreen(pending.packageName, combined)
+                            observeCourierScreen(pending.packageName, combined, ScreenTextSource.OCR_AUGMENTED)
                             if (combined.isNotBlank()) OfferState.saveUiText(this@OfferAccessibilityService, combined)
                             val parsed = OfferParser.parse(combined)
                             if (parsed.priceCents != null) {
