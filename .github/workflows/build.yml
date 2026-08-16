@@ -1,13 +1,12 @@
 name: Build signed release APK
 
 on:
-  workflow_dispatch:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -62,11 +61,23 @@ jobs:
           ACTUAL_CERT_SHA256="$($APKSIGNER verify --print-certs "$APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
           test "$ACTUAL_CERT_SHA256" = "$EXPECTED_CERT_SHA256"
           sha256sum "$APK"
+          cp "$APK" "CourierPilot-v0.11.2.apk"
 
-      - name: Upload signed release APK
+      - name: Upload signed release APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: courierpilot-release-${{ github.run_number }}
-          path: app/build/outputs/apk/release/app-release.apk
+          name: CourierPilot-v0.11.2-release
+          path: CourierPilot-v0.11.2.apk
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish GitHub Release v0.11.2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create v0.11.2 CourierPilot-v0.11.2.apk \
+            --target "$GITHUB_SHA" \
+            --title "CourierPilot 0.11.2" \
+            --notes $'CourierPilot 0.11.2\n\nVersion code: 19\n\n- stronger live-offer and persisted-history deduplication\n- canonical address repair and apartment suffix normalization\n- venue/customer platform memory per address\n- automatic dashboard refresh after local day rollover\n- historical address/entity backfill and repair\n\nSigned with the permanent CourierPilot release certificate.'
