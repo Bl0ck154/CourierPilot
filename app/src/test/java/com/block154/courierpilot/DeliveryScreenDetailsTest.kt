@@ -78,6 +78,7 @@ class DeliveryScreenDetailsTest {
             customerName = null,
             detailsText = "Address captured",
             rawText = "Address\n$address",
+            evidence = AddressEvidenceSource.ACCESSIBILITY_EXPLICIT_SECTION,
             now = now,
         )
         val second = AddressMemoryResolver.saveObservation(
@@ -88,6 +89,7 @@ class DeliveryScreenDetailsTest {
             customerName = "Indre B.",
             detailsText = "Instructions: Meet at my door\nAdditional note: gate code stays as text",
             rawText = "Address\n$address\nInstructions\nMeet at my door\nAdditional note\ngate code stays as text",
+            evidence = AddressEvidenceSource.ACCESSIBILITY_EXPLICIT_SECTION,
             now = now + 5_000L,
         )
 
