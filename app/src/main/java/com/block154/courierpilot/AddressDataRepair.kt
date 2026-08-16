@@ -6,14 +6,14 @@ import android.content.Context
 /**
  * Re-runs canonical building merges when address identity rules evolve.
  *
- * Revision 3 deliberately uses the broad DeliveryAddressNormalizer instead of the legacy strict
- * CourierSignals parser. That lets an installed database converge postcode/no-postcode, omitted
- * street marker, diacritic-free and conservative typo variants into one physical building.
+ * Revision 3 introduced broad compact-address matching. Revision 4 keeps those useful aliases but
+ * removes obvious courier-UI metadata (`Bag/Unit 1`, `Apartment 18`, `Floor 2`, etc.) that older
+ * builds could accidentally persist as buildings.
  */
 internal object AddressDataRepair {
     private const val PREFS = "courierpilot_address_repairs"
     private const val KEY_REVISION = "canonical_revision"
-    private const val CURRENT_REVISION = 3
+    private const val CURRENT_REVISION = 4
     private const val OBSERVATION_BURST_MS = 2L * 60L * 1000L
 
     fun runIfNeeded(context: Context) {
@@ -23,6 +23,11 @@ internal object AddressDataRepair {
         repair(appContext)
         prefs.edit().putInt(KEY_REVISION, CURRENT_REVISION).apply()
     }
+
+    private data class ArtifactRow(
+        val id: Long,
+        val buildingKey: String,
+    )
 
     private data class AddressRow(
         val id: Long,
@@ -50,17 +55,24 @@ internal object AddressDataRepair {
 
     private fun repair(context: Context) {
         val db = CourierMetaDatabase.get(context).writableDatabase
+        val artifacts = mutableListOf<ArtifactRow>()
         val addresses = mutableListOf<AddressRow>()
         db.query("addresses", null, null, null, null, null, "id ASC").use { cursor ->
             while (cursor.moveToNext()) {
+                val id = cursor.getLong(cursor.getColumnIndexOrThrow("id"))
                 val display = cursor.getString(cursor.getColumnIndexOrThrow("display_address"))
+                val buildingKey = cursor.getString(cursor.getColumnIndexOrThrow("building_key"))
+                if (DeliveryAddressNormalizer.isRejectedAddressArtifact(display)) {
+                    artifacts += ArtifactRow(id, buildingKey)
+                    continue
+                }
                 val identity = DeliveryAddressNormalizer.identity(display) ?: continue
                 fun nullable(name: String): String? {
                     val index = cursor.getColumnIndexOrThrow(name)
                     return if (cursor.isNull(index)) null else cursor.getString(index)
                 }
                 addresses += AddressRow(
-                    id = cursor.getLong(cursor.getColumnIndexOrThrow("id")),
+                    id = id,
                     display = display,
                     platform = cursor.getString(cursor.getColumnIndexOrThrow("platform")),
                     firstSeenAt = cursor.getLong(cursor.getColumnIndexOrThrow("first_seen_at")),
@@ -78,6 +90,7 @@ internal object AddressDataRepair {
         db.query("access_codes", null, null, null, null, null, "id ASC").use { cursor ->
             while (cursor.moveToNext()) {
                 val display = cursor.getString(cursor.getColumnIndexOrThrow("display_address"))
+                if (DeliveryAddressNormalizer.isRejectedAddressArtifact(display)) continue
                 val identity = DeliveryAddressNormalizer.identity(display) ?: continue
                 codes += CodeRow(
                     id = cursor.getLong(cursor.getColumnIndexOrThrow("id")),
@@ -104,10 +117,19 @@ internal object AddressDataRepair {
 
         db.beginTransaction()
         try {
+            // Remove the accidental rows and everything that only belonged to those fake buildings.
+            // Do this explicitly instead of depending on OEM SQLite foreign-key settings.
+            artifacts.forEach { artifact ->
+                db.delete("address_entities", "address_id = ?", arrayOf(artifact.id.toString()))
+                db.delete("address_observations", "address_id = ?", arrayOf(artifact.id.toString()))
+                db.delete("access_codes", "building_key = ?", arrayOf(artifact.buildingKey))
+                db.delete("addresses", "id = ?", arrayOf(artifact.id.toString()))
+            }
+
             addresses.forEach { row ->
                 db.update(
                     "addresses",
-                    ContentValues().apply { put("building_key", "__address_identity_v3_${row.id}") },
+                    ContentValues().apply { put("building_key", "__address_identity_v4_${row.id}") },
                     "id = ?",
                     arrayOf(row.id.toString()),
                 )
@@ -115,7 +137,7 @@ internal object AddressDataRepair {
             codes.forEach { row ->
                 db.update(
                     "access_codes",
-                    ContentValues().apply { put("building_key", "__code_identity_v3_${row.id}") },
+                    ContentValues().apply { put("building_key", "__code_identity_v4_${row.id}") },
                     "id = ?",
                     arrayOf(row.id.toString()),
                 )
