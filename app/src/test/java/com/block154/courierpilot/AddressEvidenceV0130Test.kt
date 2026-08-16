@@ -26,6 +26,14 @@ class AddressEvidenceV0130Test {
         context = RuntimeEnvironment.getApplication()
         database = CourierMetaDatabase.get(context)
         CompactAddressConfirmationGate.resetForTests()
+        context.getSharedPreferences("courierpilot_delivery_lifecycle", Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .commit()
+        context.getSharedPreferences("courierpilot_delivery_memory", Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .commit()
     }
 
     @Test
@@ -65,9 +73,10 @@ class AddressEvidenceV0130Test {
     }
 
     @Test
-    fun newCompactAddressNeedsTwoStableAccessibilityFrames() {
+    fun newCompactAddressNeedsTwoStableAccessibilityFramesAfterPickup() {
         val house = uniqueHouse(400)
         val address = "Pylimo $house"
+        seedPickedUpLifecycle(CourierSignals.WOLT_PACKAGE)
 
         DeliveryMemory.observeScreen(
             context,
@@ -87,11 +96,69 @@ class AddressEvidenceV0130Test {
     }
 
     @Test
+    fun repeatedRestaurantMenuRowsNeverBecomeAddresses() {
+        val fakeAddress = "Fanta ${uniqueHouse(450)}"
+        val restaurantAddress = "Gedimino pr. ${uniqueHouse(460)}"
+        val restaurantScreen = """
+            McDonald's
+            Address
+            $restaurantAddress
+            Items (3)
+            Big Mac Menu
+            $fakeAddress
+            Confirm pickup
+        """.trimIndent()
+
+        repeat(4) {
+            DeliveryMemory.observeScreen(
+                context,
+                CourierSignals.WOLT_PACKAGE,
+                restaurantScreen,
+                ScreenTextSource.ACCESSIBILITY,
+            )
+        }
+
+        assertNull(findExact(fakeAddress))
+        assertNull(findExact(restaurantAddress))
+    }
+
+    @Test
+    fun explicitCustomerAddressWinsOverItemRowsOnSameScreen() {
+        val house = uniqueHouse(470)
+        val fakeHouse = uniqueHouse(480)
+        val address = "Mindaugo g. $house"
+        val fake = "Fanta $fakeHouse"
+        val screen = """
+            Indre B. #NCGFZ
+            Items (4)
+            $fake
+            Address
+            $address
+            Additional note
+            Front gate code: 100*2025
+            Apartment, flat or suite number
+            148
+            Floor
+            2
+            Delivered
+            Slide to confirm
+        """.trimIndent()
+
+        repeat(3) {
+            DeliveryMemory.observeScreen(context, CourierSignals.BOLT_PACKAGE, screen)
+        }
+
+        assertNotNull(findExact(address))
+        assertNull(findExact(fake))
+    }
+
+    @Test
     fun clippedCompactStringsNeverCreateEvenWhenRepeated() {
         val a = "ešvitrigailos ${uniqueHouse(500)}"
         val b = "hinktinės ${uniqueHouse(600)}"
         val c = "4. Goštauto ${uniqueHouse(700)}"
 
+        seedPickedUpLifecycle(CourierSignals.WOLT_PACKAGE)
         repeat(3) {
             DeliveryMemory.observeScreen(context, CourierSignals.WOLT_PACKAGE, a, ScreenTextSource.ACCESSIBILITY)
             DeliveryMemory.observeScreen(context, CourierSignals.WOLT_PACKAGE, b, ScreenTextSource.ACCESSIBILITY)
@@ -107,18 +174,35 @@ class AddressEvidenceV0130Test {
     }
 
     @Test
-    fun explicitAddressLabelCanCreateCompactAddressImmediately() {
+    fun customerDetailAddressLabelCanCreateCompactAddressImmediately() {
         val house = uniqueHouse(800)
         val address = "Pylimo $house"
 
         DeliveryMemory.observeScreen(
             context,
             CourierSignals.BOLT_PACKAGE,
-            "Address\n$address",
+            "Address\n$address\nAdditional note\nLeave at my door",
             ScreenTextSource.ACCESSIBILITY,
         )
 
         assertNotNull(findExact(address))
+    }
+
+    @Test
+    fun bareAddressLabelWithoutCustomerContextDoesNotPersist() {
+        val house = uniqueHouse(850)
+        val address = "Pylimo $house"
+
+        repeat(3) {
+            DeliveryMemory.observeScreen(
+                context,
+                CourierSignals.BOLT_PACKAGE,
+                "Address\n$address\nItems (2)",
+                ScreenTextSource.ACCESSIBILITY,
+            )
+        }
+
+        assertNull(findExact(address))
     }
 
     @Test
@@ -240,6 +324,15 @@ class AddressEvidenceV0130Test {
             .clear()
             .commit()
         AddressDataRepair.runIfNeeded(context)
+    }
+
+    private fun seedPickedUpLifecycle(packageName: String) {
+        val prefix = packageName.replace('.', '_')
+        context.getSharedPreferences("courierpilot_delivery_lifecycle", Context.MODE_PRIVATE)
+            .edit()
+            .putLong("${prefix}_offer", System.nanoTime().coerceAtLeast(1L))
+            .putString("${prefix}_last_event", DeliveryEventType.PICKED_UP.name)
+            .commit()
     }
 
     private fun uniqueHouse(offset: Int): Int =
