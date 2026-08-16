@@ -96,6 +96,28 @@ internal object DeliveryAddressNormalizer {
 
     fun display(raw: String): String? = identity(raw)?.display
 
+    /**
+     * True for UI/detail rows that accidentally fit the broad `words + number` address shape.
+     *
+     * A real explicit street marker always wins. The rejection list only applies to compact
+     * no-marker candidates such as `Bag/Unit 1`, `Apartment, 18`, `Floor 2`, `Door 4`, etc.
+     */
+    fun isRejectedAddressArtifact(raw: String): Boolean {
+        val identity = identity(raw) ?: return false
+        if (identity.streetType != null) return false
+
+        val houseMatch = trailingHouseNumber.find(identity.display) ?: return false
+        val streetPart = identity.display.substring(0, houseMatch.range.first).trim(' ', ',', ';')
+        if ('/' in streetPart || '\\' in streetPart) return true
+
+        val normalizedStreet = identityToken(streetPart)
+        val tokens = normalizedStreet.split(' ').filter(String::isNotBlank)
+        if (tokens.any(NON_ADDRESS_CORE_TOKENS::contains)) return true
+        return NON_ADDRESS_PHRASES.any { phrase ->
+            normalizedStreet == phrase || normalizedStreet.startsWith("$phrase ")
+        }
+    }
+
     /** Extra detector for compact customer input such as `Vokiečių 7` without `g.` or city. */
     fun likelyAddressLines(text: String): List<String> = text.lineSequence()
         .map(::clean)
@@ -103,6 +125,7 @@ internal object DeliveryAddressNormalizer {
         .filter { line ->
             val identity = identity(line) ?: return@filter false
             if (line.contains('€')) return@filter false
+            if (isRejectedAddressArtifact(line)) return@filter false
             val lower = line.lowercase(Locale.ROOT)
             if (GENERIC_NON_ADDRESS_PREFIXES.any(lower::startsWith)) return@filter false
             val coreLetters = identity.streetCore.count(Char::isLetter)
@@ -215,5 +238,19 @@ internal object DeliveryAddressNormalizer {
     private val GENERIC_NON_ADDRESS_PREFIXES = listOf(
         "customer", "pickup", "delivery", "route ", "estimated", "expected earnings",
         "accept", "decline", "reject", "wolt", "bolt", "ready", "timeline",
+        "instructions", "additional note", "apartment", "floor", "bag", "unit",
+    )
+
+    private val NON_ADDRESS_CORE_TOKENS = setOf(
+        "address", "apartment", "apt", "flat", "suite", "unit", "bag", "floor", "stair", "stairs",
+        "staircase", "entrance", "entry", "door", "gate", "intercom", "code", "instruction",
+        "instructions", "note", "additional", "item", "items", "order", "customer", "recipient",
+        "courier", "delivery", "phone", "call", "chat", "translate", "building", "block", "room",
+        "reception", "lobby", "bell", "button", "view",
+    )
+
+    private val NON_ADDRESS_PHRASES = setOf(
+        "bag unit", "o bag unit", "apartment flat or suite number", "apartment number", "floor number",
+        "delivery details", "address detail", "additional note",
     )
 }
