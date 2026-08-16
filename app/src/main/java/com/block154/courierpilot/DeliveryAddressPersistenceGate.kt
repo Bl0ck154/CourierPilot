@@ -47,27 +47,28 @@ internal object DeliveryAddressPersistenceGate {
         val lower = text.lowercase(Locale.ROOT).replace('’', '\'')
 
         if (packageName == CourierSignals.WOLT_PACKAGE) {
-            // Real Wolt merchant sheet: `Pickup from ...` + restaurant address + `I've got the items`.
-            if (lower.contains("pickup from") || WOLT_PICKUP_CUES.any(lower::contains)) {
-                return denied(AddressPersistenceReason.PICKUP_SCREEN)
-            }
-            // Real Wolt customer sheet: `Dropoff to` followed by recipient and street address.
+            // Real Wolt customer sheet has the stable `Dropoff to` marker. It wins over generic
+            // controls lower on the sheet such as Order details or delivery-problem actions.
             if (lower.contains("dropoff to") && details?.address != null) {
                 return allowed(AddressPersistenceReason.CUSTOMER_DETAILS)
             }
-            // Do not fall back to broad words+number guessing for Wolt. The supplied real UI has a
-            // stable customer marker, and failing closed is safer than learning a restaurant/item.
+            // Real Wolt merchant sheet has the stable `Pickup from` marker.
+            if (lower.contains("pickup from")) {
+                return denied(AddressPersistenceReason.PICKUP_SCREEN)
+            }
+            // Never guess on words+number for Wolt when neither structural marker is present.
             return denied(AddressPersistenceReason.NO_CUSTOMER_CONTEXT)
         }
 
         if (packageName == CourierSignals.BOLT_PACKAGE) {
-            // Real Bolt merchant sheet exposes `Order is ready for pickup`, arrival time and items.
-            if (BOLT_PICKUP_CUES.any(lower::contains)) {
-                return denied(AddressPersistenceReason.PICKUP_SCREEN)
-            }
-            // Real Bolt customer sheet exposes an explicit Address plus customer-only detail fields.
+            // Real Bolt customer sheet exposes Address + customer-only detail fields. Check this
+            // before weaker navigation text because route panels can also contain ETA/issue controls.
             if (details?.address != null && hasCustomerDetailEvidence(lower, details)) {
                 return allowed(AddressPersistenceReason.CUSTOMER_DETAILS)
+            }
+            // Real Bolt merchant sheet explicitly states that the order is ready for pickup.
+            if (BOLT_PICKUP_CUES.any(lower::contains)) {
+                return denied(AddressPersistenceReason.PICKUP_SCREEN)
             }
             return denied(AddressPersistenceReason.NO_CUSTOMER_CONTEXT)
         }
@@ -102,19 +103,11 @@ internal object DeliveryAddressPersistenceGate {
         return false
     }
 
-    private val WOLT_PICKUP_CUES = listOf(
-        "i've got the items",
-        "ive got the items",
-        "order ready",
-        "delayed? mark the order as late",
-        "cancel this delivery",
-    )
-
     private val BOLT_PICKUP_CUES = listOf(
         "order is ready for pickup",
-        "arrive in ",
-        "report an issue",
-        "order details",
+        "ready for pickup",
+        "waiting at restaurant",
+        "restaurant is preparing",
     )
 
     private val GENERIC_PICKUP_CUES = listOf(
