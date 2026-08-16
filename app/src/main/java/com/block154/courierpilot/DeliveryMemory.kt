@@ -29,12 +29,28 @@ internal object DeliveryMemory {
             CourierPresence.markOfferOnline(context, packageName, "offer screen")
         }
 
-        // Add compact-address candidates to the legacy strict detector so user-entered forms such as
-        // `Vokiečių 7` are not ignored merely because `g.` / `gatvė` or the city is absent.
-        val detectedAddresses = (CourierSignals.likelyAddresses(text) + DeliveryAddressNormalizer.likelyAddressLines(text))
+        // Accepted-delivery detail sheets have an explicit Address section plus nearby metadata such
+        // as Apartment, Floor and Bag/Unit. Once that structured shape is recognized, its Address
+        // value is authoritative and the broad compact-line detector must not reinterpret metadata
+        // rows as independent buildings.
+        val screenDetails = DeliveryScreenDetailsExtractor.extract(text)
+        val compactAddresses = if (screenDetails == null) {
+            DeliveryAddressNormalizer.likelyAddressLines(text)
+        } else {
+            emptyList()
+        }
+        val detectedAddresses = (
+            listOfNotNull(screenDetails?.address) +
+                CourierSignals.likelyAddresses(text) +
+                compactAddresses
+            )
+            .filterNot(DeliveryAddressNormalizer::isRejectedAddressArtifact)
             .distinct()
         val allAddresses = (detectedAddresses + parsed.pickupAddresses + parsed.dropoffAddresses)
-            .mapNotNull { raw -> DeliveryAddressNormalizer.normalize(raw)?.let { DetectedAddress(raw, it) } }
+            .mapNotNull { raw ->
+                if (DeliveryAddressNormalizer.isRejectedAddressArtifact(raw)) return@mapNotNull null
+                DeliveryAddressNormalizer.normalize(raw)?.let { DetectedAddress(raw, it) }
+            }
             .distinctBy { it.normalized.first }
 
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -48,10 +64,13 @@ internal object DeliveryMemory {
 
         allAddresses.forEach { detected ->
             val rawAddress = detected.raw
-            val screenDetails = DeliveryScreenDetailsExtractor.forAddress(text, rawAddress)
-            val customer = customerForAddress(parsed, rawAddress) ?: screenDetails?.customerName
+            val matchedScreenDetails = screenDetails?.takeIf { details ->
+                val detailsAddress = details.address ?: return@takeIf false
+                DeliveryAddressNormalizer.matchScore(detailsAddress, rawAddress) >= 0.86
+            }
+            val customer = customerForAddress(parsed, rawAddress) ?: matchedScreenDetails?.customerName
             val merchant = merchantForAddress(parsed, rawAddress)
-            val detailsText = screenDetails?.asDetailsText() ?: addressContext(text, rawAddress)
+            val detailsText = matchedScreenDetails?.asDetailsText() ?: addressContext(text, rawAddress)
 
             runCatching {
                 // Always let the resolver see the newest frame. It updates latest details/raw text on

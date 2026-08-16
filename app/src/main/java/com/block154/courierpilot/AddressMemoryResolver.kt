@@ -20,6 +20,10 @@ internal data class SmartAddressSaveResult(
  * strict parser. This layer resolves aliases/fuzzy local matches first and writes by address id, so
  * compact forms such as `Vokiečių 7`, postcode variants and minor Latin-script typos cannot create
  * a second building row. Cross-language translations are handled later by AddressGeoAliasResolver.
+ *
+ * Obvious courier-UI metadata is rejected again here as a persistence boundary. Detection bugs in
+ * any current or future parser must not be able to turn `Apartment 18`, `Bag/Unit 1`, `Floor 2`, etc.
+ * into durable building rows.
  */
 internal object AddressMemoryResolver {
     private const val PREFS = "courierpilot_address_aliases_v2"
@@ -35,6 +39,7 @@ internal object AddressMemoryResolver {
         database: CourierMetaDatabase,
         rawAddress: String,
     ): Pair<String, String>? {
+        if (DeliveryAddressNormalizer.isRejectedAddressArtifact(rawAddress)) return null
         val normalized = DeliveryAddressNormalizer.normalize(rawAddress) ?: return null
         val existing = findSaved(context, database, rawAddress)
         if (existing != null) {
@@ -49,6 +54,7 @@ internal object AddressMemoryResolver {
         database: CourierMetaDatabase,
         rawAddress: String,
     ): AddressRecord? {
+        if (DeliveryAddressNormalizer.isRejectedAddressArtifact(rawAddress)) return null
         val normalized = DeliveryAddressNormalizer.normalize(rawAddress) ?: return null
         resolveRememberedAlias(context, database, normalized.first)?.let { return it }
 
@@ -85,6 +91,7 @@ internal object AddressMemoryResolver {
         rawText: String,
         now: Long = System.currentTimeMillis(),
     ): SmartAddressSaveResult? {
+        if (DeliveryAddressNormalizer.isRejectedAddressArtifact(address)) return null
         val normalized = DeliveryAddressNormalizer.normalize(address) ?: return null
         val existing = findSaved(context, database, address)
         val db = database.writableDatabase
