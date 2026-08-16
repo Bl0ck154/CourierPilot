@@ -96,6 +96,35 @@ internal object DeliveryAddressNormalizer {
 
     fun display(raw: String): String? = identity(raw)?.display
 
+    /** Strong evidence that does not depend on guessing a bare `words + number` line. */
+    fun hasStrongAddressEvidence(raw: String): Boolean {
+        val value = clean(raw)
+        return explicitStreetMarker.containsMatchIn(value) ||
+            trailingVilnius.containsMatchIn(value) ||
+            trailingPostalCode.containsMatchIn(value)
+    }
+
+    /**
+     * Presentation sanity check for a *new* compact address without street/city markers.
+     *
+     * Courier apps normally expose canonical street names with an uppercase initial. OCR fragments
+     * that lost or hallucinated the first character (`ešvitrigailos 9`, `hinktinės 9`,
+     * `4. Goštauto 9`) fail closed here. Existing rows can still be matched/updated separately.
+     */
+    fun isPlausibleNewCompactDisplay(raw: String): Boolean {
+        if (isRejectedAddressArtifact(raw)) return false
+        val identity = identity(raw) ?: return false
+        if (hasStrongAddressEvidence(raw)) return true
+        if (identity.streetType != null) return true
+
+        val display = identity.display
+        val houseMatch = trailingHouseNumber.find(display) ?: return false
+        val streetPart = display.substring(0, houseMatch.range.first).trim(' ', ',', ';')
+        val first = streetPart.firstOrNull { !it.isWhitespace() } ?: return false
+        if (!first.isLetter() || !first.isUpperCase()) return false
+        return identity.streetCore.count(Char::isLetter) >= 4
+    }
+
     /**
      * True for UI/detail rows that accidentally fit the broad `words + number` address shape.
      *
@@ -154,6 +183,47 @@ internal object DeliveryAddressNormalizer {
         if (distance > allowed) return 0.0
         val similarity = 1.0 - distance.toDouble() / longest.toDouble()
         return similarity.takeIf { it >= 0.86 } ?: 0.0
+    }
+
+    /**
+     * Migration-only matcher for old OCR pollution.
+     *
+     * Unlike the live alias matcher, it may tolerate a wrong/missing first character. Callers must
+     * additionally require same-house evidence plus a trusted/suspicious-side condition; this is
+     * intentionally too permissive for normal live matching.
+     */
+    fun legacyOcrRepairScore(firstRaw: String, secondRaw: String): Double {
+        val first = identity(firstRaw) ?: return 0.0
+        val second = identity(secondRaw) ?: return 0.0
+        if (!first.houseNumber.equals(second.houseNumber, ignoreCase = true)) return 0.0
+        if (first.streetType != null && second.streetType != null && first.streetType != second.streetType) return 0.0
+
+        val left = first.streetCore.replace(" ", "")
+        val right = second.streetCore.replace(" ", "")
+        if (left == right) return 1.0
+        if (!sameScriptFamily(left, right)) return 0.0
+
+        val longest = max(left.length, right.length)
+        if (longest < 5) return 0.0
+        val distance = levenshtein(left, right)
+        val allowed = when {
+            longest >= 13 -> 3
+            longest >= 8 -> 2
+            else -> 1
+        }
+        if (distance > allowed) return 0.0
+        val similarity = 1.0 - distance.toDouble() / longest.toDouble()
+        return similarity.takeIf { it >= 0.80 } ?: 0.0
+    }
+
+    /** Quality ranking used only when repairing legacy OCR variants. */
+    fun legacyDisplayQuality(raw: String): Int {
+        val identity = identity(raw) ?: return Int.MIN_VALUE
+        var score = displayQuality(identity.display)
+        if (hasStrongAddressEvidence(raw)) score += 5
+        if (isPlausibleNewCompactDisplay(raw)) score += 2
+        score += (identity.streetCore.count(Char::isLetter) / 6).coerceAtMost(3)
+        return score
     }
 
     fun isLikelySameBuilding(firstRaw: String, secondRaw: String): Boolean =
