@@ -180,8 +180,6 @@ class OfferAccessibilityService : AccessibilityService() {
             if (CaptureStorageSettings.saveOfferScreenshots(this)) {
                 captureCurrentFrameAndPersist(pending, target.windowId, uiText, parsed)
             } else {
-                // No bitmap is required when Accessibility already exposed the price and the user
-                // does not want proof screenshots in Pictures/CourierOffers.
                 persistOffer(null, pending, uiText, parsed)
             }
         } else {
@@ -346,7 +344,6 @@ class OfferAccessibilityService : AccessibilityService() {
         )
     }
 
-    /** Only used when the user explicitly opted into gallery screenshots. */
     private fun captureCurrentFrameAndPersist(pending: PendingOffer, windowId: Int, text: String, parsed: ParsedOffer) {
         captureInFlight = true
         takeTargetScreenshot(
@@ -470,7 +467,6 @@ class OfferAccessibilityService : AccessibilityService() {
                     "Offer saved successfully as record #${insertResult.rowId} (${parsed.deliveryCount ?: 1} deliveries; screenshot ${if (saved != null) "saved" else "off"})",
                     platform,
                 )
-                LiveAdvisorHub.onOfferPersisted(insertResult.rowId, stored)
             }
             if (pending.notificationKey.startsWith("screen:")) {
                 ScreenOfferDeduper.markArmed(this, pending.packageName, pending.notificationKey.removePrefix("screen:"))
