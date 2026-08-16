@@ -28,6 +28,7 @@ class AddressIdentityV0114Test {
             customerName = null,
             detailsText = "Pickup",
             rawText = "first",
+            evidence = AddressEvidenceSource.ACCESSIBILITY_STRICT_LINE,
         )!!
         val compactAscii = AddressMemoryResolver.saveObservation(
             context = context,
@@ -37,6 +38,7 @@ class AddressIdentityV0114Test {
             customerName = null,
             detailsText = "Pickup",
             rawText = "second",
+            evidence = AddressEvidenceSource.ACCESSIBILITY_COMPACT_PENDING,
         )!!
 
         assertEquals(withPostcode.addressId, compactAscii.addressId)
@@ -50,13 +52,16 @@ class AddressIdentityV0114Test {
         val house = uniqueHouse(110)
 
         val official = AddressMemoryResolver.saveObservation(
-            context, database, "Vokiečių g. $house, Vilnius", "Wolt", null, null, "first"
+            context, database, "Vokiečių g. $house, Vilnius", "Wolt", null, null, "first",
+            AddressEvidenceSource.ACCESSIBILITY_STRICT_LINE,
         )!!
         val noMarker = AddressMemoryResolver.saveObservation(
-            context, database, "Vokieciu $house", "Wolt", null, null, "second"
+            context, database, "Vokieciu $house", "Wolt", null, null, "second",
+            AddressEvidenceSource.ACCESSIBILITY_COMPACT_PENDING,
         )!!
         val smallTypo = AddressMemoryResolver.saveObservation(
-            context, database, "Vokeciu $house", "Wolt", null, null, "third"
+            context, database, "Vokeciu $house", "Wolt", null, null, "third",
+            AddressEvidenceSource.ACCESSIBILITY_COMPACT_PENDING,
         )!!
 
         assertEquals(official.addressId, noMarker.addressId)
@@ -70,10 +75,12 @@ class AddressIdentityV0114Test {
         val house = uniqueHouse(210)
 
         val street = AddressMemoryResolver.saveObservation(
-            context, database, "Savanorių g. $house, Vilnius", "Wolt", null, null, "street"
+            context, database, "Savanorių g. $house, Vilnius", "Wolt", null, null, "street",
+            AddressEvidenceSource.ACCESSIBILITY_STRICT_LINE,
         )!!
         val avenue = AddressMemoryResolver.saveObservation(
-            context, database, "Savanorių pr. $house, Vilnius", "Wolt", null, null, "avenue"
+            context, database, "Savanorių pr. $house, Vilnius", "Wolt", null, null, "avenue",
+            AddressEvidenceSource.ACCESSIBILITY_STRICT_LINE,
         )!!
 
         assertNotEquals(street.addressId, avenue.addressId)
