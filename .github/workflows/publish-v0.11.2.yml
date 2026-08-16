@@ -1,0 +1,57 @@
+name: Publish CourierPilot v0.11.2
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create v0.11.2 tag explicitly
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TARGET_SHA="556497ead7f1fd0b4806143fd0db35b8b00b8007"
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v0.11.2" >/dev/null 2>&1; then
+            echo "Tag v0.11.2 already exists"
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref='refs/tags/v0.11.2' \
+              -f sha="$TARGET_SHA"
+          fi
+
+      - name: Download already-built signed APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-apk
+          gh run download 31930671889 \
+            --repo "$GITHUB_REPOSITORY" \
+            --name CourierPilot-v0.11.2-release \
+            --dir release-apk
+          test -f release-apk/CourierPilot-v0.11.2.apk
+          sha256sum release-apk/CourierPilot-v0.11.2.apk
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view v0.11.2 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload v0.11.2 release-apk/CourierPilot-v0.11.2.apk \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create v0.11.2 release-apk/CourierPilot-v0.11.2.apk \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title 'CourierPilot 0.11.2' \
+              --notes $'CourierPilot 0.11.2\n\nVersion code: 19\n\n- stronger live-offer and persisted-history deduplication\n- canonical address repair and apartment suffix normalization\n- venue/customer platform memory per address\n- automatic dashboard refresh after local day rollover\n- historical address/entity backfill and repair\n\nSigned with the permanent CourierPilot release certificate.'
+          fi
