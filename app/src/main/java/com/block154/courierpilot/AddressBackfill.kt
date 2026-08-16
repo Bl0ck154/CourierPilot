@@ -7,7 +7,7 @@ import kotlin.math.ceil
 internal object AddressBackfill {
     private const val PREFS = "courierpilot_address_backfill"
     private const val KEY_REVISION = "revision"
-    private const val CURRENT_REVISION = 3
+    private const val CURRENT_REVISION = 4
     private const val PAGE_SIZE = 200
 
     fun schedule(context: Context) {
@@ -34,15 +34,12 @@ internal object AddressBackfill {
         val offers = OfferDatabase.get(context)
         val meta = CourierMetaDatabase.get(context)
 
-        // Schema-independent repair first, then retain the older in-database canonical pass as a
-        // second safety net for installs that skipped an intermediate build.
         AddressDataRepair.runIfNeeded(context)
         meta.repairNormalizedAddresses()
 
         val total = offers.offerCount()
         if (total <= 0) return
 
-        // Offer pages are newest-first. Process oldest first for a clean first/last-seen timeline.
         val pageCount = ceil(total / PAGE_SIZE.toDouble()).toInt()
         for (page in pageCount - 1 downTo 0) {
             val records = offers.searchPage("", PAGE_SIZE, page * PAGE_SIZE)
@@ -102,7 +99,7 @@ internal object AddressBackfill {
         }
     }
 
-    /** Existing installs already have observations; relink entities without recounting visits. */
+    /** Existing installs already have observations; relink entities without recounting observations. */
     private fun backfillEntitiesOnly(meta: CourierMetaDatabase, record: OfferRecord) {
         record.pickupAddresses.forEachIndexed { index, address ->
             val canonicalAddress = DeliveryAddressNormalizer.display(address) ?: return@forEachIndexed

@@ -161,7 +161,9 @@ private fun OfferDetailsScreen(offer: OfferRecord, onBack: () -> Unit) {
 
         if (offer.merchantNames.isNotEmpty() || offer.pickupAddresses.isNotEmpty()) {
             item { OfferSection("Pickup", "Venues and pickup addresses") }
-            val count = maxOf(offer.merchantNames.size, offer.pickupAddresses.size)
+            // Physical route stops are address-led. Extra summary/name nodes must not fabricate P2/P3
+            // cards when Accessibility exposed only one canonical pickup address.
+            val count = if (offer.pickupAddresses.isNotEmpty()) offer.pickupAddresses.size else offer.merchantNames.size
             items(count) { index ->
                 val address = offer.pickupAddresses.getOrNull(index)
                 val saved = address?.let(meta::findAddressForDisplayAddress)
@@ -186,7 +188,9 @@ private fun OfferDetailsScreen(offer: OfferRecord, onBack: () -> Unit) {
 
         if (offer.customerNames.isNotEmpty() || offer.dropoffAddresses.isNotEmpty()) {
             item { OfferSection("Drop-off", "Customer and destination") }
-            val count = maxOf(offer.customerNames.size, offer.dropoffAddresses.size)
+            // As above, one canonical destination is one D card. A generic fallback `Customer`
+            // must never create a second card beside the named customer for the same address.
+            val count = if (offer.dropoffAddresses.isNotEmpty()) offer.dropoffAddresses.size else offer.customerNames.size
             items(count) { index ->
                 val address = offer.dropoffAddresses.getOrNull(index)
                 val saved = address?.let(meta::findAddressForDisplayAddress)

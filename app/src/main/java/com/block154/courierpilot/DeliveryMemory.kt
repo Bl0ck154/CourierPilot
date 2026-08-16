@@ -6,11 +6,12 @@ import android.widget.Toast
 /**
  * Learns local delivery context for buildings seen in the courier apps.
  *
- * Address memory is deliberately loss-tolerant: normalized addresses power lookup/search while a
- * nearby text excerpt plus the raw Accessibility/OCR screen are retained for future parsers.
+ * Address memory stores observations of courier screens. It must never imply that the courier
+ * physically visited a building merely because an offer displayed that address.
  */
 internal object DeliveryMemory {
     private const val PREFS = "courierpilot_delivery_memory"
+    private const val ADDRESS_OBSERVATION_BURST_MS = 2L * 60L * 1000L
 
     fun observeScreen(context: Context, packageName: String, text: String) {
         if (text.isBlank()) return
@@ -28,7 +29,6 @@ internal object DeliveryMemory {
         val allAddresses = (detectedAddresses + parsed.pickupAddresses + parsed.dropoffAddresses)
             .mapNotNull { DeliveryAddressNormalizer.normalize(it) }
             .distinctBy { it.first }
-            .map { it.second }
 
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val key = addressKey(packageName)
@@ -39,19 +39,26 @@ internal object DeliveryMemory {
         val platform = OfferState.platformLabel(packageName)
         val database = CourierMetaDatabase.get(context)
 
-        // Store every canonical building exposed by the current courier screen. Apartment suffixes
-        // are removed before SQLite sees them, so 1, 1-36 and 1–36 share one building row.
-        allAddresses.forEach { address ->
+        // Accessibility frequently emits several progressively richer frames for the same visible
+        // offer. Store one address observation per short screen burst, while still updating/linking
+        // venue/customer entities from richer frames below.
+        allAddresses.forEach { normalized ->
+            val buildingKey = normalized.first
+            val address = normalized.second
             val customer = customerForAddress(parsed, address)
             val merchant = merchantForAddress(parsed, address)
             runCatching {
-                val addressId = database.saveAddressObservation(
-                    address = address,
-                    platform = platform,
-                    customerName = customer,
-                    detailsText = addressContext(text, address),
-                    rawText = text,
-                )
+                val addressId = if (shouldStoreObservation(context, packageName, buildingKey)) {
+                    database.saveAddressObservation(
+                        address = address,
+                        platform = platform,
+                        customerName = customer,
+                        detailsText = addressContext(text, address),
+                        rawText = text,
+                    )
+                } else {
+                    database.findAddressForDisplayAddress(address)?.id
+                }
                 if (addressId != null) {
                     merchant?.let {
                         database.saveAddressEntity(
@@ -190,6 +197,20 @@ internal object DeliveryMemory {
         val from = (index - 2).coerceAtLeast(0)
         val to = (index + 10).coerceAtMost(lines.size)
         return lines.subList(from, to).joinToString("\n").take(4_000)
+    }
+
+    private fun shouldStoreObservation(
+        context: Context,
+        packageName: String,
+        buildingKey: String,
+        now: Long = System.currentTimeMillis(),
+    ): Boolean {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val observationKey = "obs_${packageName.hashCode()}_${buildingKey.hashCode()}"
+        val previousAt = prefs.getLong(observationKey, 0L)
+        if (previousAt > 0L && now - previousAt in 0L until ADDRESS_OBSERVATION_BURST_MS) return false
+        prefs.edit().putLong(observationKey, now).apply()
+        return true
     }
 
     private fun addressKey(packageName: String): String = "last_address_${packageName.replace('.', '_')}"
