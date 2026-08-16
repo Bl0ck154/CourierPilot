@@ -25,7 +25,7 @@ class CourierPilotNotificationListener : NotificationListenerService() {
         val notification = sbn.notification
 
         if (CourierSignals.isOfferNotification(notification)) {
-            // Receiving a real offer is stronger proof of online state than a possibly stale ongoing notification.
+            // Receiving a real offer is strong proof that the account can receive work right now.
             CourierPresence.markOfferOnline(this, sbn.packageName, "offer notification")
             CaptureEventLog.append(this, "notification", "Strict offer notification matched", platform)
             val sourceName = resolveAppName(sbn.packageName)
@@ -55,7 +55,10 @@ class CourierPilotNotificationListener : NotificationListenerService() {
             PresenceSignal.ONLINE, PresenceSignal.OFFLINE ->
                 CourierPresence.markExplicitNotification(this, sbn.packageName, signal)
             PresenceSignal.UNKNOWN -> if (CourierSignals.isOngoingPresenceNotification(notification)) {
-                CourierPresence.markNotificationOnline(this, sbn.packageName)
+                // "App is running" / a sticky foreground-service notification is not proof that
+                // the courier account is online. Fail closed until text, screen state or an offer
+                // explicitly proves ONLINE/OFFLINE.
+                CourierPresence.markNotificationUnknown(this, sbn.packageName)
             }
         }
 
@@ -106,11 +109,9 @@ class CourierPilotNotificationListener : NotificationListenerService() {
             return
         }
 
-        if (nonOffer.any { CourierSignals.isOngoingPresenceNotification(it.notification) }) {
-            CourierPresence.markNotificationOnline(this, packageName)
-        } else {
-            CourierPresence.markNotificationUnknown(this, packageName)
-        }
+        // The mere existence of an ongoing notification only proves that Android keeps some part
+        // of the courier app alive. It does not prove the courier is accepting orders.
+        CourierPresence.markNotificationUnknown(this, packageName)
     }
 
     @Suppress("DEPRECATION")
