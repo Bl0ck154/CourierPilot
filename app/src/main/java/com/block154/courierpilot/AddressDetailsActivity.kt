@@ -128,7 +128,7 @@ private fun AddressDetailsScreen(
                         Text(address.displayAddress, Modifier.weight(1f), fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
                     }
                     Text(
-                        "${address.platform} · seen ${address.seenCount}× · last ${addressDate(address.lastSeenAt)}",
+                        "${address.platform} · captured ${address.seenCount}× · last ${addressDate(address.lastSeenAt)}",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp,
                     )
@@ -162,14 +162,14 @@ private fun AddressDetailsScreen(
         }
 
         if (venues.isNotEmpty()) {
-            item { AddressSection("Venues", "Pickup places seen at this building") }
+            item { AddressSection("Venues", "Pickup places captured for this building") }
             items(venues, key = { "venue-${it.id}" }) { entity ->
                 AddressEntityCard(entity)
             }
         }
 
         if (customers.isNotEmpty()) {
-            item { AddressSection("Customers", "Customer names previously linked to this building") }
+            item { AddressSection("Customers", "Customer names captured for this building") }
             items(customers, key = { "customer-${it.id}" }) { entity ->
                 AddressEntityCard(entity)
             }
@@ -182,13 +182,18 @@ private fun AddressDetailsScreen(
         }
 
         address.latestDetails?.takeIf(String::isNotBlank)?.let { details ->
-            item { AddressSection("Latest details", "Captured around this address") }
+            item { AddressSection("Latest details", "Captured from courier app screens") }
             item { AddressInfoCard(null, details) }
         }
 
-        item { AddressSection("Visit history", "Recent local observations") }
+        item {
+            AddressSection(
+                "Offer observations",
+                "Address appearances captured from courier app screens — not confirmed visits",
+            )
+        }
         if (observations.isEmpty()) {
-            item { AddressInfoCard(null, "No detailed observations saved yet.") }
+            item { AddressInfoCard(null, "No offer observations saved yet.") }
         } else {
             items(observations, key = { "observation-${it.id}" }) { observation ->
                 Card(shape = RoundedCornerShape(18.dp)) {
@@ -227,7 +232,7 @@ private fun AddressEntityCard(entity: AddressEntityRecord) {
             Column(Modifier.weight(1f)) {
                 Text(entity.name, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
                 Text(
-                    "${entity.platform} · seen ${entity.seenCount}× · ${addressDate(entity.lastSeenAt)}",
+                    "${entity.platform} · captured ${entity.seenCount}× · ${addressDate(entity.lastSeenAt)}",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 11.sp,
                 )

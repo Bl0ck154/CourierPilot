@@ -6,13 +6,14 @@ import android.content.Context
 /**
  * Re-runs canonical building merges when address normalization rules evolve.
  *
- * This deliberately lives outside the SQLite schema version: changing how `Vokiečių g. 1-36`
- * maps to a building must also repair already-saved rows even when no table shape changed.
+ * This deliberately lives outside the SQLite schema version: changing how apartment/post-code
+ * variants map to one building must also repair already-saved rows when no table shape changed.
  */
 internal object AddressDataRepair {
     private const val PREFS = "courierpilot_address_repairs"
     private const val KEY_REVISION = "canonical_revision"
-    private const val CURRENT_REVISION = 1
+    private const val CURRENT_REVISION = 2
+    private const val OBSERVATION_BURST_MS = 2L * 60L * 1000L
 
     fun runIfNeeded(context: Context) {
         val appContext = context.applicationContext
@@ -165,14 +166,37 @@ internal object AddressDataRepair {
                 )
             }
 
+            // Accessibility can emit several progressively richer frames for the same offer. These
+            // are screen observations, not physical visits, so keep one row per address/platform
+            // burst even when raw text differs between frames.
             db.execSQL(
                 """
                 DELETE FROM address_observations
-                WHERE id NOT IN (
-                    SELECT MIN(id)
-                    FROM address_observations
-                    GROUP BY address_id, platform, raw_text, (seen_at / 30000)
+                WHERE id IN (
+                    SELECT newer.id
+                    FROM address_observations AS newer
+                    JOIN address_observations AS older
+                      ON older.address_id = newer.address_id
+                     AND older.platform = newer.platform
+                     AND older.id < newer.id
+                     AND ABS(older.seen_at - newer.seen_at) <= $OBSERVATION_BURST_MS
                 )
+                """.trimIndent()
+            )
+
+            // After canonical rows merge, `seen_count` must describe distinct captured screen bursts,
+            // not the sum of duplicate legacy rows such as address-with-postcode + address-without.
+            db.execSQL(
+                """
+                UPDATE addresses
+                SET seen_count = CASE
+                    WHEN EXISTS (
+                        SELECT 1 FROM address_observations ao WHERE ao.address_id = addresses.id
+                    ) THEN (
+                        SELECT COUNT(*) FROM address_observations ao WHERE ao.address_id = addresses.id
+                    )
+                    ELSE MAX(seen_count, 1)
+                END
                 """.trimIndent()
             )
 

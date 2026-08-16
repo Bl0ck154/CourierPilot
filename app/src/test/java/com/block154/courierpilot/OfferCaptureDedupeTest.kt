@@ -31,8 +31,6 @@ class OfferCaptureDedupeTest {
             ArmResult.ARMED,
             OfferState.arm(context, CourierSignals.WOLT_PACKAGE, "Wolt Partner", key),
         )
-
-        // Simulate the successful-capture path. clear() now leaves a notification tombstone.
         OfferState.clear(context)
 
         assertEquals(
@@ -40,7 +38,6 @@ class OfferCaptureDedupeTest {
             OfferState.arm(context, CourierSignals.WOLT_PACKAGE, "Wolt Partner", key),
         )
 
-        // Android removal ends that notification lifetime, so a later genuine offer may reuse it.
         OfferState.releaseCapturedNotification(context, CourierSignals.WOLT_PACKAGE, key)
         assertEquals(
             ArmResult.ARMED,
@@ -237,6 +234,86 @@ class OfferCaptureDedupeTest {
 
         assertEquals(true, OfferDedupeIdentity.isSameLiveOffer(first, duplicate))
         assertEquals(false, OfferDedupeIdentity.isSameLiveOffer(first, genuinelyDifferent))
+    }
+
+    @Test
+    fun shortBurstCanIgnorePickupMisclassificationWhenDropoffMatches() {
+        val first = OfferRecord(
+            capturedAt = 4_000_000L,
+            platform = "Wolt",
+            packageName = CourierSignals.WOLT_PACKAGE,
+            priceCents = 596,
+            distanceMeters = 9_900,
+            restaurant = "OSH 2 by Ugruzina",
+            screenshotUri = "content://first",
+            screenshotFilename = "first.png",
+            rawText = "first",
+            merchantNames = listOf("OSH 2 by Ugruzina"),
+            pickupAddresses = listOf("Stuokos Gucevičiaus g. 7, LT01122 Vilnius"),
+            dropoffAddresses = listOf("Loop Hotel Vilnius, 02189 Vilnius"),
+            deliveryCount = 1,
+        )
+        val richerSameOffer = first.copy(
+            capturedAt = first.capturedAt + 35_000L,
+            pickupAddresses = listOf("Different parser artifact g. 9, Vilnius"),
+            screenshotUri = "content://second",
+            screenshotFilename = "second.png",
+        )
+        val realDifferentOffer = first.copy(
+            capturedAt = first.capturedAt + 40_000L,
+            dropoffAddresses = listOf("Vokiečių g. 24, Vilnius"),
+            screenshotUri = "content://third",
+            screenshotFilename = "third.png",
+        )
+
+        assertEquals(true, OfferDedupeIdentity.isSameLiveOffer(first, richerSameOffer))
+        assertEquals(false, OfferDedupeIdentity.isSameLiveOffer(first, realDifferentOffer))
+    }
+
+    @Test
+    fun repeatedCanonicalStopsCollapseToOnePhysicalPickupAndDropoff() {
+        val stored = OfferRecord(
+            capturedAt = 5_000_000L,
+            platform = "Wolt",
+            packageName = CourierSignals.WOLT_PACKAGE,
+            priceCents = 596,
+            distanceMeters = 9_900,
+            restaurant = "OSH 2 by Ugruzina",
+            screenshotUri = "content://offer",
+            screenshotFilename = "offer.png",
+            rawText = "",
+            merchantNames = listOf("OSH 2 by Ugruzina"),
+            pickupAddresses = listOf(
+                "Stuokos Gucevičiaus g. 7, LT01122 Vilnius",
+                "Stuokos Gucevičiaus g. 7,\u00A0LT01122 Vilnius",
+            ),
+            customerNames = listOf("javaria m.", "Customer"),
+            dropoffAddresses = listOf(
+                "Loop Hotel Vilnius, 02189 Vilnius",
+                "Loop Hotel Vilnius,\u00A002189 Vilnius",
+            ),
+            deliveryCount = 2,
+        )
+
+        val repaired = stored.withCurrentParsedStructure()
+
+        assertEquals(1, repaired.pickupAddresses.size)
+        assertEquals(1, repaired.dropoffAddresses.size)
+        assertEquals(listOf("javaria m."), repaired.customerNames)
+        assertEquals(1, repaired.deliveryCount)
+    }
+
+    @Test
+    fun postalCodeVariantsNormalizeToOneBuilding() {
+        val canonical = DeliveryAddressNormalizer.normalize("Stuokos Gucevičiaus g. 7")
+
+        assertEquals(canonical, DeliveryAddressNormalizer.normalize("Stuokos Gucevičiaus g. 7, LT01122 Vilnius"))
+        assertEquals(canonical, DeliveryAddressNormalizer.normalize("Stuokos Gucevičiaus g. 7, LT-01122 Vilnius"))
+        assertEquals(canonical, DeliveryAddressNormalizer.normalize("Stuokos Gucevičiaus g. 7, 01122 Vilnius"))
+        assertEquals(
+            DeliveryAddressNormalizer.normalize("M. Mironaitės gatvė 14"),
+            DeliveryAddressNormalizer.normalize("M. Mironaitės gatvė 14, 04234 Vilnius"),
+        )
     }
 
     @Test

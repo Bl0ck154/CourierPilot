@@ -4,13 +4,7 @@ import java.text.Normalizer
 import java.util.Locale
 import kotlin.math.abs
 
-/**
- * Stable identities for one live courier offer.
- *
- * Accessibility/OCR may expose route details progressively. Persistence therefore uses a tiered
- * duplicate guard: a very short sparse-frame fallback, the normal fuzzy route comparison, and a
- * longer window only for strong route identity / exact capture keys.
- */
+/** Stable identities for one live courier offer. */
 internal object OfferDedupeIdentity {
     const val BURST_WINDOW_MS = 90L * 1000L
     const val PERSIST_DEDUPE_WINDOW_MS = 10L * 60L * 1000L
@@ -37,10 +31,11 @@ internal object OfferDedupeIdentity {
     /**
      * Fuzzy guard for duplicate captures of the same live offer.
      *
-     * Within 45 seconds, a sparse notification frame may legitimately contain only the price while
-     * the later Accessibility frame contains the route. Contradictory route fields still reject the
-     * match. From 3 to 10 minutes we require strong route identity so two genuine later offers from
-     * the same venue are not collapsed merely because their price matches.
+     * A live Accessibility tree can briefly classify one address differently between frames. For
+     * the first 90 seconds, a matching known drop-off is therefore allowed to prove identity before
+     * pickup contradictions are considered. If both frames know different drop-offs we still keep
+     * both offers. This is aimed at notification -> partial tree -> rich tree progression, not at
+     * collapsing later genuine offers from the same venue.
      */
     fun isSameLiveOffer(first: OfferRecord, second: OfferRecord): Boolean {
         if (first.packageName != second.packageName) return false
@@ -57,22 +52,40 @@ internal object OfferDedupeIdentity {
         val firstCount = first.deliveryCount
         val secondCount = second.deliveryCount
         val countMatches = firstCount != null && secondCount != null && firstCount == secondCount
-        if (firstCount != null && secondCount != null && !countMatches) return false
 
         val firstMerchants = merchantTokens(first.asParsedOffer())
         val secondMerchants = merchantTokens(second.asParsedOffer())
         val venueMatches = firstMerchants.isNotEmpty() && secondMerchants.isNotEmpty() &&
             firstMerchants.any { left -> secondMerchants.any { right -> tokenMatches(left, right) } }
-        if (firstMerchants.isNotEmpty() && secondMerchants.isNotEmpty() && !venueMatches) return false
 
         val firstPickups = addressTokens(first.pickupAddresses)
         val secondPickups = addressTokens(second.pickupAddresses)
         val pickupMatches = overlaps(firstPickups, secondPickups)
-        if (firstPickups.isNotEmpty() && secondPickups.isNotEmpty() && !pickupMatches) return false
 
         val firstDropoffs = addressTokens(first.dropoffAddresses)
         val secondDropoffs = addressTokens(second.dropoffAddresses)
         val dropoffMatches = overlaps(firstDropoffs, secondDropoffs)
+
+        val firstAllAddresses = firstPickups + firstDropoffs
+        val secondAllAddresses = secondPickups + secondDropoffs
+        val crossRoleAddressMatches = overlaps(firstAllAddresses, secondAllAddresses)
+
+        // Rich/partial frames of one live offer can disagree about whether a repeated line is pickup
+        // or drop-off. A matching drop-off is the strongest short-burst signal. If one side does not
+        // expose drop-offs yet, require venue + distance + any canonical route address instead.
+        if (elapsed <= BURST_WINDOW_MS) {
+            val bothKnowDropoff = firstDropoffs.isNotEmpty() && secondDropoffs.isNotEmpty()
+            if (bothKnowDropoff && dropoffMatches && (distanceMatches || venueMatches || pickupMatches)) {
+                return true
+            }
+            if (!bothKnowDropoff && distanceMatches && venueMatches && crossRoleAddressMatches) {
+                return true
+            }
+        }
+
+        if (firstCount != null && secondCount != null && !countMatches) return false
+        if (firstMerchants.isNotEmpty() && secondMerchants.isNotEmpty() && !venueMatches) return false
+        if (firstPickups.isNotEmpty() && secondPickups.isNotEmpty() && !pickupMatches) return false
         if (firstDropoffs.isNotEmpty() && secondDropoffs.isNotEmpty() && !dropoffMatches) return false
 
         val addressMatches = pickupMatches || dropoffMatches
@@ -116,8 +129,10 @@ internal object OfferDedupeIdentity {
             .filter(String::isNotEmpty)
             .distinct()
 
-    private fun addressTokens(values: List<String>): Set<String> =
-        values.mapNotNull { DeliveryAddressNormalizer.key(it) }.toSet()
+    private fun addressTokens(values: List<String>): Set<String> = values.mapNotNull { value ->
+        DeliveryAddressNormalizer.key(value)
+            ?: identityToken(value).takeIf(String::isNotEmpty)?.let { "raw:$it" }
+    }.toSet()
 
     private fun overlaps(first: Set<String>, second: Set<String>): Boolean =
         first.isNotEmpty() && second.isNotEmpty() && first.any(second::contains)
