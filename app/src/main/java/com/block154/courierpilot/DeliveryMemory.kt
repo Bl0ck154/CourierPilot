@@ -33,16 +33,17 @@ internal object DeliveryMemory {
 
         LiveAdvisorHub.attach(context)
         if (OfferState.pending(context) != null) LiveAdvisorHub.hideForCapture(context)
-        LiveAdvisorHub.observeScreen(context, packageName, text)
 
         val parsed = OfferParser.parse(text)
         if (CourierSignals.looksLikeOfferScreen(text, parsed)) {
             CourierPresence.markOfferOnline(context, packageName, "offer screen")
         }
 
-        // OCR may enrich the live offer card, but it cannot create/update buildings, customers,
-        // access codes or aliases.
+        // OCR may enrich the live offer card, but it cannot advance delivery lifecycle state or
+        // create/update buildings, customers, access codes or aliases. Otherwise a hallucinated OCR
+        // pickup cue could unlock durable persistence for a later restaurant frame.
         if (source != ScreenTextSource.ACCESSIBILITY) return
+        LiveAdvisorHub.observeScreen(context, packageName, text)
 
         val platform = OfferState.platformLabel(packageName)
         val database = CourierMetaDatabase.get(context)
