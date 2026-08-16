@@ -5,15 +5,13 @@ import android.content.Context
 import android.net.Uri
 
 /**
- * Parser fixes should also repair statistics for offers captured by older versions. This migration
- * is intentionally data-only: it does not change the SQLite schema and runs once per repair
- * revision.
+ * Repairs parser output and removes historical duplicate captures created by older pipeline versions.
+ * This is data-only and idempotent per revision.
  */
 internal object OfferDataRepair {
     private const val PREFS = "courier_offer_repairs"
     private const val KEY_REVISION = "parser_repair_revision"
-    private const val CURRENT_REVISION = 3
-    private const val EXACT_DUPLICATE_WINDOW_MS = 2L * 60L * 1000L
+    private const val CURRENT_REVISION = 4
     private const val LIST_SEPARATOR = "\u001F"
 
     fun runIfNeeded(context: Context) {
@@ -24,14 +22,12 @@ internal object OfferDataRepair {
         val database = OfferDatabase.get(appContext)
         val sqlite = database.writableDatabase
         val records = database.recordsSince(0L, 5000).sortedBy { it.capturedAt }
-        val latestByExactFingerprint = mutableMapOf<String, OfferRecord>()
-        val latestByBurstFingerprint = mutableMapOf<String, OfferRecord>()
+        val recentSurvivors = ArrayDeque<OfferRecord>()
         val duplicateScreenshotUris = mutableListOf<String>()
 
         sqlite.beginTransaction()
         try {
             records.forEach { original ->
-                val parsed = OfferParser.parse(original.rawText)
                 val repaired = original.withCurrentParsedStructure()
                 val values = ContentValues().apply {
                     put("price_cents", repaired.priceCents)
@@ -47,26 +43,20 @@ internal object OfferDataRepair {
                 }
                 sqlite.update("offers", values, "id = ?", arrayOf(original.id.toString()))
 
-                if (!CourierSignals.hasStrongOfferIdentity(parsed, original.rawText)) return@forEach
+                while (recentSurvivors.isNotEmpty() &&
+                    repaired.capturedAt - recentSurvivors.first().capturedAt > OfferDedupeIdentity.PERSIST_DEDUPE_WINDOW_MS
+                ) {
+                    recentSurvivors.removeFirst()
+                }
 
-                val exactFingerprint = CourierSignals.offerFingerprint(original.packageName, parsed, original.rawText)
-                val burstFingerprint = OfferDedupeIdentity.burstFingerprint(repaired)
-                val previousExact = latestByExactFingerprint[exactFingerprint]
-                val previousBurst = latestByBurstFingerprint[burstFingerprint]
-
-                val exactDuplicate = previousExact != null &&
-                    original.capturedAt >= previousExact.capturedAt &&
-                    original.capturedAt - previousExact.capturedAt <= EXACT_DUPLICATE_WINDOW_MS
-                val burstDuplicate = previousBurst != null &&
-                    original.capturedAt >= previousBurst.capturedAt &&
-                    original.capturedAt - previousBurst.capturedAt <= OfferDedupeIdentity.BURST_WINDOW_MS
-
-                if (exactDuplicate || burstDuplicate) {
+                val duplicate = recentSurvivors.any { previous ->
+                    OfferDedupeIdentity.isSameLiveOffer(previous, repaired)
+                }
+                if (duplicate) {
                     sqlite.delete("offers", "id = ?", arrayOf(original.id.toString()))
                     duplicateScreenshotUris += original.screenshotUri
                 } else {
-                    latestByExactFingerprint[exactFingerprint] = original
-                    latestByBurstFingerprint[burstFingerprint] = original
+                    recentSurvivors.addLast(repaired)
                 }
             }
             sqlite.setTransactionSuccessful()
@@ -76,7 +66,7 @@ internal object OfferDataRepair {
         }
 
         // MediaStore is outside the SQLite transaction. Cleanup is best-effort: history/statistics
-        // are already correct even if an OEM refuses deletion of an old screenshot URI.
+        // are already repaired even if the OEM refuses deletion of an old screenshot URI.
         duplicateScreenshotUris.distinct().forEach { uri ->
             runCatching { appContext.contentResolver.delete(Uri.parse(uri), null, null) }
         }

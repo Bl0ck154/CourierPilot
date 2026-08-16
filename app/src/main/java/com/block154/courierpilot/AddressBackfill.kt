@@ -3,20 +3,21 @@ package com.block154.courierpilot
 import android.content.Context
 import kotlin.math.ceil
 
-/** Backfills the new address memory from offer history once, without blocking app startup. */
+/** Backfills address memory and address-linked people/venues without blocking app startup. */
 internal object AddressBackfill {
     private const val PREFS = "courierpilot_address_backfill"
     private const val KEY_REVISION = "revision"
-    private const val CURRENT_REVISION = 1
+    private const val CURRENT_REVISION = 2
     private const val PAGE_SIZE = 200
 
     fun schedule(context: Context) {
         val appContext = context.applicationContext
         val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        if (prefs.getInt(KEY_REVISION, 0) >= CURRENT_REVISION) return
+        val fromRevision = prefs.getInt(KEY_REVISION, 0)
+        if (fromRevision >= CURRENT_REVISION) return
 
         Thread({
-            runCatching { run(appContext) }
+            runCatching { run(appContext, fromRevision) }
                 .onSuccess { prefs.edit().putInt(KEY_REVISION, CURRENT_REVISION).apply() }
                 .onFailure {
                     CaptureEventLog.append(
@@ -29,26 +30,33 @@ internal object AddressBackfill {
         }, "CourierPilot-address-backfill").start()
     }
 
-    private fun run(context: Context) {
+    private fun run(context: Context, fromRevision: Int) {
         val offers = OfferDatabase.get(context)
         val meta = CourierMetaDatabase.get(context)
+
+        // Normalization rules are versioned independently from the SQLite key that older builds used.
+        // Merge old apartment/street-marker variants before adding entity links.
+        meta.repairNormalizedAddresses()
+
         val total = offers.offerCount()
         if (total <= 0) return
 
-        // Offer pages are newest-first. Process the oldest page first so first/last-seen metadata
-        // stays chronological when a building appears in several historical offers.
+        // Offer pages are newest-first. Process oldest first for a clean first/last-seen timeline.
         val pageCount = ceil(total / PAGE_SIZE.toDouble()).toInt()
         for (page in pageCount - 1 downTo 0) {
             val records = offers.searchPage("", PAGE_SIZE, page * PAGE_SIZE)
                 .map { it.withCurrentParsedStructure() }
                 .sortedBy { it.capturedAt }
-            records.forEach { record -> backfillRecord(meta, record) }
+            records.forEach { record ->
+                if (fromRevision < 1) backfillFullRecord(meta, record)
+                else backfillEntitiesOnly(meta, record)
+            }
         }
     }
 
-    private fun backfillRecord(meta: CourierMetaDatabase, record: OfferRecord) {
+    private fun backfillFullRecord(meta: CourierMetaDatabase, record: OfferRecord) {
         record.pickupAddresses.forEachIndexed { index, address ->
-            meta.saveAddressObservation(
+            val addressId = meta.saveAddressObservation(
                 address = address,
                 platform = record.platform,
                 customerName = null,
@@ -56,17 +64,70 @@ internal object AddressBackfill {
                 rawText = record.rawText,
                 now = record.capturedAt,
             )
+            val venue = record.merchantNames.getOrNull(index)
+                ?: record.restaurant.takeIf { record.pickupAddresses.size <= 1 }
+            if (addressId != null && !venue.isNullOrBlank()) {
+                meta.saveAddressEntity(
+                    addressId,
+                    CourierMetaDatabase.ENTITY_VENUE,
+                    venue,
+                    record.platform,
+                    record.capturedAt,
+                )
+            }
         }
         record.dropoffAddresses.forEachIndexed { index, address ->
-            meta.saveAddressObservation(
+            val customer = record.customerNames.getOrNull(index)
+                ?.takeUnless { it.equals("Customer", ignoreCase = true) }
+            val addressId = meta.saveAddressObservation(
                 address = address,
                 platform = record.platform,
-                customerName = record.customerNames.getOrNull(index)
-                    ?.takeUnless { it.equals("Customer", ignoreCase = true) },
+                customerName = customer,
                 detailsText = "Drop-off from captured offer",
                 rawText = record.rawText,
                 now = record.capturedAt,
             )
+            if (addressId != null && !customer.isNullOrBlank()) {
+                meta.saveAddressEntity(
+                    addressId,
+                    CourierMetaDatabase.ENTITY_CUSTOMER,
+                    customer,
+                    record.platform,
+                    record.capturedAt,
+                )
+            }
+        }
+    }
+
+    /** Existing revision-1 installs already have observations; only link entities to avoid recounting visits. */
+    private fun backfillEntitiesOnly(meta: CourierMetaDatabase, record: OfferRecord) {
+        record.pickupAddresses.forEachIndexed { index, address ->
+            val addressId = meta.findAddressForDisplayAddress(address)?.id ?: return@forEachIndexed
+            val venue = record.merchantNames.getOrNull(index)
+                ?: record.restaurant.takeIf { record.pickupAddresses.size <= 1 }
+            if (!venue.isNullOrBlank()) {
+                meta.saveAddressEntity(
+                    addressId,
+                    CourierMetaDatabase.ENTITY_VENUE,
+                    venue,
+                    record.platform,
+                    record.capturedAt,
+                )
+            }
+        }
+        record.dropoffAddresses.forEachIndexed { index, address ->
+            val addressId = meta.findAddressForDisplayAddress(address)?.id ?: return@forEachIndexed
+            val customer = record.customerNames.getOrNull(index)
+                ?.takeUnless { it.equals("Customer", ignoreCase = true) }
+            if (!customer.isNullOrBlank()) {
+                meta.saveAddressEntity(
+                    addressId,
+                    CourierMetaDatabase.ENTITY_CUSTOMER,
+                    customer,
+                    record.platform,
+                    record.capturedAt,
+                )
+            }
         }
     }
 }

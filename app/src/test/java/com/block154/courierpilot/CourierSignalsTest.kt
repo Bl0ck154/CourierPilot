@@ -62,4 +62,21 @@ class CourierSignalsTest {
         assertEquals("Žirmūnų g. 23", observations.single().displayAddress)
         assertEquals("1234#", observations.single().code)
     }
+    @Test
+    fun buildingNormalizationCollapsesApartmentAndStreetAliases() {
+        val apartmentDash = CourierSignals.normalizeBuildingAddress("Vokiečių g. 1-36, Vilnius")
+        val apartmentSlash = CourierSignals.normalizeBuildingAddress("Vokiečių g. 1/36, LT-01130 Vilnius")
+        val explicitApartment = CourierSignals.normalizeBuildingAddress("Vokiečių g. 1, butas 36")
+        val longLithuanian = CourierSignals.normalizeBuildingAddress("Vokiečių gatvė 1, Vilnius")
+        val english = CourierSignals.normalizeBuildingAddress("Vokiečių str. 1, Vilnius")
+
+        assertEquals("Vokiečių g. 1", apartmentDash?.second)
+        assertEquals("Vokiečių g. 1", apartmentSlash?.second)
+        assertEquals("Vokiečių g. 1", explicitApartment?.second)
+        assertEquals(apartmentDash?.first, apartmentSlash?.first)
+        assertEquals(apartmentDash?.first, explicitApartment?.first)
+        assertEquals(apartmentDash?.first, longLithuanian?.first)
+        assertEquals(apartmentDash?.first, english?.first)
+    }
+
 }
