@@ -1,14 +1,19 @@
 package com.block154.courierpilot
 
 import android.content.Context
-import kotlin.math.ceil
 
-/** Backfills address memory and address-linked people/venues without blocking app startup. */
+/**
+ * Maintains local customer-address memory without replaying old offer cards.
+ *
+ * Older revisions rebuilt addresses/entities from captured offers. That mixed restaurant pickup
+ * addresses, merchant names and parser/UI artifacts into the customer Addresses tab. From revision
+ * 7 onward we only repair/clean existing local memory; new addresses come from trusted live
+ * customer screens through DeliveryMemory.
+ */
 internal object AddressBackfill {
     private const val PREFS = "courierpilot_address_backfill"
     private const val KEY_REVISION = "revision"
-    private const val CURRENT_REVISION = 6
-    private const val PAGE_SIZE = 200
+    private const val CURRENT_REVISION = 7
 
     fun schedule(context: Context) {
         val appContext = context.applicationContext
@@ -17,121 +22,19 @@ internal object AddressBackfill {
         if (fromRevision >= CURRENT_REVISION) return
 
         Thread({
-            runCatching { run(appContext, fromRevision) }
-                .onSuccess { prefs.edit().putInt(KEY_REVISION, CURRENT_REVISION).apply() }
-                .onFailure {
-                    CaptureEventLog.append(
-                        appContext,
-                        stage = "address_backfill_failed",
-                        message = it.javaClass.simpleName,
-                        dedupeWindowMs = 60_000L,
-                    )
-                }
-        }, "CourierPilot-address-backfill").start()
-    }
-
-    private fun run(context: Context, fromRevision: Int) {
-        val offers = OfferDatabase.get(context)
-        val meta = CourierMetaDatabase.get(context)
-
-        // AddressDataRepair owns canonical identity and legacy OCR cleanup.
-        AddressDataRepair.runIfNeeded(context)
-
-        val total = offers.offerCount()
-        if (total <= 0) return
-
-        val pageCount = ceil(total / PAGE_SIZE.toDouble()).toInt()
-        for (page in pageCount - 1 downTo 0) {
-            val records = offers.searchPage("", PAGE_SIZE, page * PAGE_SIZE)
-                .map { it.withCurrentParsedStructure() }
-                .sortedBy { it.capturedAt }
-            records.forEach { record ->
-                if (fromRevision < 1) backfillFullRecord(context, meta, record)
-                else backfillEntitiesOnly(context, meta, record)
-            }
-        }
-    }
-
-    private fun backfillFullRecord(context: Context, meta: CourierMetaDatabase, record: OfferRecord) {
-        record.pickupAddresses.forEachIndexed { index, address ->
-            val result = AddressMemoryResolver.saveObservation(
-                context = context,
-                database = meta,
-                address = address,
-                platform = record.platform,
-                customerName = null,
-                detailsText = record.merchantNames.getOrNull(index)?.let { "Pickup · $it" },
-                rawText = record.rawText,
-                evidence = AddressEvidenceSource.CAPTURED_OFFER,
-                now = record.capturedAt,
-            ) ?: return@forEachIndexed
-            val venue = record.merchantNames.getOrNull(index)
-                ?: record.restaurant.takeIf { record.pickupAddresses.size <= 1 }
-            if (!venue.isNullOrBlank()) {
-                meta.saveAddressEntity(
-                    result.addressId,
-                    CourierMetaDatabase.ENTITY_VENUE,
-                    venue,
-                    record.platform,
-                    record.capturedAt,
+            runCatching {
+                AddressDataRepair.runIfNeeded(appContext)
+                AddressMetadataCleanup.run(appContext)
+            }.onSuccess {
+                prefs.edit().putInt(KEY_REVISION, CURRENT_REVISION).apply()
+            }.onFailure {
+                CaptureEventLog.append(
+                    appContext,
+                    stage = "address_backfill_failed",
+                    message = it.javaClass.simpleName,
+                    dedupeWindowMs = 60_000L,
                 )
             }
-        }
-        record.dropoffAddresses.forEachIndexed { index, address ->
-            val customer = record.customerNames.getOrNull(index)
-                ?.takeUnless { it.equals("Customer", ignoreCase = true) }
-            val result = AddressMemoryResolver.saveObservation(
-                context = context,
-                database = meta,
-                address = address,
-                platform = record.platform,
-                customerName = customer,
-                detailsText = "Drop-off from captured offer",
-                rawText = record.rawText,
-                evidence = AddressEvidenceSource.CAPTURED_OFFER,
-                now = record.capturedAt,
-            ) ?: return@forEachIndexed
-            if (!customer.isNullOrBlank()) {
-                meta.saveAddressEntity(
-                    result.addressId,
-                    CourierMetaDatabase.ENTITY_CUSTOMER,
-                    customer,
-                    record.platform,
-                    record.capturedAt,
-                )
-            }
-        }
-    }
-
-    /** Existing installs already have observations; relink entities without recounting observations. */
-    private fun backfillEntitiesOnly(context: Context, meta: CourierMetaDatabase, record: OfferRecord) {
-        record.pickupAddresses.forEachIndexed { index, address ->
-            val addressId = AddressMemoryResolver.findSaved(context, meta, address)?.id ?: return@forEachIndexed
-            val venue = record.merchantNames.getOrNull(index)
-                ?: record.restaurant.takeIf { record.pickupAddresses.size <= 1 }
-            if (!venue.isNullOrBlank()) {
-                meta.saveAddressEntity(
-                    addressId,
-                    CourierMetaDatabase.ENTITY_VENUE,
-                    venue,
-                    record.platform,
-                    record.capturedAt,
-                )
-            }
-        }
-        record.dropoffAddresses.forEachIndexed { index, address ->
-            val addressId = AddressMemoryResolver.findSaved(context, meta, address)?.id ?: return@forEachIndexed
-            val customer = record.customerNames.getOrNull(index)
-                ?.takeUnless { it.equals("Customer", ignoreCase = true) }
-            if (!customer.isNullOrBlank()) {
-                meta.saveAddressEntity(
-                    addressId,
-                    CourierMetaDatabase.ENTITY_CUSTOMER,
-                    customer,
-                    record.platform,
-                    record.capturedAt,
-                )
-            }
-        }
+        }, "CourierPilot-address-maintenance").start()
     }
 }
