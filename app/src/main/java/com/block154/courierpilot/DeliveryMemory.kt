@@ -13,6 +13,11 @@ internal object DeliveryMemory {
     private const val PREFS = "courierpilot_delivery_memory"
     private const val ADDRESS_OBSERVATION_BURST_MS = 2L * 60L * 1000L
 
+    private data class DetectedAddress(
+        val raw: String,
+        val normalized: Pair<String, String>,
+    )
+
     fun observeScreen(context: Context, packageName: String, text: String) {
         if (text.isBlank()) return
 
@@ -25,10 +30,13 @@ internal object DeliveryMemory {
             CourierPresence.markOfferOnline(context, packageName, "offer screen")
         }
 
-        val detectedAddresses = CourierSignals.likelyAddresses(text)
+        // Add compact-address candidates to the legacy strict detector so user-entered forms such as
+        // `Vokiečių 7` are not ignored merely because `g.` / `gatvė` or the city is absent.
+        val detectedAddresses = (CourierSignals.likelyAddresses(text) + DeliveryAddressNormalizer.likelyAddressLines(text))
+            .distinct()
         val allAddresses = (detectedAddresses + parsed.pickupAddresses + parsed.dropoffAddresses)
-            .mapNotNull { DeliveryAddressNormalizer.normalize(it) }
-            .distinctBy { it.first }
+            .mapNotNull { raw -> DeliveryAddressNormalizer.normalize(raw)?.let { DetectedAddress(raw, it) } }
+            .distinctBy { it.normalized.first }
 
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val key = addressKey(packageName)
@@ -39,30 +47,40 @@ internal object DeliveryMemory {
         val platform = OfferState.platformLabel(packageName)
         val database = CourierMetaDatabase.get(context)
 
-        // Accessibility frequently emits several progressively richer frames for the same visible
-        // offer. Store one address observation per short screen burst, while still updating/linking
-        // venue/customer entities from richer frames below.
-        allAddresses.forEach { normalized ->
-            val buildingKey = normalized.first
-            val address = normalized.second
-            val customer = customerForAddress(parsed, address)
-            val merchant = merchantForAddress(parsed, address)
+        allAddresses.forEach { detected ->
+            val rawAddress = detected.raw
+            val customer = customerForAddress(parsed, rawAddress)
+            val merchant = merchantForAddress(parsed, rawAddress)
             runCatching {
-                val addressId = if (shouldStoreObservation(context, packageName, buildingKey)) {
-                    database.saveAddressObservation(
-                        address = address,
+                val canonicalBeforeSave = AddressMemoryResolver.canonicalize(context, database, rawAddress)
+                    ?: detected.normalized
+                val burstKey = canonicalBeforeSave.first
+                val saved = if (shouldStoreObservation(context, packageName, burstKey)) {
+                    AddressMemoryResolver.saveObservation(
+                        context = context,
+                        database = database,
+                        address = rawAddress,
                         platform = platform,
                         customerName = customer,
-                        detailsText = addressContext(text, address),
+                        detailsText = addressContext(text, rawAddress),
                         rawText = text,
                     )
                 } else {
-                    database.findAddressForDisplayAddress(address)?.id
+                    AddressMemoryResolver.findSaved(context, database, rawAddress)?.let { existing ->
+                        SmartAddressSaveResult(
+                            addressId = existing.id,
+                            buildingKey = existing.buildingKey,
+                            displayAddress = existing.displayAddress,
+                            inserted = false,
+                            localAliasMatched = existing.buildingKey != detected.normalized.first,
+                        )
+                    }
                 }
-                if (addressId != null) {
+
+                if (saved != null) {
                     merchant?.let {
                         database.saveAddressEntity(
-                            addressId = addressId,
+                            addressId = saved.addressId,
                             entityType = CourierMetaDatabase.ENTITY_VENUE,
                             name = it,
                             platform = platform,
@@ -70,12 +88,15 @@ internal object DeliveryMemory {
                     }
                     customer?.let {
                         database.saveAddressEntity(
-                            addressId = addressId,
+                            addressId = saved.addressId,
                             entityType = CourierMetaDatabase.ENTITY_CUSTOMER,
                             name = it,
                             platform = platform,
                         )
                     }
+                    // Only a genuinely new local identity reaches the network fallback. Repeated
+                    // normal captures stay entirely local.
+                    AddressGeoAliasResolver.scheduleForPossibleAlias(context, database, saved, rawAddress)
                 }
             }.onFailure {
                 CaptureEventLog.append(
@@ -90,13 +111,14 @@ internal object DeliveryMemory {
 
         val observations = CourierSignals.extractAccessCodeObservations(text, fallback)
             .mapNotNull { observation ->
-                DeliveryAddressNormalizer.normalize(observation.displayAddress)?.let { normalized ->
-                    AccessCodeObservation(
-                        buildingKey = normalized.first,
-                        displayAddress = normalized.second,
-                        code = observation.code,
-                    )
-                }
+                val canonical = AddressMemoryResolver.canonicalize(context, database, observation.displayAddress)
+                    ?: DeliveryAddressNormalizer.normalize(observation.displayAddress)
+                    ?: return@mapNotNull null
+                AccessCodeObservation(
+                    buildingKey = canonical.first,
+                    displayAddress = canonical.second,
+                    code = observation.code,
+                )
             }
             .distinctBy { "${it.buildingKey}|${it.code}" }
         if (observations.isNotEmpty()) {
@@ -125,18 +147,18 @@ internal object DeliveryMemory {
             return
         }
 
-        // Suggest historical codes only when the current screen itself exposes an address. The
-        // remembered fallback is used for learning across split screens, never for a blind suggestion.
         var matched = false
         for (address in detectedAddresses.asReversed().distinct()) {
-            val normalized = DeliveryAddressNormalizer.normalize(address) ?: continue
-            val known = database.codesForBuilding(normalized.first)
+            val canonical = AddressMemoryResolver.canonicalize(context, database, address)
+                ?: DeliveryAddressNormalizer.normalize(address)
+                ?: continue
+            val known = database.codesForBuilding(canonical.first)
             if (known.isEmpty()) continue
             val codes = known.map { it.code }.distinct()
             val oldSuggestion = AccessCodeSuggestions.latest(context)
-            val sameSuggestion = oldSuggestion?.displayAddress == normalized.second && oldSuggestion.codes == codes
+            val sameSuggestion = oldSuggestion?.displayAddress == canonical.second && oldSuggestion.codes == codes
             val suggestion = AccessCodeSuggestion(
-                displayAddress = normalized.second,
+                displayAddress = canonical.second,
                 codes = codes,
                 platform = platform,
                 updatedAt = System.currentTimeMillis(),
@@ -145,7 +167,7 @@ internal object DeliveryMemory {
                 AccessCodeSuggestions.save(context, suggestion)
                 Toast.makeText(
                     context,
-                    "Possible door code · ${normalized.second}: ${codes.joinToString(" / ")}",
+                    "Possible door code · ${canonical.second}: ${codes.joinToString(" / ")}",
                     Toast.LENGTH_LONG,
                 ).show()
                 CaptureEventLog.append(
@@ -163,9 +185,9 @@ internal object DeliveryMemory {
     }
 
     private fun merchantForAddress(parsed: ParsedOffer, address: String): String? {
-        val key = DeliveryAddressNormalizer.key(address) ?: return null
+        val identity = DeliveryAddressNormalizer.identity(address) ?: return null
         val index = parsed.pickupAddresses.indexOfFirst {
-            DeliveryAddressNormalizer.key(it) == key
+            DeliveryAddressNormalizer.matchScore(it, identity.display) >= 0.99
         }
         return parsed.merchantNames.getOrNull(index)
             ?.trim()
@@ -174,9 +196,9 @@ internal object DeliveryMemory {
     }
 
     private fun customerForAddress(parsed: ParsedOffer, address: String): String? {
-        val key = DeliveryAddressNormalizer.key(address) ?: return null
+        val identity = DeliveryAddressNormalizer.identity(address) ?: return null
         val index = parsed.dropoffAddresses.indexOfFirst {
-            DeliveryAddressNormalizer.key(it) == key
+            DeliveryAddressNormalizer.matchScore(it, identity.display) >= 0.99
         }
         return parsed.customerNames.getOrNull(index)
             ?.takeUnless { it.equals("Customer", ignoreCase = true) }
@@ -185,13 +207,13 @@ internal object DeliveryMemory {
     }
 
     private fun addressContext(text: String, address: String): String? {
-        val targetKey = DeliveryAddressNormalizer.key(address) ?: return null
+        val target = DeliveryAddressNormalizer.identity(address) ?: return null
         val lines = text.lineSequence()
             .map { it.trim().replace(Regex("\\s+"), " ") }
             .filter(String::isNotEmpty)
             .toList()
         val index = lines.indexOfFirst { line ->
-            DeliveryAddressNormalizer.key(line) == targetKey
+            DeliveryAddressNormalizer.matchScore(line, target.display) >= 0.99
         }
         if (index < 0) return null
         val from = (index - 2).coerceAtLeast(0)
