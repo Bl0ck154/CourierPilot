@@ -1,6 +1,6 @@
 # CourierPilot 0.12.0
 
-`versionCode 21`
+`versionCode 22`
 
 0.12 fixes the first live-advisor Bolt UX and wires the first real Bolt routing path.
 
