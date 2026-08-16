@@ -56,10 +56,11 @@ internal data class AddressCandidate(
 )
 
 /**
- * Converts trusted Accessibility text into provenance-carrying address candidates.
+ * Converts trusted customer-side Accessibility text into provenance-carrying address candidates.
  *
- * The old pipeline flattened every line into the same bucket. This extractor intentionally keeps
- * strong structural evidence separate from broad compact `Street 7` guesses.
+ * Restaurant pickup addresses and broad menu/item text are deliberately excluded. When the screen
+ * has an explicit Address field, that field is authoritative and no other line on the frame may
+ * become a building. This prevents rows such as `Fanta 2` from being learned next to a real address.
  */
 internal object AddressEvidenceExtractor {
     fun fromAccessibility(
@@ -79,23 +80,38 @@ internal object AddressEvidenceExtractor {
             }
         }
 
-        // Exact labelled Address fields are authoritative even when the courier app omits `g.`.
-        add(screenDetails?.address, AddressEvidenceSource.ACCESSIBILITY_EXPLICIT_SECTION)
-        add(DeliveryScreenDetailsExtractor.addressValue(text), AddressEvidenceSource.ACCESSIBILITY_EXPLICIT_SECTION)
-
-        // Route parser output is already constrained to explicit street/city/postcode shapes.
-        parsed.pickupAddresses.forEach { add(it, AddressEvidenceSource.ACCESSIBILITY_PARSED_ROUTE) }
-        parsed.dropoffAddresses.forEach { add(it, AddressEvidenceSource.ACCESSIBILITY_PARSED_ROUTE) }
-
-        // Strict line detector requires a street marker, city or postal-code evidence.
-        CourierSignals.likelyAddresses(text).forEach {
-            add(it, AddressEvidenceSource.ACCESSIBILITY_STRICT_LINE)
+        // On a customer detail sheet, the value directly below Address is the only durable address
+        // candidate. Item names, quantities and old route text elsewhere on the screen are ignored.
+        val explicitAddress = screenDetails?.address ?: DeliveryScreenDetailsExtractor.addressValue(text)
+        if (explicitAddress != null) {
+            add(explicitAddress, AddressEvidenceSource.ACCESSIBILITY_EXPLICIT_SECTION)
+            return byBuilding.values.toList()
         }
 
-        // Compact forms remain useful (`Pylimo 9`, `Vokiečių 7`) but are only candidates. A new
-        // building needs stable repeated Accessibility evidence before persistence.
-        DeliveryAddressNormalizer.likelyAddressLines(text).forEach {
-            add(it, AddressEvidenceSource.ACCESSIBILITY_COMPACT_PENDING)
+        // Never persist pickupAddresses here. Address memory is customer/dropoff memory.
+        val parsedDropoffs = parsed.dropoffAddresses
+            .mapNotNull { DeliveryAddressNormalizer.normalize(it)?.let { _ -> it.trim() } }
+            .distinctBy { DeliveryAddressNormalizer.normalize(it)?.first }
+        if (parsedDropoffs.size == 1) {
+            add(parsedDropoffs.single(), AddressEvidenceSource.ACCESSIBILITY_PARSED_ROUTE)
+            return byBuilding.values.toList()
+        }
+
+        // Fallbacks are intentionally unique-only. If a frame contains several address-shaped lines
+        // (for example an item `Fanta 2` beside compact `Pylimo 9`) we save nothing rather than guess.
+        val strict = CourierSignals.likelyAddresses(text)
+            .filter { DeliveryAddressNormalizer.hasStrongAddressEvidence(it) }
+            .distinctBy { DeliveryAddressNormalizer.normalize(it)?.first }
+        if (strict.size == 1) {
+            add(strict.single(), AddressEvidenceSource.ACCESSIBILITY_STRICT_LINE)
+            return byBuilding.values.toList()
+        }
+
+        val compact = DeliveryAddressNormalizer.likelyAddressLines(text)
+            .filter(DeliveryAddressNormalizer::isPlausibleNewCompactDisplay)
+            .distinctBy { DeliveryAddressNormalizer.normalize(it)?.first }
+        if (compact.size == 1) {
+            add(compact.single(), AddressEvidenceSource.ACCESSIBILITY_COMPACT_PENDING)
         }
 
         return byBuilding.values.toList()
