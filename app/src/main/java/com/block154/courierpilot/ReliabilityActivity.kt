@@ -1,427 +1,344 @@
 package com.block154.courierpilot
 
-import android.Manifest
-import android.app.Activity
 import android.app.ActivityManager
 import android.content.ComponentName
-import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
-import android.view.Gravity
-import android.view.View
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.Switch
-import android.widget.TextView
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.BatteryChargingFull
+import androidx.compose.material.icons.rounded.BugReport
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.PhoneAndroid
+import androidx.compose.material.icons.rounded.Shield
+import androidx.compose.material.icons.rounded.WarningAmber
+import androidx.compose.material3.Card
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.block154.courierpilot.ui.CourierPilotTheme
+import com.block154.courierpilot.ui.Success
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-class ReliabilityActivity : Activity() {
+class ReliabilityActivity : ComponentActivity() {
+    private val refresh = mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.statusBarColor = BG
-        window.navigationBarColor = BG
-        render()
+        enableEdgeToEdge()
+        setContent {
+            refresh.intValue
+            CourierPilotTheme {
+                ReliabilityScreen(
+                    onBack = ::finish,
+                    onRefresh = { refresh.intValue++ },
+                )
+            }
+        }
     }
 
     override fun onResume() {
         super.onResume()
-        render()
-    }
-
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_POST_NOTIFICATIONS) {
-            val granted = grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
-            if (!granted) HeartbeatSettings.setEnabled(this, false)
-            render()
-        }
-    }
-
-    private fun render() {
-        val screen = buildScreen()
-        setContentView(screen)
-        screen.applySystemBarsPadding()
-    }
-
-    private fun buildScreen(): View {
-        val scroll = ScrollView(this).apply { setBackgroundColor(BG) }
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(18), dp(18), dp(34))
-        }
-
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(text("‹", 28f, TEXT, true).apply {
-                gravity = Gravity.CENTER
-                background = solid(Color.WHITE, dp(14).toFloat())
-                setOnClickListener { finish() }
-            }, LinearLayout.LayoutParams(dp(46), dp(46)))
-            addView(LinearLayout(this@ReliabilityActivity).apply {
-                orientation = LinearLayout.VERTICAL
-                addView(text("Reliability", 24f, TEXT, true))
-                addView(text("Background health and capture diagnostics", 12f, MUTED).top(dp(3)))
-            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(8) })
-        }
-        root.addView(header)
-
-        root.addView(sectionTitle("Android access", "CourierPilot needs both services enabled").top(dp(22)))
-        root.addView(healthCard(
-            "Notification access",
-            hasNotificationAccess(),
-            if (hasNotificationAccess()) "Connected" else "Required for incoming offer detection",
-            "Open",
-        ) { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }.top(dp(10)))
-        root.addView(healthCard(
-            "Accessibility capture",
-            hasAccessibilityAccess(),
-            if (hasAccessibilityAccess()) "Connected" else "Required for price reading and screenshots",
-            "Open",
-        ) { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }.top(dp(8)))
-
-        root.addView(sectionTitle("Background reliability", "Android/OEM battery controls can stop background work").top(dp(24)))
-        val power = getSystemService(POWER_SERVICE) as PowerManager
-        val unrestricted = power.isIgnoringBatteryOptimizations(packageName)
-        root.addView(healthCard(
-            "Battery optimization",
-            unrestricted,
-            if (unrestricted) "CourierPilot is excluded from Doze optimization" else "Set CourierPilot to Unrestricted / Don't optimize",
-            "Battery settings",
-        ) { openBatterySettings() }.top(dp(10)))
-
-        val activityManager = getSystemService(ACTIVITY_SERVICE) as ActivityManager
-        val backgroundRestricted = if (Build.VERSION.SDK_INT >= 28) activityManager.isBackgroundRestricted else false
-        root.addView(healthCard(
-            "Background restriction",
-            !backgroundRestricted,
-            if (backgroundRestricted) "Android reports background activity as restricted" else "No Android background restriction reported",
-            "App info",
-        ) { openAppInfo() }.top(dp(8)))
-
-        root.addView(card().apply {
-            addView(text("Realme / ColorOS / OxygenOS", 15f, TEXT, true))
-            addView(text("Also check App info → Battery usage for Allow background activity / Unrestricted, and Auto launch if your firmware exposes it. These OEM switches cannot be granted silently by CourierPilot.", 12f, MUTED).top(dp(5)))
-            addView(linkButton("Open CourierPilot app info") { openAppInfo() }.top(dp(8)))
-        }.top(dp(8)))
-
-        root.addView(sectionTitle("Offer behavior", "Optional actions when a new offer arrives").top(dp(24)))
-        root.addView(toggleCard(
-            "Automatically open courier app",
-            "Use the courier notification action when Android permits background launch.",
-            OfferState.autoOpen(this),
-        ) { OfferState.setAutoOpen(this, it) }.top(dp(10)))
-        root.addView(toggleCard(
-            "Wake screen for offers",
-            "Best-effort 3-second screen wake. It does not unlock the phone or bypass the keyguard.",
-            OfferState.wakeScreen(this),
-        ) { OfferState.setWakeScreen(this, it) }.top(dp(8)))
-        root.addView(toggleCard(
-            "Periodic alive reminder",
-            "Every ${HeartbeatScheduler.INTERVAL_HOURS} hours. A normal non-persistent notification confirms CourierPilot is alive; it never stays permanently in the shade.",
-            HeartbeatSettings.enabled(this),
-        ) { enabled ->
-            if (
-                enabled &&
-                Build.VERSION.SDK_INT >= 33 &&
-                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-            ) {
-                HeartbeatSettings.setEnabled(this, true)
-                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_POST_NOTIFICATIONS)
-            } else {
-                HeartbeatSettings.setEnabled(this, enabled)
-            }
-        }.top(dp(8)))
-
-        root.addView(sectionTitle("Current capture", "Useful when an offer was missed").top(dp(24)))
-        val pending = OfferState.pending(this)
-        root.addView(card().apply {
-            addView(text("Pending offer", 12f, MUTED, true))
-            addView(text(
-                pending?.let { "${OfferState.platformLabel(it.packageName)} · armed ${formatTime(it.armedAt)}" } ?: "None",
-                14f,
-                TEXT,
-                true,
-            ).top(dp(4)))
-            addView(text("Last screenshot", 12f, MUTED, true).top(dp(14)))
-            addView(text(OfferState.lastCapture(this@ReliabilityActivity), 13f, TEXT).top(dp(4)))
-            val error = OfferState.lastError(this@ReliabilityActivity)
-            if (error.isNotBlank()) {
-                addView(text("Last status / error", 12f, MUTED, true).top(dp(14)))
-                addView(text(error, 13f, RED).top(dp(4)))
-            }
-        }.top(dp(10)))
-
-        root.addView(sectionTitle("Route intelligence research", "Local diagnostics for the future Valhalla/Bolt route pipeline").top(dp(24)))
-        val boltDiagnosticsEnabled = hasAccessibilityService(BoltAccessibilityDiagnosticsService::class.java)
-        val boltDump = BoltAccessibilityDiagnostics.summary(this)
-        val boltArmed = BoltAccessibilityDiagnostics.isArmed(this)
-        root.addView(card().apply {
-            addView(text("Bolt Accessibility tree", 15f, TEXT, true))
-            addView(text(
-                if (boltDiagnosticsEnabled) "Research service enabled" else "Enable the separate research-only Accessibility service first",
-                12f,
-                if (boltDiagnosticsEnabled) GREEN else MUTED,
-            ).top(dp(5)))
-            addView(text(
-                "The next armed Bolt screen is saved once to app-internal storage. The tree includes text/contentDescription/viewId/class/bounds and may contain private delivery data.",
-                12f,
-                MUTED,
-            ).top(dp(6)))
-
-            if (!boltDiagnosticsEnabled) {
-                addView(linkButton("Enable Bolt diagnostics") {
-                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                }.top(dp(9)))
-            }
-
-            addView(linkButton(if (boltArmed) "Disarm Bolt tree dump" else "Arm next Bolt screen") {
-                if (boltArmed) BoltAccessibilityDiagnostics.disarm(this@ReliabilityActivity)
-                else BoltAccessibilityDiagnostics.arm(this@ReliabilityActivity)
-                render()
-            }.top(dp(5)))
-
-            if (boltArmed) {
-                addView(text("ARMED — open Bolt and wait for the real offer/map screen.", 12f, AMBER, true).top(dp(6)))
-            }
-
-            if (boltDump != null) {
-                addView(text("Last dump", 12f, MUTED, true).top(dp(14)))
-                val truncation = if (boltDump.truncated) " · truncated" else ""
-                addView(text("${formatTime(boltDump.capturedAt)} · ${boltDump.nodeCount} nodes$truncation", 13f, TEXT).top(dp(4)))
-                addView(linkButton("Share last Bolt tree") { shareBoltTree() }.top(dp(7)))
-                addView(linkButton("Delete Bolt tree") {
-                    BoltAccessibilityDiagnostics.clear(this@ReliabilityActivity)
-                    render()
-                }.top(dp(3)))
-            }
-        }.top(dp(10)))
-
-        val routeEndpoint = RouteEndpointSettings.load(this)
-        root.addView(card().apply {
-            addView(text("Valhalla integration", 15f, TEXT, true))
-            addView(text(
-                "The protected HTTPS client is available for manual pedestrian-versus-bicycle Vilnius comparisons. Production offer capture remains independent and disabled.",
-                12f,
-                MUTED,
-            ).top(dp(5)))
-            addView(text(
-                if (routeEndpoint.enabled) "Manual endpoint enabled on this device" else "Manual endpoint disabled until explicitly configured",
-                12f,
-                if (routeEndpoint.enabled) GREEN else MUTED,
-                true,
-            ).top(dp(6)))
-            addView(text(
-                "No location permission is used. URL/token stay in app-private no-backup storage and are excluded from diagnostics.",
-                12f,
-                MUTED,
-            ).top(dp(6)))
-            addView(linkButton("Open route comparison") {
-                startActivity(Intent(this@ReliabilityActivity, RouteResearchActivity::class.java))
-            }.top(dp(8)))
-        }.top(dp(8)))
-
-        root.addView(sectionTitle("Capture event log", "No customer names, addresses or raw offer text are written here").top(dp(24)))
-        val events = CaptureEventLog.recent(this, 60)
-        root.addView(card().apply {
-            if (events.isEmpty()) {
-                addView(text("No diagnostic events yet.", 13f, MUTED))
-            } else {
-                events.forEachIndexed { index, event ->
-                    if (index > 0) addView(divider().top(dp(9)))
-                    val platform = event.platform.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
-                    addView(text("${formatTime(event.timestamp)} · ${event.stage}$platform", 11f, MUTED, true).top(if (index == 0) 0 else dp(9)))
-                    addView(text(event.message, 12f, TEXT).top(dp(3)))
-                }
-            }
-            addView(linkButton("Share diagnostics") { shareDiagnostics() }.top(dp(14)))
-            addView(linkButton("Clear event log") {
-                CaptureEventLog.clear(this@ReliabilityActivity)
-                render()
-            }.top(dp(4)))
-        }.top(dp(10)))
-
-        root.addView(text("CourierPilot · ${appVersion()}", 11f, MUTED).apply { gravity = Gravity.CENTER }.top(dp(26)))
-        scroll.addView(root)
-        return scroll
-    }
-
-    private fun healthCard(title: String, ok: Boolean, subtitle: String, actionLabel: String, action: () -> Unit): View = card().apply {
-        val row = LinearLayout(this@ReliabilityActivity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        row.addView(View(this@ReliabilityActivity).apply {
-            background = solid(if (ok) GREEN else RED, dp(20).toFloat())
-        }, LinearLayout.LayoutParams(dp(10), dp(10)))
-        row.addView(LinearLayout(this@ReliabilityActivity).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(text(title, 15f, TEXT, true))
-            addView(text(subtitle, 12f, MUTED).top(dp(3)))
-        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(10) })
-        row.addView(linkButton(actionLabel, action))
-        addView(row)
-    }
-
-    private fun toggleCard(title: String, subtitle: String, checked: Boolean, changed: (Boolean) -> Unit): View = card().apply {
-        val row = LinearLayout(this@ReliabilityActivity).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        row.addView(LinearLayout(this@ReliabilityActivity).apply {
-            orientation = LinearLayout.VERTICAL
-            addView(text(title, 15f, TEXT, true))
-            addView(text(subtitle, 12f, MUTED).top(dp(3)))
-        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        row.addView(Switch(this@ReliabilityActivity).apply {
-            isChecked = checked
-            setOnCheckedChangeListener { _, value -> changed(value) }
-        })
-        addView(row)
-    }
-
-    private fun shareDiagnostics() {
-        val power = getSystemService(POWER_SERVICE) as PowerManager
-        val activityManager = getSystemService(ACTIVITY_SERVICE) as ActivityManager
-        val pending = OfferState.pending(this)
-        val body = buildString {
-            appendLine("CourierPilot ${appVersion()}")
-            appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
-            appendLine("Android: ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
-            appendLine("Notification access: ${hasNotificationAccess()}")
-            appendLine("Accessibility: ${hasAccessibilityAccess()}")
-            appendLine("Bolt diagnostics Accessibility: ${hasAccessibilityService(BoltAccessibilityDiagnosticsService::class.java)}")
-            appendLine("Ignoring battery optimizations: ${power.isIgnoringBatteryOptimizations(packageName)}")
-            if (Build.VERSION.SDK_INT >= 28) appendLine("Background restricted: ${activityManager.isBackgroundRestricted}")
-            appendLine("Alive reminder: ${HeartbeatSettings.enabled(this@ReliabilityActivity)}")
-            appendLine("Pending: ${pending?.let { OfferState.platformLabel(it.packageName) } ?: "none"}")
-            appendLine("Last screenshot: ${OfferState.lastCapture(this@ReliabilityActivity)}")
-            appendLine("Last error: ${OfferState.lastError(this@ReliabilityActivity)}")
-            appendLine()
-            appendLine("Event log (privacy-safe):")
-            append(CaptureEventLog.asText(this@ReliabilityActivity))
-        }
-        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "CourierPilot diagnostics")
-            putExtra(Intent.EXTRA_TEXT, body)
-        }, "Share CourierPilot diagnostics"))
-    }
-
-    private fun shareBoltTree() {
-        val body = BoltAccessibilityDiagnostics.readLastDump(this) ?: return
-        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "CourierPilot Bolt Accessibility tree")
-            putExtra(Intent.EXTRA_TEXT, body)
-        }, "Share private Bolt tree deliberately"))
-    }
-
-    private fun openBatterySettings() {
-        runCatching { startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
-            .onFailure { openAppInfo() }
-    }
-
-    private fun openAppInfo() {
-        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
-    }
-
-    private fun hasNotificationAccess(): Boolean {
-        val enabled = Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: return false
-        return enabled.split(':').any { ComponentName.unflattenFromString(it)?.packageName == packageName }
-    }
-
-    private fun hasAccessibilityAccess(): Boolean = hasAccessibilityService(OfferAccessibilityService::class.java)
-
-    private fun hasAccessibilityService(serviceClass: Class<*>): Boolean {
-        if (Settings.Secure.getInt(contentResolver, Settings.Secure.ACCESSIBILITY_ENABLED, 0) != 1) return false
-        val target = ComponentName(this, serviceClass)
-        val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
-        return enabled.split(':').any { ComponentName.unflattenFromString(it) == target }
-    }
-
-    private fun appVersion(): String = runCatching {
-        packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown"
-    }.getOrDefault("unknown")
-
-    private fun formatTime(timestamp: Long): String = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(timestamp))
-
-    private fun sectionTitle(title: String, subtitle: String): View = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        addView(text(title, 18f, TEXT, true))
-        addView(text(subtitle, 12f, MUTED).top(dp(3)))
-    }
-
-    private fun card(): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(dp(16), dp(15), dp(16), dp(15))
-        background = rounded(Color.WHITE, BORDER, dp(18).toFloat())
-        elevation = dp(1).toFloat()
-    }
-
-    private fun divider(): View = View(this).apply { setBackgroundColor(BORDER) }.also {
-        it.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1))
-    }
-
-    private fun linkButton(label: String, click: () -> Unit): TextView = text(label, 12f, BLUE, true).apply {
-        gravity = Gravity.CENTER
-        setPadding(dp(10), dp(8), dp(10), dp(8))
-        setOnClickListener { click() }
-    }
-
-    private fun text(value: String, size: Float, color: Int, bold: Boolean = false): TextView = TextView(this).apply {
-        text = value
-        textSize = size
-        setTextColor(color)
-        includeFontPadding = false
-        if (bold) typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-    }
-
-    private fun rounded(fill: Int, stroke: Int, radius: Float) = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
-        setColor(fill)
-        cornerRadius = radius
-        setStroke(dp(1), stroke)
-    }
-
-    private fun solid(fill: Int, radius: Float) = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
-        setColor(fill)
-        cornerRadius = radius
-    }
-
-    private fun <T : View> T.top(value: Int): T {
-        val current = layoutParams
-        layoutParams = if (current is LinearLayout.LayoutParams) {
-            current.apply { topMargin = value }
-        } else {
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = value }
-        }
-        return this
-    }
-
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
-
-    companion object {
-        private const val REQUEST_POST_NOTIFICATIONS = 1546
-        private val BG = Color.parseColor("#F5F7FB")
-        private val TEXT = Color.parseColor("#111827")
-        private val MUTED = Color.parseColor("#6B7280")
-        private val BORDER = Color.parseColor("#E5E7EB")
-        private val BLUE = Color.parseColor("#2563EB")
-        private val GREEN = Color.parseColor("#16A34A")
-        private val AMBER = Color.parseColor("#D97706")
-        private val RED = Color.parseColor("#DC2626")
+        refresh.intValue++
     }
 }
+
+@Composable
+private fun ReliabilityScreen(onBack: () -> Unit, onRefresh: () -> Unit) {
+    val context = LocalContext.current
+    val notificationOk = reliabilityNotificationAccess(context)
+    val accessibilityOk = reliabilityAccessibilityAccess(context)
+    val power = context.getSystemService(PowerManager::class.java)
+    val unrestricted = power?.isIgnoringBatteryOptimizations(context.packageName) == true
+    val activityManager = context.getSystemService(ActivityManager::class.java)
+    val backgroundRestricted = if (Build.VERSION.SDK_INT >= 28) activityManager?.isBackgroundRestricted == true else false
+    val pending = OfferState.pending(context)
+    val error = OfferState.lastError(context)
+    val events = CaptureEventLog.recent(context, 30)
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onBack) {
+                    Icon(Icons.Rounded.ArrowBack, contentDescription = "Back")
+                }
+                Column(Modifier.weight(1f)) {
+                    Text("Reliability", fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Android access and capture health", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                }
+            }
+        }
+
+        item { ReliabilitySection("Required access", "These two services power offer detection") }
+        item {
+            ReliabilityStatusCard(
+                title = "Notification access",
+                subtitle = if (notificationOk) "Connected" else "Needed to detect incoming offer notifications",
+                ok = notificationOk,
+                icon = Icons.Rounded.NotificationsActive,
+                onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) },
+            )
+        }
+        item {
+            ReliabilityStatusCard(
+                title = "Accessibility capture",
+                subtitle = if (accessibilityOk) "Connected" else "Needed to read courier screens and run OCR fallback",
+                ok = accessibilityOk,
+                icon = Icons.Rounded.Shield,
+                onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
+            )
+        }
+
+        item { ReliabilitySection("Background health", "Android can stop capture when battery restrictions are aggressive") }
+        item {
+            ReliabilityStatusCard(
+                title = "Battery optimization",
+                subtitle = if (unrestricted) "CourierPilot is excluded from Doze optimization" else "Set battery usage to Unrestricted / Don't optimize",
+                ok = unrestricted,
+                icon = Icons.Rounded.BatteryChargingFull,
+                onClick = {
+                    runCatching { context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+                        .onFailure { reliabilityOpenAppInfo(context) }
+                },
+            )
+        }
+        item {
+            ReliabilityStatusCard(
+                title = "Background restriction",
+                subtitle = if (backgroundRestricted) "Android reports background activity as restricted" else "No Android background restriction reported",
+                ok = !backgroundRestricted,
+                icon = Icons.Rounded.PhoneAndroid,
+                onClick = { reliabilityOpenAppInfo(context) },
+            )
+        }
+
+        item { ReliabilitySection("Current capture", "Useful when an offer was missed") }
+        item {
+            Card(shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                    ReliabilityFact(
+                        "Pending offer",
+                        pending?.let { "${OfferState.platformLabel(it.packageName)} · armed ${reliabilityTime(it.armedAt)}" } ?: "None",
+                    )
+                    ReliabilityFact(
+                        "Gallery screenshots",
+                        if (CaptureStorageSettings.saveOfferScreenshots(context)) "Enabled" else "Off · OCR still works in memory",
+                    )
+                    ReliabilityFact("Last capture", OfferState.lastCapture(context))
+                    if (error.isNotBlank()) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.errorContainer,
+                            shape = RoundedCornerShape(14.dp),
+                        ) {
+                            Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Rounded.WarningAmber, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                                Spacer(Modifier.size(8.dp))
+                                Text(error, color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        item { ReliabilitySection("Diagnostic log", "Privacy-safe capture events; no raw customer text") }
+        item {
+            Card(shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (events.isEmpty()) {
+                        Text("No diagnostic events yet.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                    } else {
+                        events.take(12).forEach { event ->
+                            Column {
+                                Text(
+                                    "${reliabilityTime(event.timestamp)} · ${event.stage}${event.platform.takeIf(String::isNotBlank)?.let { " · $it" }.orEmpty()}",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                                Text(event.message, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                    FilledTonalButton(
+                        onClick = { reliabilityShareDiagnostics(context) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Rounded.BugReport, contentDescription = null)
+                        Spacer(Modifier.size(8.dp))
+                        Text("Share diagnostics")
+                    }
+                    TextButton(
+                        onClick = {
+                            CaptureEventLog.clear(context)
+                            onRefresh()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Clear event log")
+                    }
+                }
+            }
+        }
+
+        if (DeveloperModeSettings.enabled(context)) {
+            item {
+                FilledTonalButton(
+                    onClick = { context.startActivity(Intent(context, DeveloperToolsActivity::class.java)) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Rounded.BugReport, contentDescription = null)
+                    Spacer(Modifier.size(8.dp))
+                    Text("Developer tools")
+                }
+            }
+        }
+
+        item {
+            Text(
+                "CourierPilot ${reliabilityVersion(context)}",
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReliabilitySection(title: String, subtitle: String) {
+    Column(Modifier.padding(top = 6.dp)) {
+        Text(title, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+        Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+    }
+}
+
+@Composable
+private fun ReliabilityStatusCard(
+    title: String,
+    subtitle: String,
+    ok: Boolean,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    onClick: () -> Unit,
+) {
+    Card(onClick = onClick, shape = RoundedCornerShape(20.dp)) {
+        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = if (ok) Success.copy(alpha = 0.12f) else MaterialTheme.colorScheme.errorContainer,
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    modifier = Modifier.padding(10.dp),
+                    tint = if (ok) Success else MaterialTheme.colorScheme.error,
+                )
+            }
+            Spacer(Modifier.size(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, fontWeight = FontWeight.SemiBold)
+                Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+            }
+            Icon(Icons.Rounded.ChevronRight, contentDescription = null)
+        }
+    }
+}
+
+@Composable
+private fun ReliabilityFact(label: String, value: String) {
+    Column {
+        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+        Text(value, fontSize = 13.sp)
+    }
+}
+
+private fun reliabilityNotificationAccess(context: android.content.Context): Boolean {
+    val enabled = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners") ?: return false
+    return enabled.split(':').any { ComponentName.unflattenFromString(it)?.packageName == context.packageName }
+}
+
+private fun reliabilityAccessibilityAccess(context: android.content.Context): Boolean {
+    if (Settings.Secure.getInt(context.contentResolver, Settings.Secure.ACCESSIBILITY_ENABLED, 0) != 1) return false
+    val target = ComponentName(context, OfferAccessibilityService::class.java)
+    val enabled = Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
+    return enabled.split(':').any { ComponentName.unflattenFromString(it) == target }
+}
+
+private fun reliabilityOpenAppInfo(context: android.content.Context) {
+    context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")))
+}
+
+private fun reliabilityShareDiagnostics(context: android.content.Context) {
+    val power = context.getSystemService(PowerManager::class.java)
+    val activityManager = context.getSystemService(ActivityManager::class.java)
+    val pending = OfferState.pending(context)
+    val body = buildString {
+        appendLine("CourierPilot ${reliabilityVersion(context)}")
+        appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
+        appendLine("Android: ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
+        appendLine("Notification access: ${reliabilityNotificationAccess(context)}")
+        appendLine("Accessibility: ${reliabilityAccessibilityAccess(context)}")
+        appendLine("Ignoring battery optimizations: ${power?.isIgnoringBatteryOptimizations(context.packageName) == true}")
+        if (Build.VERSION.SDK_INT >= 28) appendLine("Background restricted: ${activityManager?.isBackgroundRestricted == true}")
+        appendLine("Gallery screenshots: ${CaptureStorageSettings.saveOfferScreenshots(context)}")
+        appendLine("Pending: ${pending?.let { OfferState.platformLabel(it.packageName) } ?: "none"}")
+        appendLine("Last capture: ${OfferState.lastCapture(context)}")
+        appendLine("Last error: ${OfferState.lastError(context)}")
+        appendLine()
+        appendLine("Event log (privacy-safe):")
+        append(CaptureEventLog.asText(context))
+    }
+    context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, "CourierPilot diagnostics")
+        putExtra(Intent.EXTRA_TEXT, body)
+    }, "Share CourierPilot diagnostics"))
+}
+
+private fun reliabilityVersion(context: android.content.Context): String = runCatching {
+    context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
+}.getOrDefault("")
+
+private fun reliabilityTime(timestamp: Long): String =
+    SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(timestamp))
