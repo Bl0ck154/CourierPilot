@@ -5,6 +5,8 @@ import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import java.text.Normalizer
+import java.util.Locale
 
 internal data class AutomaticWorkSession(
     val id: Long,
@@ -54,6 +56,17 @@ internal data class AddressObservationRecord(
     val rawText: String,
 )
 
+internal data class AddressEntityRecord(
+    val id: Long,
+    val addressId: Long,
+    val entityType: String,
+    val name: String,
+    val platform: String,
+    val firstSeenAt: Long,
+    val lastSeenAt: Long,
+    val seenCount: Int,
+)
+
 /**
  * Local metadata learned while CourierPilot is running.
  *
@@ -93,6 +106,9 @@ internal class CourierMetaDatabase private constructor(context: Context) :
                 GROUP BY building_key
                 """.trimIndent()
             )
+        }
+        if (oldVersion < 3) {
+            createAddressEntityTable(db)
         }
     }
 
@@ -165,6 +181,29 @@ internal class CourierMetaDatabase private constructor(context: Context) :
             """.trimIndent()
         )
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_address_observations_address ON address_observations(address_id, seen_at DESC)")
+        createAddressEntityTable(db)
+    }
+
+    private fun createAddressEntityTable(db: SQLiteDatabase) {
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS address_entities (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                address_id INTEGER NOT NULL,
+                entity_type TEXT NOT NULL,
+                normalized_name TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                platform TEXT NOT NULL,
+                first_seen_at INTEGER NOT NULL,
+                last_seen_at INTEGER NOT NULL,
+                seen_count INTEGER NOT NULL DEFAULT 1,
+                FOREIGN KEY(address_id) REFERENCES addresses(id) ON DELETE CASCADE,
+                UNIQUE(address_id, entity_type, normalized_name, platform)
+            )
+            """.trimIndent()
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_address_entities_address ON address_entities(address_id, entity_type, last_seen_at DESC)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_address_entities_name ON address_entities(normalized_name)")
     }
 
     fun activeWorkSession(): AutomaticWorkSession? {
@@ -372,9 +411,13 @@ internal class CourierMetaDatabase private constructor(context: Context) :
             EXISTS (
                 SELECT 1 FROM access_codes ac
                 WHERE ac.building_key = addresses.building_key AND LOWER(ac.code) LIKE ?
+            ) OR
+            EXISTS (
+                SELECT 1 FROM address_entities ae
+                WHERE ae.address_id = addresses.id AND LOWER(ae.display_name) LIKE ?
             )
         """.trimIndent()
-        val args = if (clean.isBlank()) null else Array(5) { "%$clean%" }
+        val args = if (clean.isBlank()) null else Array(6) { "%$clean%" }
         val out = mutableListOf<AddressRecord>()
         readableDatabase.query(
             "addresses",
@@ -401,9 +444,13 @@ internal class CourierMetaDatabase private constructor(context: Context) :
                   EXISTS (
                       SELECT 1 FROM access_codes ac
                       WHERE ac.building_key = addresses.building_key AND LOWER(ac.code) LIKE ?
+                  ) OR
+                  EXISTS (
+                      SELECT 1 FROM address_entities ae
+                      WHERE ae.address_id = addresses.id AND LOWER(ae.display_name) LIKE ?
                   )
         """.trimIndent()
-        val args = if (clean.isBlank()) null else Array(5) { "%$clean%" }
+        val args = if (clean.isBlank()) null else Array(6) { "%$clean%" }
         readableDatabase.rawQuery("SELECT COUNT(*) FROM addresses $where", args).use { cursor ->
             return if (cursor.moveToFirst()) cursor.getInt(0) else 0
         }
@@ -424,6 +471,244 @@ internal class CourierMetaDatabase private constructor(context: Context) :
             while (cursor.moveToNext()) out += cursor.toAddressObservationRecord()
         }
         return out
+    }
+
+    fun saveAddressEntity(
+        addressId: Long,
+        entityType: String,
+        name: String,
+        platform: String,
+        now: Long = System.currentTimeMillis(),
+    ): Long? {
+        val type = entityType.trim().lowercase(Locale.ROOT)
+        if (type !in setOf(ENTITY_VENUE, ENTITY_CUSTOMER)) return null
+        val displayName = name.trim().replace(Regex("\\s+"), " ").take(240)
+        if (displayName.isBlank()) return null
+        val normalizedName = normalizeEntityName(displayName)
+        if (normalizedName.isBlank()) return null
+        val db = writableDatabase
+
+        db.query(
+            "address_entities",
+            arrayOf("id", "first_seen_at", "last_seen_at", "seen_count"),
+            "address_id = ? AND entity_type = ? AND normalized_name = ? AND platform = ?",
+            arrayOf(addressId.toString(), type, normalizedName, platform),
+            null,
+            null,
+            null,
+            "1",
+        ).use { cursor ->
+            if (cursor.moveToFirst()) {
+                val id = cursor.getLong(0)
+                val firstSeen = cursor.getLong(1)
+                val lastSeen = cursor.getLong(2)
+                val count = cursor.getInt(3)
+                db.update(
+                    "address_entities",
+                    ContentValues().apply {
+                        put("display_name", displayName)
+                        put("first_seen_at", minOf(firstSeen, now))
+                        put("last_seen_at", maxOf(lastSeen, now))
+                        put("seen_count", if (now - lastSeen >= OBSERVATION_DEDUPE_MS) count + 1 else count)
+                    },
+                    "id = ?",
+                    arrayOf(id.toString()),
+                )
+                return id
+            }
+        }
+
+        return db.insertOrThrow(
+            "address_entities",
+            null,
+            ContentValues().apply {
+                put("address_id", addressId)
+                put("entity_type", type)
+                put("normalized_name", normalizedName)
+                put("display_name", displayName)
+                put("platform", platform)
+                put("first_seen_at", now)
+                put("last_seen_at", now)
+                put("seen_count", 1)
+            },
+        )
+    }
+
+    fun entitiesForAddress(addressId: Long, entityType: String, limit: Int = 100): List<AddressEntityRecord> {
+        val type = entityType.trim().lowercase(Locale.ROOT)
+        val out = mutableListOf<AddressEntityRecord>()
+        readableDatabase.query(
+            "address_entities",
+            null,
+            "address_id = ? AND entity_type = ?",
+            arrayOf(addressId.toString(), type),
+            null,
+            null,
+            "last_seen_at DESC, display_name COLLATE NOCASE",
+            limit.coerceIn(1, 300).toString(),
+        ).use { cursor ->
+            while (cursor.moveToNext()) out += cursor.toAddressEntityRecord()
+        }
+        return out
+    }
+
+    /** Merge rows created by older/less strict address normalization rules. */
+    fun repairNormalizedAddresses() {
+        data class AddressRepairRow(
+            val id: Long,
+            val display: String,
+            val platform: String,
+            val firstSeenAt: Long,
+            val lastSeenAt: Long,
+            val seenCount: Int,
+            val latestCustomer: String?,
+            val latestDetails: String?,
+            val latestRaw: String?,
+            val canonicalKey: String,
+            val canonicalDisplay: String,
+        )
+        data class CodeRepairRow(
+            val id: Long,
+            val display: String,
+            val code: String,
+            val platform: String,
+            val firstSeenAt: Long,
+            val lastSeenAt: Long,
+            val seenCount: Int,
+            val canonicalKey: String,
+            val canonicalDisplay: String,
+        )
+
+        val db = writableDatabase
+        val addressRows = mutableListOf<AddressRepairRow>()
+        db.query("addresses", null, null, null, null, null, "id ASC").use { cursor ->
+            while (cursor.moveToNext()) {
+                val display = cursor.getString(cursor.getColumnIndexOrThrow("display_address"))
+                val normalized = CourierSignals.normalizeBuildingAddress(display) ?: continue
+                addressRows += AddressRepairRow(
+                    id = cursor.getLong(cursor.getColumnIndexOrThrow("id")),
+                    display = display,
+                    platform = cursor.getString(cursor.getColumnIndexOrThrow("platform")),
+                    firstSeenAt = cursor.getLong(cursor.getColumnIndexOrThrow("first_seen_at")),
+                    lastSeenAt = cursor.getLong(cursor.getColumnIndexOrThrow("last_seen_at")),
+                    seenCount = cursor.getInt(cursor.getColumnIndexOrThrow("seen_count")),
+                    latestCustomer = cursor.nullableString("latest_customer_name"),
+                    latestDetails = cursor.nullableString("latest_details"),
+                    latestRaw = cursor.nullableString("latest_raw_text"),
+                    canonicalKey = normalized.first,
+                    canonicalDisplay = normalized.second,
+                )
+            }
+        }
+
+        val codeRows = mutableListOf<CodeRepairRow>()
+        db.query("access_codes", null, null, null, null, null, "id ASC").use { cursor ->
+            while (cursor.moveToNext()) {
+                val display = cursor.getString(cursor.getColumnIndexOrThrow("display_address"))
+                val normalized = CourierSignals.normalizeBuildingAddress(display) ?: continue
+                codeRows += CodeRepairRow(
+                    id = cursor.getLong(cursor.getColumnIndexOrThrow("id")),
+                    display = display,
+                    code = cursor.getString(cursor.getColumnIndexOrThrow("code")),
+                    platform = cursor.getString(cursor.getColumnIndexOrThrow("platform")),
+                    firstSeenAt = cursor.getLong(cursor.getColumnIndexOrThrow("first_seen_at")),
+                    lastSeenAt = cursor.getLong(cursor.getColumnIndexOrThrow("last_seen_at")),
+                    seenCount = cursor.getInt(cursor.getColumnIndexOrThrow("seen_count")),
+                    canonicalKey = normalized.first,
+                    canonicalDisplay = normalized.second,
+                )
+            }
+        }
+
+        db.beginTransaction()
+        try {
+            // Avoid transient UNIQUE collisions while two legacy keys swap/collapse into the same
+            // canonical key. All normalized rows receive transaction-local keys before merging.
+            addressRows.forEach { row ->
+                db.update(
+                    "addresses",
+                    ContentValues().apply { put("building_key", "__repair_address_${row.id}") },
+                    "id = ?",
+                    arrayOf(row.id.toString()),
+                )
+            }
+            codeRows.forEach { row ->
+                db.update(
+                    "access_codes",
+                    ContentValues().apply { put("building_key", "__repair_code_${row.id}") },
+                    "id = ?",
+                    arrayOf(row.id.toString()),
+                )
+            }
+
+            addressRows.groupBy { it.canonicalKey }.values.forEach { group ->
+                val survivor = group.minByOrNull { it.id } ?: return@forEach
+                val latest = group.maxByOrNull { it.lastSeenAt } ?: survivor
+                group.filter { it.id != survivor.id }.forEach { duplicate ->
+                    db.execSQL(
+                        "UPDATE OR IGNORE address_entities SET address_id = ? WHERE address_id = ?",
+                        arrayOf(survivor.id, duplicate.id),
+                    )
+                    db.execSQL(
+                        "UPDATE address_observations SET address_id = ? WHERE address_id = ?",
+                        arrayOf(survivor.id, duplicate.id),
+                    )
+                    db.delete("addresses", "id = ?", arrayOf(duplicate.id.toString()))
+                }
+                db.update(
+                    "addresses",
+                    ContentValues().apply {
+                        put("building_key", survivor.canonicalKey)
+                        put("display_address", latest.canonicalDisplay)
+                        put("platform", latest.platform)
+                        put("first_seen_at", group.minOf { it.firstSeenAt })
+                        put("last_seen_at", group.maxOf { it.lastSeenAt })
+                        put("seen_count", group.sumOf { it.seenCount }.coerceAtLeast(1))
+                        latest.latestCustomer?.let { put("latest_customer_name", it) }
+                        latest.latestDetails?.let { put("latest_details", it) }
+                        latest.latestRaw?.let { put("latest_raw_text", it) }
+                    },
+                    "id = ?",
+                    arrayOf(survivor.id.toString()),
+                )
+            }
+
+            codeRows.groupBy { "${it.canonicalKey}|${it.code}" }.values.forEach { group ->
+                val survivor = group.minByOrNull { it.id } ?: return@forEach
+                val latest = group.maxByOrNull { it.lastSeenAt } ?: survivor
+                group.filter { it.id != survivor.id }.forEach { duplicate ->
+                    db.delete("access_codes", "id = ?", arrayOf(duplicate.id.toString()))
+                }
+                db.update(
+                    "access_codes",
+                    ContentValues().apply {
+                        put("building_key", survivor.canonicalKey)
+                        put("display_address", latest.canonicalDisplay)
+                        put("platform", latest.platform)
+                        put("first_seen_at", group.minOf { it.firstSeenAt })
+                        put("last_seen_at", group.maxOf { it.lastSeenAt })
+                        put("seen_count", group.sumOf { it.seenCount }.coerceAtLeast(1))
+                    },
+                    "id = ?",
+                    arrayOf(survivor.id.toString()),
+                )
+            }
+
+            // After address IDs are merged, collapse repeated raw callbacks from the same short burst.
+            db.execSQL(
+                """
+                DELETE FROM address_observations
+                WHERE id NOT IN (
+                    SELECT MIN(id)
+                    FROM address_observations
+                    GROUP BY address_id, platform, raw_text, (seen_at / 30000)
+                )
+                """.trimIndent()
+            )
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
     }
 
     fun saveAccessCode(
@@ -550,14 +835,33 @@ internal class CourierMetaDatabase private constructor(context: Context) :
         rawText = getString(getColumnIndexOrThrow("raw_text")),
     )
 
+    private fun Cursor.toAddressEntityRecord(): AddressEntityRecord = AddressEntityRecord(
+        id = getLong(getColumnIndexOrThrow("id")),
+        addressId = getLong(getColumnIndexOrThrow("address_id")),
+        entityType = getString(getColumnIndexOrThrow("entity_type")),
+        name = getString(getColumnIndexOrThrow("display_name")),
+        platform = getString(getColumnIndexOrThrow("platform")),
+        firstSeenAt = getLong(getColumnIndexOrThrow("first_seen_at")),
+        lastSeenAt = getLong(getColumnIndexOrThrow("last_seen_at")),
+        seenCount = getInt(getColumnIndexOrThrow("seen_count")),
+    )
+
+    private fun normalizeEntityName(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFD)
+        .replace(Regex("\\p{M}+"), "")
+        .lowercase(Locale.ROOT)
+        .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+        .trim()
+
     private fun Cursor.nullableString(name: String): String? =
         getColumnIndexOrThrow(name).let { index -> if (isNull(index)) null else getString(index) }
 
     companion object {
         private const val DB_NAME = "courier_meta.db"
-        private const val DB_VERSION = 2
+        private const val DB_VERSION = 3
         private const val OBSERVATION_DEDUPE_MS = 5L * 60L * 1000L
         private const val RAW_OBSERVATION_DEDUPE_MS = 30L * 1000L
+        const val ENTITY_VENUE = "venue"
+        const val ENTITY_CUSTOMER = "customer"
         private const val MAX_DETAILS_CHARS = 8_000
         private const val MAX_RAW_CHARS = 16_000
 

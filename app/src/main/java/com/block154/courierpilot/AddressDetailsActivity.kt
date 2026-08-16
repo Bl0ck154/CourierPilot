@@ -55,6 +55,8 @@ class AddressDetailsActivity : ComponentActivity() {
                     AddressDetailsScreen(
                         address = address,
                         codes = meta.codesForBuilding(address.buildingKey, limit = 20),
+                        venues = meta.entitiesForAddress(address.id, CourierMetaDatabase.ENTITY_VENUE, limit = 100),
+                        customers = meta.entitiesForAddress(address.id, CourierMetaDatabase.ENTITY_CUSTOMER, limit = 100),
                         observations = meta.observationsForAddress(address.id, limit = 30),
                         onBack = ::finish,
                         onMap = { openAddressInMaps(address.displayAddress) },
@@ -86,6 +88,8 @@ private fun MissingAddress(onBack: () -> Unit) {
 private fun AddressDetailsScreen(
     address: AddressRecord,
     codes: List<AccessCodeRecord>,
+    venues: List<AddressEntityRecord>,
+    customers: List<AddressEntityRecord>,
     observations: List<AddressObservationRecord>,
     onBack: () -> Unit,
     onMap: () -> Unit,
@@ -157,6 +161,20 @@ private fun AddressDetailsScreen(
             }
         }
 
+        if (venues.isNotEmpty()) {
+            item { AddressSection("Venues", "Pickup places seen at this building") }
+            items(venues, key = { "venue-${it.id}" }) { entity ->
+                AddressEntityCard(entity)
+            }
+        }
+
+        if (customers.isNotEmpty()) {
+            item { AddressSection("Customers", "Customer names previously linked to this building") }
+            items(customers, key = { "customer-${it.id}" }) { entity ->
+                AddressEntityCard(entity)
+            }
+        }
+
         address.latestCustomerName?.takeIf(String::isNotBlank)?.let { customer ->
             item {
                 AddressInfoCard("Latest customer", customer)
@@ -196,6 +214,25 @@ private fun AddressSection(title: String, subtitle: String) {
     Column {
         Text(title, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
         Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+    }
+}
+
+@Composable
+private fun AddressEntityCard(entity: AddressEntityRecord) {
+    Card(shape = RoundedCornerShape(18.dp)) {
+        Row(
+            Modifier.fillMaxWidth().padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(entity.name, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                Text(
+                    "${entity.platform} · seen ${entity.seenCount}× · ${addressDate(entity.lastSeenAt)}",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp,
+                )
+            }
+        }
     }
 }
 

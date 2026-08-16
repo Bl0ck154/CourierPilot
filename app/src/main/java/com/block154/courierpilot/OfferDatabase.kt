@@ -24,6 +24,12 @@ data class OfferRecord(
     val deliveryCount: Int? = null,
     val estimatedMinutesMin: Int? = null,
     val estimatedMinutesMax: Int? = null,
+    val captureKey: String = "",
+)
+
+data class OfferInsertResult(
+    val rowId: Long,
+    val inserted: Boolean,
 )
 
 data class OfferSummary(
@@ -77,7 +83,8 @@ class OfferDatabase private constructor(context: Context) :
                 dropoff_addresses TEXT,
                 delivery_count INTEGER,
                 estimated_min INTEGER,
-                estimated_max INTEGER
+                estimated_max INTEGER,
+                capture_key TEXT
             )
             """.trimIndent()
         )
@@ -99,6 +106,9 @@ class OfferDatabase private constructor(context: Context) :
         if (oldVersion < 3) {
             createShiftsTable(db)
         }
+        if (oldVersion < 4) {
+            db.execSQL("ALTER TABLE offers ADD COLUMN capture_key TEXT")
+        }
     }
 
     private fun createShiftsTable(db: SQLiteDatabase) {
@@ -114,7 +124,12 @@ class OfferDatabase private constructor(context: Context) :
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_shifts_started_at ON shifts(started_at)")
     }
 
-    fun insert(record: OfferRecord): Long {
+    @Synchronized
+    fun insertDeduplicated(record: OfferRecord): OfferInsertResult {
+        findRecentDuplicate(record)?.let { existing ->
+            return OfferInsertResult(existing.id, inserted = false)
+        }
+
         val values = ContentValues().apply {
             put("captured_at", record.capturedAt)
             put("platform", record.platform)
@@ -132,12 +147,31 @@ class OfferDatabase private constructor(context: Context) :
             record.deliveryCount?.let { put("delivery_count", it) }
             record.estimatedMinutesMin?.let { put("estimated_min", it) }
             record.estimatedMinutesMax?.let { put("estimated_max", it) }
+            record.captureKey.takeIf(String::isNotBlank)?.let { put("capture_key", it) }
         }
         val rowId = writableDatabase.insertOrThrow("offers", null, values)
         // Post-capture work is deliberately best-effort. A broken advisor/router cannot roll back a
         // successfully persisted offer or its already-saved screenshot.
         runCatching { LiveAdvisorHub.onOfferPersisted(rowId, record) }
-        return rowId
+        return OfferInsertResult(rowId, inserted = true)
+    }
+
+    fun insert(record: OfferRecord): Long = insertDeduplicated(record).rowId
+
+    fun findRecentDuplicate(record: OfferRecord): OfferRecord? {
+        val from = record.capturedAt - OfferDedupeIdentity.PERSIST_DEDUPE_WINDOW_MS
+        val to = record.capturedAt + OfferDedupeIdentity.PERSIST_DEDUPE_WINDOW_MS
+        val candidates = queryOffers(
+            selection = "package_name = ? AND price_cents = ? AND captured_at BETWEEN ? AND ?",
+            args = arrayOf(record.packageName, record.priceCents.toString(), from.toString(), to.toString()),
+            limit = 30,
+            offset = 0,
+        )
+        val captureKey = record.captureKey.trim()
+        return candidates.firstOrNull { existing ->
+            (captureKey.isNotEmpty() && existing.captureKey.isNotEmpty() && existing.captureKey == captureKey) ||
+                OfferDedupeIdentity.isSameLiveOffer(existing.withCurrentParsedStructure(), record.withCurrentParsedStructure())
+        }
     }
 
     fun findById(id: Long): OfferRecord? {
@@ -243,6 +277,7 @@ class OfferDatabase private constructor(context: Context) :
             deliveryCount = nullableInt("delivery_count"),
             estimatedMinutesMin = nullableInt("estimated_min"),
             estimatedMinutesMax = nullableInt("estimated_max"),
+            captureKey = nullableString("capture_key").orEmpty(),
         )
     }
 
@@ -371,7 +406,7 @@ class OfferDatabase private constructor(context: Context) :
 
     companion object {
         private const val DB_NAME = "courier_offers.db"
-        private const val DB_VERSION = 3
+        private const val DB_VERSION = 4
         private const val LIST_SEPARATOR = "\u001F"
 
         @Volatile private var instance: OfferDatabase? = null

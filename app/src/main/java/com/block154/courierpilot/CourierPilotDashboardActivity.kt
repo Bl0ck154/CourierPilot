@@ -3,6 +3,8 @@ package com.block154.courierpilot
 import android.content.ComponentName
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -85,6 +87,13 @@ import kotlin.math.ceil
 
 class CourierPilotDashboardActivity : ComponentActivity() {
     private val refreshVersion = mutableIntStateOf(0)
+    private val midnightHandler = Handler(Looper.getMainLooper())
+    private val midnightRefresh = object : Runnable {
+        override fun run() {
+            refreshVersion.intValue++
+            scheduleMidnightRefresh()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -105,6 +114,25 @@ class CourierPilotDashboardActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         refreshVersion.intValue++
+        scheduleMidnightRefresh()
+    }
+
+    override fun onPause() {
+        midnightHandler.removeCallbacks(midnightRefresh)
+        super.onPause()
+    }
+
+    private fun scheduleMidnightRefresh() {
+        midnightHandler.removeCallbacks(midnightRefresh)
+        val now = Calendar.getInstance()
+        val next = (now.clone() as Calendar).apply {
+            add(Calendar.DAY_OF_YEAR, 1)
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 250)
+        }
+        midnightHandler.postDelayed(midnightRefresh, (next.timeInMillis - now.timeInMillis).coerceAtLeast(1_000L))
     }
 
     private fun hasNotificationAccess(): Boolean {

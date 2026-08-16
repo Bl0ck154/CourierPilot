@@ -43,14 +43,33 @@ internal object DeliveryMemory {
         // happened to be detected. This becomes the local address history used by the Addresses tab.
         allAddresses.forEach { address ->
             val customer = customerForAddress(parsed, address)
+            val merchant = merchantForAddress(parsed, address)
             runCatching {
-                database.saveAddressObservation(
+                val addressId = database.saveAddressObservation(
                     address = address,
                     platform = platform,
                     customerName = customer,
                     detailsText = addressContext(text, address),
                     rawText = text,
                 )
+                if (addressId != null) {
+                    merchant?.let {
+                        database.saveAddressEntity(
+                            addressId = addressId,
+                            entityType = CourierMetaDatabase.ENTITY_VENUE,
+                            name = it,
+                            platform = platform,
+                        )
+                    }
+                    customer?.let {
+                        database.saveAddressEntity(
+                            addressId = addressId,
+                            entityType = CourierMetaDatabase.ENTITY_CUSTOMER,
+                            name = it,
+                            platform = platform,
+                        )
+                    }
+                }
             }.onFailure {
                 CaptureEventLog.append(
                     context,
@@ -124,6 +143,17 @@ internal object DeliveryMemory {
             break
         }
         if (!matched && detectedAddresses.isNotEmpty()) AccessCodeSuggestions.clear(context)
+    }
+
+    private fun merchantForAddress(parsed: ParsedOffer, address: String): String? {
+        val key = CourierSignals.normalizeBuildingAddress(address)?.first ?: return null
+        val index = parsed.pickupAddresses.indexOfFirst {
+            CourierSignals.normalizeBuildingAddress(it)?.first == key
+        }
+        return parsed.merchantNames.getOrNull(index)
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?: parsed.restaurant?.trim()?.takeIf(String::isNotEmpty)?.takeIf { parsed.pickupAddresses.size <= 1 }
     }
 
     private fun customerForAddress(parsed: ParsedOffer, address: String): String? {

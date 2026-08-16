@@ -137,6 +137,7 @@ internal object CourierSignals {
     )
     private val houseNumberRegex = Regex("\\b\\d{1,4}[A-Za-z]?(?:\\s*[-/]\\s*\\d{1,4})?\\b")
     private val apartmentSuffixRegex = Regex("(\\b\\d{1,4}[A-Za-z]?)\\s*[-/]\\s*\\d{1,4}\\b")
+    private val trailingApartmentLabelRegex = Regex("(?i)(\\b\\d{1,4}[A-Za-z]?)\\s*[,;]?\\s*(?:butas|but\\.?|apt\\.?|apartment)\\s*#?\\s*\\d{1,4}\\b.*$")
 
     fun isCourierPackage(packageName: String): Boolean = packageName in courierPackages
 
@@ -245,16 +246,25 @@ internal object CourierSignals {
         var display = raw.trim().replace(Regex("\\s+"), " ")
         if (!looksLikeAddressLine(display)) return null
         display = display.replace(Regex("(?i)^vilnius[,]?\\s*"), "")
-        display = display.replace(Regex("(?i),?\\s*LT-\\d{5}.*$"), "")
+        display = display.replace(Regex("(?i),?\\s*LT-?\\d{5}.*$"), "")
         display = display.replace(Regex("(?i),?\\s*Vilnius.*$"), "")
+        display = trailingApartmentLabelRegex.replace(display) { match -> match.groupValues[1] }
+        // Lithuanian courier/customer notation usually uses house-apartment, e.g. 1-36 or 1/36.
+        // Building memory intentionally stores only the building part.
         display = apartmentSuffixRegex.replace(display) { match -> match.groupValues[1] }
-        display = display.trim(' ', ',')
+        display = display.trim(' ', ',', ';')
         if (display.length < 4) return null
 
         val ascii = Normalizer.normalize(display, Normalizer.Form.NFD)
             .replace(Regex("\\p{M}+"), "")
             .lowercase(Locale.ROOT)
         val key = ascii
+            .replace(Regex("\\bgatve\\b|\\bstreet\\b|\\bstr\\b|\\bst\\b"), " g ")
+            .replace(Regex("\\bprospektas\\b|\\bprospekt\\b|\\bpr\\b"), " pr ")
+            .replace(Regex("\\baleja\\b|\\bal\\b"), " al ")
+            .replace(Regex("\\bplentas\\b|\\bpl\\b"), " pl ")
+            .replace(Regex("\\bskersgatvis\\b|\\bskersgatve\\b|\\bskg\\b"), " skg ")
+            .replace(Regex("\\bkelias\\b|\\bkel\\b"), " kel ")
             .replace(Regex("[^a-z0-9]+"), " ")
             .trim()
         if (key.isBlank()) return null

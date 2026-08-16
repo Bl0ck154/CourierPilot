@@ -146,4 +146,38 @@ class OfferCaptureDedupeTest {
             ),
         )
     }
+    @Test
+    fun persistenceGuardRecognizesRicherDuplicateButKeepsDifferentOffer() {
+        val base = OfferRecord(
+            capturedAt = 1_000_000L,
+            platform = "Wolt",
+            packageName = CourierSignals.WOLT_PACKAGE,
+            priceCents = 642,
+            distanceMeters = 10_400,
+            restaurant = "Guacamole Mexican Grill (Baltupiai)",
+            screenshotUri = "content://one",
+            screenshotFilename = "one.png",
+            rawText = "first",
+            merchantNames = listOf("Guacamole Mexican Grill (Baltupiai)"),
+            deliveryCount = 1,
+        )
+        val richerDuplicate = base.copy(
+            id = 2L,
+            capturedAt = base.capturedAt + 70_000L,
+            rawText = "richer",
+            customerNames = listOf("Customer A."),
+            dropoffAddresses = listOf("Vokiečių g. 1-36, Vilnius"),
+        )
+        val differentOffer = base.copy(
+            id = 3L,
+            capturedAt = base.capturedAt + 80_000L,
+            distanceMeters = 7_100,
+            restaurant = "Different Venue",
+            merchantNames = listOf("Different Venue"),
+        )
+
+        assertEquals(true, OfferDedupeIdentity.isSameLiveOffer(base, richerDuplicate))
+        assertEquals(false, OfferDedupeIdentity.isSameLiveOffer(base, differentOffer))
+    }
+
 }

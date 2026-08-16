@@ -388,34 +388,72 @@ class OfferAccessibilityService : AccessibilityService() {
             return
         }
 
+        val database = OfferDatabase.get(this)
+        val candidate = OfferRecord(
+            capturedAt = pending.armedAt,
+            platform = OfferParser.platformName(pending.packageName, pending.sourceName),
+            packageName = pending.packageName,
+            priceCents = priceCents,
+            distanceMeters = parsed.distanceMeters,
+            restaurant = parsed.restaurant,
+            screenshotUri = "",
+            screenshotFilename = "",
+            rawText = rawText,
+            merchantNames = parsed.merchantNames,
+            pickupAddresses = parsed.pickupAddresses,
+            customerNames = parsed.customerNames,
+            dropoffAddresses = parsed.dropoffAddresses,
+            deliveryCount = parsed.deliveryCount,
+            estimatedMinutesMin = parsed.estimatedMinutesMin,
+            estimatedMinutesMax = parsed.estimatedMinutesMax,
+            captureKey = pending.notificationKey,
+        )
+
+        val duplicate = database.findRecentDuplicate(candidate)
+        if (duplicate != null) {
+            bitmap.recycle()
+            captureInFlight = false
+            CaptureEventLog.append(
+                this,
+                "duplicate_suppressed",
+                "Same live offer already exists as record #${duplicate.id}; skipped screenshot and history insert",
+                platform,
+            )
+            OfferState.clear(this)
+            lastHandledArmedAt = 0L
+            scheduleAttempt(IDLE_WATCHDOG_MS)
+            return
+        }
+
         var saved: SavedScreenshot? = null
         try {
             saved = ScreenshotStore.save(this, bitmap, pending.sourceName)
-            val rowId = OfferDatabase.get(this).insert(
-                OfferRecord(
-                    capturedAt = pending.armedAt,
-                    platform = OfferParser.platformName(pending.packageName, pending.sourceName),
-                    packageName = pending.packageName,
-                    priceCents = priceCents,
-                    distanceMeters = parsed.distanceMeters,
-                    restaurant = parsed.restaurant,
-                    screenshotUri = saved.uri.toString(),
-                    screenshotFilename = saved.filename,
-                    rawText = rawText,
-                    merchantNames = parsed.merchantNames,
-                    pickupAddresses = parsed.pickupAddresses,
-                    customerNames = parsed.customerNames,
-                    dropoffAddresses = parsed.dropoffAddresses,
-                    deliveryCount = parsed.deliveryCount,
-                    estimatedMinutesMin = parsed.estimatedMinutesMin,
-                    estimatedMinutesMax = parsed.estimatedMinutesMax,
-                )
+            val stored = candidate.copy(
+                screenshotUri = saved.uri.toString(),
+                screenshotFilename = saved.filename,
             )
+            val insertResult = database.insertDeduplicated(stored)
+            if (!insertResult.inserted) {
+                ScreenshotStore.delete(this, saved)
+                saved = null
+                CaptureEventLog.append(
+                    this,
+                    "duplicate_race_suppressed",
+                    "Duplicate reached persistence guard; reused record #${insertResult.rowId}",
+                    platform,
+                )
+            } else {
+                OfferState.markCapture(this, stored.screenshotFilename)
+                CaptureEventLog.append(
+                    this,
+                    "saved",
+                    "Offer saved successfully as record #${insertResult.rowId} (${parsed.deliveryCount ?: 1} deliveries)",
+                    platform,
+                )
+            }
             if (pending.notificationKey.startsWith("screen:")) {
                 ScreenOfferDeduper.markArmed(this, pending.packageName, pending.notificationKey.removePrefix("screen:"))
             }
-            OfferState.markCapture(this, saved.filename)
-            CaptureEventLog.append(this, "saved", "Offer saved successfully as record #$rowId (${parsed.deliveryCount ?: 1} deliveries)", platform)
             OfferState.clear(this)
             lastHandledArmedAt = 0L
         } catch (t: Throwable) {
