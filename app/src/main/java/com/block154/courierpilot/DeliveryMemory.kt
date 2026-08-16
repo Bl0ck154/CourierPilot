@@ -26,9 +26,9 @@ internal object DeliveryMemory {
 
         val detectedAddresses = CourierSignals.likelyAddresses(text)
         val allAddresses = (detectedAddresses + parsed.pickupAddresses + parsed.dropoffAddresses)
-            .map(String::trim)
-            .filter(String::isNotEmpty)
-            .distinctBy { CourierSignals.normalizeBuildingAddress(it)?.first ?: it.lowercase() }
+            .mapNotNull { DeliveryAddressNormalizer.normalize(it) }
+            .distinctBy { it.first }
+            .map { it.second }
 
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val key = addressKey(packageName)
@@ -39,8 +39,8 @@ internal object DeliveryMemory {
         val platform = OfferState.platformLabel(packageName)
         val database = CourierMetaDatabase.get(context)
 
-        // Store every address exposed by the current courier screen, not only buildings where a code
-        // happened to be detected. This becomes the local address history used by the Addresses tab.
+        // Store every canonical building exposed by the current courier screen. Apartment suffixes
+        // are removed before SQLite sees them, so 1, 1-36 and 1–36 share one building row.
         allAddresses.forEach { address ->
             val customer = customerForAddress(parsed, address)
             val merchant = merchantForAddress(parsed, address)
@@ -82,6 +82,16 @@ internal object DeliveryMemory {
         }
 
         val observations = CourierSignals.extractAccessCodeObservations(text, fallback)
+            .mapNotNull { observation ->
+                DeliveryAddressNormalizer.normalize(observation.displayAddress)?.let { normalized ->
+                    AccessCodeObservation(
+                        buildingKey = normalized.first,
+                        displayAddress = normalized.second,
+                        code = observation.code,
+                    )
+                }
+            }
+            .distinctBy { "${it.buildingKey}|${it.code}" }
         if (observations.isNotEmpty()) {
             AccessCodeSuggestions.clear(context)
             observations.forEach { observation ->
@@ -112,7 +122,7 @@ internal object DeliveryMemory {
         // remembered fallback is used for learning across split screens, never for a blind suggestion.
         var matched = false
         for (address in detectedAddresses.asReversed().distinct()) {
-            val normalized = CourierSignals.normalizeBuildingAddress(address) ?: continue
+            val normalized = DeliveryAddressNormalizer.normalize(address) ?: continue
             val known = database.codesForBuilding(normalized.first)
             if (known.isEmpty()) continue
             val codes = known.map { it.code }.distinct()
@@ -146,9 +156,9 @@ internal object DeliveryMemory {
     }
 
     private fun merchantForAddress(parsed: ParsedOffer, address: String): String? {
-        val key = CourierSignals.normalizeBuildingAddress(address)?.first ?: return null
+        val key = DeliveryAddressNormalizer.key(address) ?: return null
         val index = parsed.pickupAddresses.indexOfFirst {
-            CourierSignals.normalizeBuildingAddress(it)?.first == key
+            DeliveryAddressNormalizer.key(it) == key
         }
         return parsed.merchantNames.getOrNull(index)
             ?.trim()
@@ -157,9 +167,9 @@ internal object DeliveryMemory {
     }
 
     private fun customerForAddress(parsed: ParsedOffer, address: String): String? {
-        val key = CourierSignals.normalizeBuildingAddress(address)?.first ?: return null
+        val key = DeliveryAddressNormalizer.key(address) ?: return null
         val index = parsed.dropoffAddresses.indexOfFirst {
-            CourierSignals.normalizeBuildingAddress(it)?.first == key
+            DeliveryAddressNormalizer.key(it) == key
         }
         return parsed.customerNames.getOrNull(index)
             ?.takeUnless { it.equals("Customer", ignoreCase = true) }
@@ -168,13 +178,13 @@ internal object DeliveryMemory {
     }
 
     private fun addressContext(text: String, address: String): String? {
-        val targetKey = CourierSignals.normalizeBuildingAddress(address)?.first ?: return null
+        val targetKey = DeliveryAddressNormalizer.key(address) ?: return null
         val lines = text.lineSequence()
             .map { it.trim().replace(Regex("\\s+"), " ") }
             .filter(String::isNotEmpty)
             .toList()
         val index = lines.indexOfFirst { line ->
-            CourierSignals.normalizeBuildingAddress(line)?.first == targetKey
+            DeliveryAddressNormalizer.key(line) == targetKey
         }
         if (index < 0) return null
         val from = (index - 2).coerceAtLeast(0)

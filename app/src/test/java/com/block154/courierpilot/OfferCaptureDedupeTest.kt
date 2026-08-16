@@ -146,6 +146,7 @@ class OfferCaptureDedupeTest {
             ),
         )
     }
+
     @Test
     fun persistenceGuardRecognizesRicherDuplicateButKeepsDifferentOffer() {
         val base = OfferRecord(
@@ -180,4 +181,73 @@ class OfferCaptureDedupeTest {
         assertEquals(false, OfferDedupeIdentity.isSameLiveOffer(base, differentOffer))
     }
 
+    @Test
+    fun sparseNotificationAndRichScreenAreOneOfferInsideShortWindow() {
+        val sparse = OfferRecord(
+            capturedAt = 2_000_000L,
+            platform = "Bolt",
+            packageName = CourierSignals.BOLT_PACKAGE,
+            priceCents = 530,
+            distanceMeters = null,
+            restaurant = null,
+            screenshotUri = "content://sparse",
+            screenshotFilename = "sparse.png",
+            rawText = "€5.30",
+        )
+        val rich = sparse.copy(
+            capturedAt = sparse.capturedAt + 20_000L,
+            distanceMeters = 3_200,
+            restaurant = "Example Pizza",
+            merchantNames = listOf("Example Pizza"),
+            pickupAddresses = listOf("Gedimino pr. 10, Vilnius"),
+            dropoffAddresses = listOf("Vokiečių g. 1-36, Vilnius"),
+        )
+
+        assertEquals(true, OfferDedupeIdentity.isSameLiveOffer(sparse, rich))
+    }
+
+    @Test
+    fun strongSameRouteCanDeduplicateBeyondThreeMinutes() {
+        val first = OfferRecord(
+            capturedAt = 3_000_000L,
+            platform = "Wolt",
+            packageName = CourierSignals.WOLT_PACKAGE,
+            priceCents = 710,
+            distanceMeters = 4_800,
+            restaurant = "Example Sushi",
+            screenshotUri = "content://first",
+            screenshotFilename = "first.png",
+            rawText = "first",
+            merchantNames = listOf("Example Sushi"),
+            pickupAddresses = listOf("Pylimo g. 20, Vilnius"),
+            dropoffAddresses = listOf("Vokiečių g. 1–36, Vilnius"),
+            deliveryCount = 1,
+        )
+        val duplicate = first.copy(
+            capturedAt = first.capturedAt + 5L * 60L * 1000L,
+            screenshotUri = "content://second",
+            screenshotFilename = "second.png",
+            rawText = "richer frame",
+            dropoffAddresses = listOf("Vokiečių g. 1, Vilnius"),
+        )
+        val genuinelyDifferent = duplicate.copy(
+            capturedAt = first.capturedAt + 6L * 60L * 1000L,
+            dropoffAddresses = listOf("Vokiečių g. 9, Vilnius"),
+        )
+
+        assertEquals(true, OfferDedupeIdentity.isSameLiveOffer(first, duplicate))
+        assertEquals(false, OfferDedupeIdentity.isSameLiveOffer(first, genuinelyDifferent))
+    }
+
+    @Test
+    fun apartmentSuffixWithUnicodeDashNormalizesToBuilding() {
+        val normalized = DeliveryAddressNormalizer.normalize("Vokiečių g. 1–36, Vilnius")
+
+        assertEquals("vokieciu g 1", normalized?.first)
+        assertEquals("Vokiečių g. 1", normalized?.second)
+        assertEquals(
+            normalized,
+            DeliveryAddressNormalizer.normalize("Vokiečių g. 1, Vilnius"),
+        )
+    }
 }

@@ -11,7 +11,7 @@ import android.net.Uri
 internal object OfferDataRepair {
     private const val PREFS = "courier_offer_repairs"
     private const val KEY_REVISION = "parser_repair_revision"
-    private const val CURRENT_REVISION = 4
+    private const val CURRENT_REVISION = 5
     private const val LIST_SEPARATOR = "\u001F"
 
     fun runIfNeeded(context: Context) {

@@ -7,13 +7,15 @@ import kotlin.math.abs
 /**
  * Stable identities for one live courier offer.
  *
- * Accessibility/OCR may expose route details progressively, so exact full-screen fingerprints are
- * deliberately not used as the last persistence guard. A same-live-offer comparison is intentionally
- * short-lived and requires price plus at least one secondary route signal (venue, distance or count).
+ * Accessibility/OCR may expose route details progressively. Persistence therefore uses a tiered
+ * duplicate guard: a very short sparse-frame fallback, the normal fuzzy route comparison, and a
+ * longer window only for strong route identity / exact capture keys.
  */
 internal object OfferDedupeIdentity {
     const val BURST_WINDOW_MS = 90L * 1000L
-    const val PERSIST_DEDUPE_WINDOW_MS = 3L * 60L * 1000L
+    const val PERSIST_DEDUPE_WINDOW_MS = 10L * 60L * 1000L
+    private const val NORMAL_FUZZY_WINDOW_MS = 3L * 60L * 1000L
+    private const val SPARSE_FRAME_WINDOW_MS = 45L * 1000L
     private const val DISTANCE_TOLERANCE_METERS = 150
 
     fun burstFingerprint(packageName: String, parsed: ParsedOffer): String {
@@ -33,14 +35,18 @@ internal object OfferDedupeIdentity {
         burstFingerprint(record.packageName, record.asParsedOffer())
 
     /**
-     * Fuzzy guard for duplicate captures of the same live offer. This is only valid inside a short
-     * persistence window; outside that window two genuinely different orders may naturally have the
-     * same price/restaurant/distance.
+     * Fuzzy guard for duplicate captures of the same live offer.
+     *
+     * Within 45 seconds, a sparse notification frame may legitimately contain only the price while
+     * the later Accessibility frame contains the route. Contradictory route fields still reject the
+     * match. From 3 to 10 minutes we require strong route identity so two genuine later offers from
+     * the same venue are not collapsed merely because their price matches.
      */
     fun isSameLiveOffer(first: OfferRecord, second: OfferRecord): Boolean {
         if (first.packageName != second.packageName) return false
         if (first.priceCents != second.priceCents) return false
-        if (abs(first.capturedAt - second.capturedAt) > PERSIST_DEDUPE_WINDOW_MS) return false
+        val elapsed = abs(first.capturedAt - second.capturedAt)
+        if (elapsed > PERSIST_DEDUPE_WINDOW_MS) return false
 
         val firstDistance = first.distanceMeters
         val secondDistance = second.distanceMeters
@@ -59,15 +65,24 @@ internal object OfferDedupeIdentity {
             firstMerchants.any { left -> secondMerchants.any { right -> tokenMatches(left, right) } }
         if (firstMerchants.isNotEmpty() && secondMerchants.isNotEmpty() && !venueMatches) return false
 
-        val addressMatches = addressTokens(first).let { left ->
-            left.isNotEmpty() && addressTokens(second).let { right ->
-                right.isNotEmpty() && left.any(right::contains)
-            }
+        val firstAddresses = addressTokens(first)
+        val secondAddresses = addressTokens(second)
+        val addressMatches = firstAddresses.isNotEmpty() && secondAddresses.isNotEmpty() &&
+            firstAddresses.any(secondAddresses::contains)
+
+        val firstHasRouteIdentity = firstDistance != null || firstMerchants.isNotEmpty() || firstAddresses.isNotEmpty()
+        val secondHasRouteIdentity = secondDistance != null || secondMerchants.isNotEmpty() || secondAddresses.isNotEmpty()
+
+        if (elapsed <= SPARSE_FRAME_WINDOW_MS && (!firstHasRouteIdentity || !secondHasRouteIdentity)) {
+            return true
         }
 
-        // Delivery count alone is too weak (especially for single Bolt offers). Require a venue,
-        // route distance or canonical building address in addition to the equal price/time window.
-        return distanceMatches || venueMatches || addressMatches
+        if (elapsed <= NORMAL_FUZZY_WINDOW_MS) {
+            return distanceMatches || venueMatches || addressMatches
+        }
+
+        val countCompatible = firstCount == null || secondCount == null || countMatches
+        return addressMatches || (venueMatches && distanceMatches && countCompatible)
     }
 
     private fun OfferRecord.asParsedOffer(): ParsedOffer = ParsedOffer(
@@ -91,7 +106,7 @@ internal object OfferDedupeIdentity {
 
     private fun addressTokens(record: OfferRecord): Set<String> =
         (record.pickupAddresses + record.dropoffAddresses)
-            .mapNotNull { CourierSignals.normalizeBuildingAddress(it)?.first }
+            .mapNotNull { DeliveryAddressNormalizer.key(it) }
             .toSet()
 
     private fun tokenMatches(left: String, right: String): Boolean =

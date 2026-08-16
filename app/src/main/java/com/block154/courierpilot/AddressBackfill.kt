@@ -7,7 +7,7 @@ import kotlin.math.ceil
 internal object AddressBackfill {
     private const val PREFS = "courierpilot_address_backfill"
     private const val KEY_REVISION = "revision"
-    private const val CURRENT_REVISION = 2
+    private const val CURRENT_REVISION = 3
     private const val PAGE_SIZE = 200
 
     fun schedule(context: Context) {
@@ -34,8 +34,9 @@ internal object AddressBackfill {
         val offers = OfferDatabase.get(context)
         val meta = CourierMetaDatabase.get(context)
 
-        // Normalization rules are versioned independently from the SQLite key that older builds used.
-        // Merge old apartment/street-marker variants before adding entity links.
+        // Schema-independent repair first, then retain the older in-database canonical pass as a
+        // second safety net for installs that skipped an intermediate build.
+        AddressDataRepair.runIfNeeded(context)
         meta.repairNormalizedAddresses()
 
         val total = offers.offerCount()
@@ -56,8 +57,9 @@ internal object AddressBackfill {
 
     private fun backfillFullRecord(meta: CourierMetaDatabase, record: OfferRecord) {
         record.pickupAddresses.forEachIndexed { index, address ->
+            val canonicalAddress = DeliveryAddressNormalizer.display(address) ?: return@forEachIndexed
             val addressId = meta.saveAddressObservation(
-                address = address,
+                address = canonicalAddress,
                 platform = record.platform,
                 customerName = null,
                 detailsText = record.merchantNames.getOrNull(index)?.let { "Pickup · $it" },
@@ -77,10 +79,11 @@ internal object AddressBackfill {
             }
         }
         record.dropoffAddresses.forEachIndexed { index, address ->
+            val canonicalAddress = DeliveryAddressNormalizer.display(address) ?: return@forEachIndexed
             val customer = record.customerNames.getOrNull(index)
                 ?.takeUnless { it.equals("Customer", ignoreCase = true) }
             val addressId = meta.saveAddressObservation(
-                address = address,
+                address = canonicalAddress,
                 platform = record.platform,
                 customerName = customer,
                 detailsText = "Drop-off from captured offer",
@@ -99,10 +102,11 @@ internal object AddressBackfill {
         }
     }
 
-    /** Existing revision-1 installs already have observations; only link entities to avoid recounting visits. */
+    /** Existing installs already have observations; relink entities without recounting visits. */
     private fun backfillEntitiesOnly(meta: CourierMetaDatabase, record: OfferRecord) {
         record.pickupAddresses.forEachIndexed { index, address ->
-            val addressId = meta.findAddressForDisplayAddress(address)?.id ?: return@forEachIndexed
+            val canonicalAddress = DeliveryAddressNormalizer.display(address) ?: return@forEachIndexed
+            val addressId = meta.findAddressForDisplayAddress(canonicalAddress)?.id ?: return@forEachIndexed
             val venue = record.merchantNames.getOrNull(index)
                 ?: record.restaurant.takeIf { record.pickupAddresses.size <= 1 }
             if (!venue.isNullOrBlank()) {
@@ -116,7 +120,8 @@ internal object AddressBackfill {
             }
         }
         record.dropoffAddresses.forEachIndexed { index, address ->
-            val addressId = meta.findAddressForDisplayAddress(address)?.id ?: return@forEachIndexed
+            val canonicalAddress = DeliveryAddressNormalizer.display(address) ?: return@forEachIndexed
+            val addressId = meta.findAddressForDisplayAddress(canonicalAddress)?.id ?: return@forEachIndexed
             val customer = record.customerNames.getOrNull(index)
                 ?.takeUnless { it.equals("Customer", ignoreCase = true) }
             if (!customer.isNullOrBlank()) {
