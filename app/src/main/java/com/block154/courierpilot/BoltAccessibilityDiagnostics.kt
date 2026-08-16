@@ -4,7 +4,9 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityService.ScreenshotResult
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Rect
+import android.net.Uri
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -56,6 +58,36 @@ internal object BoltAccessibilityDiagnostics {
         if (!prefs.getBoolean(KEY_ARMED, false)) return false
         prefs.edit().putBoolean(KEY_ARMED, false).commit()
         return true
+    }
+
+    /**
+     * Saves an automatic research bundle from the clean offer screenshot that was already persisted
+     * before CourierPilot draws its advisor overlay. This avoids contaminating the map sample with
+     * CourierPilot's own UI and removes the need to manually arm a second screenshot for every Bolt
+     * offer when experimental Bolt routing is enabled.
+     */
+    fun savePersistedOfferSample(
+        context: Context,
+        root: AccessibilityNodeInfo,
+        screenshotUri: String,
+        location: CurrentLocationFix?,
+    ): Boolean {
+        val tree = runCatching { BoltAccessibilityTreeSerializer.serialize(root) }.getOrNull() ?: return false
+        val bitmap = runCatching {
+            context.contentResolver.openInputStream(Uri.parse(screenshotUri))?.use(BitmapFactory::decodeStream)
+        }.getOrNull()
+        return try {
+            saveSample(
+                context = context,
+                tree = tree,
+                bitmap = bitmap,
+                screenshotError = if (bitmap == null) "Could not read persisted clean offer screenshot" else null,
+                location = location,
+            )
+            true
+        } finally {
+            bitmap?.recycle()
+        }
     }
 
     fun saveSample(
