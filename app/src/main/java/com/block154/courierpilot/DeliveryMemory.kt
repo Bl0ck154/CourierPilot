@@ -4,17 +4,18 @@ import android.content.Context
 import android.widget.Toast
 
 /**
- * Learns local delivery context for buildings seen in the courier apps.
+ * Learns local delivery context for customer buildings seen in the courier apps.
  *
- * Address memory stores observations of courier screens. It must never imply that the courier
- * physically visited a building merely because an offer displayed that address.
+ * Address memory stores observations of customer-side courier screens. It must never imply that the
+ * courier physically visited a building merely because an offer displayed that address.
  *
- * v0.13 separates text provenance. Accessibility can contribute durable address evidence; OCR-
- * augmented text is useful to the live offer parser/advisor but is never allowed to mutate address
- * memory.
+ * OCR-augmented text is useful to the live offer parser/advisor but is never allowed to mutate
+ * address memory. Accessibility text must additionally pass DeliveryAddressPersistenceGate so
+ * restaurant/menu screens cannot teach durable addresses.
  */
 internal object DeliveryMemory {
     private const val PREFS = "courierpilot_delivery_memory"
+    private const val ADDRESS_CONTEXT_TTL_MS = 90_000L
 
     private data class DetectedAddress(
         val raw: String,
@@ -40,14 +41,25 @@ internal object DeliveryMemory {
         }
 
         // OCR may enrich the live offer card, but it cannot create/update buildings, customers,
-        // access codes or aliases. This is the hard provenance boundary that was missing before.
+        // access codes or aliases.
         if (source != ScreenTextSource.ACCESSIBILITY) return
 
         val platform = OfferState.platformLabel(packageName)
         val database = CourierMetaDatabase.get(context)
         val screenDetails = DeliveryScreenDetailsExtractor.extract(text)
-        val candidates = AddressEvidenceExtractor.fromAccessibility(text, parsed, screenDetails)
+        val persistence = DeliveryAddressPersistenceGate.evaluate(context, packageName, text, screenDetails)
+        if (!persistence.allowed) {
+            CaptureEventLog.append(
+                context,
+                stage = "address_memory_skipped",
+                platform = platform,
+                message = persistence.reason.name,
+                dedupeWindowMs = 15_000L,
+            )
+            return
+        }
 
+        val candidates = AddressEvidenceExtractor.fromAccessibility(text, parsed, screenDetails)
         val allAddresses = candidates.mapNotNull { candidate ->
             val normalized = DeliveryAddressNormalizer.normalize(candidate.raw) ?: return@mapNotNull null
             val evidence = if (candidate.evidence == AddressEvidenceSource.ACCESSIBILITY_COMPACT_PENDING) {
@@ -67,9 +79,17 @@ internal object DeliveryMemory {
         val detectedAddresses = allAddresses.map { it.raw }
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val key = addressKey(packageName)
+        val now = System.currentTimeMillis()
         val previous = prefs.getString(key, null)
-        val fallback = detectedAddresses.lastOrNull() ?: previous
-        if (detectedAddresses.isNotEmpty()) prefs.edit().putString(key, detectedAddresses.last()).apply()
+        val previousAt = prefs.getLong("${key}_at", 0L)
+        val recentPrevious = previous?.takeIf { now - previousAt in 0..ADDRESS_CONTEXT_TTL_MS }
+        val fallback = detectedAddresses.lastOrNull() ?: recentPrevious
+        if (detectedAddresses.isNotEmpty()) {
+            prefs.edit()
+                .putString(key, detectedAddresses.last())
+                .putLong("${key}_at", now)
+                .apply()
+        }
 
         allAddresses.forEach { detected ->
             val rawAddress = detected.raw
@@ -78,12 +98,11 @@ internal object DeliveryMemory {
                 DeliveryAddressNormalizer.matchScore(detailsAddress, rawAddress) >= 0.86
             }
             val customer = customerForAddress(parsed, rawAddress) ?: matchedScreenDetails?.customerName
-            val merchant = merchantForAddress(parsed, rawAddress)
             val detailsText = matchedScreenDetails?.asDetailsText() ?: addressContext(text, rawAddress)
 
             runCatching {
-                // Always let the resolver see the newest trusted Accessibility frame. It updates
-                // latest details/raw text while internally suppressing duplicate observation rows.
+                // Always let the resolver see the newest trusted customer frame. It updates latest
+                // details/raw text while internally suppressing duplicate observation rows.
                 val saved = AddressMemoryResolver.saveObservation(
                     context = context,
                     database = database,
@@ -96,14 +115,6 @@ internal object DeliveryMemory {
                 )
 
                 if (saved != null) {
-                    merchant?.let {
-                        database.saveAddressEntity(
-                            addressId = saved.addressId,
-                            entityType = CourierMetaDatabase.ENTITY_VENUE,
-                            name = it,
-                            platform = platform,
-                        )
-                    }
                     customer?.let {
                         database.saveAddressEntity(
                             addressId = saved.addressId,
@@ -127,6 +138,8 @@ internal object DeliveryMemory {
             }
         }
 
+        // Access-code learning may reuse only a very recent customer address from the same platform.
+        // The old unbounded fallback could attach a code from a later screen/order to stale data.
         val observations = CourierSignals.extractAccessCodeObservations(text, fallback)
             .mapNotNull { observation ->
                 val canonical = AddressMemoryResolver.canonicalize(context, database, observation.displayAddress)
@@ -200,17 +213,6 @@ internal object DeliveryMemory {
             break
         }
         if (!matched && detectedAddresses.isNotEmpty()) AccessCodeSuggestions.clear(context)
-    }
-
-    private fun merchantForAddress(parsed: ParsedOffer, address: String): String? {
-        val identity = DeliveryAddressNormalizer.identity(address) ?: return null
-        val index = parsed.pickupAddresses.indexOfFirst {
-            DeliveryAddressNormalizer.matchScore(it, identity.display) >= 0.99
-        }
-        return parsed.merchantNames.getOrNull(index)
-            ?.trim()
-            ?.takeIf(String::isNotEmpty)
-            ?: parsed.restaurant?.trim()?.takeIf(String::isNotEmpty)?.takeIf { parsed.pickupAddresses.size <= 1 }
     }
 
     private fun customerForAddress(parsed: ParsedOffer, address: String): String? {
