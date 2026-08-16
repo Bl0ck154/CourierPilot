@@ -19,8 +19,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Map
 import androidx.compose.material.icons.rounded.Place
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
@@ -29,7 +31,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -52,6 +59,7 @@ class AddressDetailsActivity : ComponentActivity() {
                 if (address == null) {
                     MissingAddress(onBack = ::finish)
                 } else {
+                    var showDeleteConfirmation by remember { mutableStateOf(false) }
                     AddressDetailsScreen(
                         address = address,
                         codes = meta.codesForBuilding(address.buildingKey, limit = 20),
@@ -60,7 +68,37 @@ class AddressDetailsActivity : ComponentActivity() {
                         observations = meta.observationsForAddress(address.id, limit = 30),
                         onBack = ::finish,
                         onMap = { openAddressInMaps(address.displayAddress) },
+                        onDelete = { showDeleteConfirmation = true },
                     )
+
+                    if (showDeleteConfirmation) {
+                        AlertDialog(
+                            onDismissRequest = { showDeleteConfirmation = false },
+                            icon = { Icon(Icons.Rounded.Delete, contentDescription = null) },
+                            title = { Text("Delete address?") },
+                            text = {
+                                Text(
+                                    "${address.displayAddress}\n\nThis also removes its saved observations, customer names and access codes from CourierPilot."
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(
+                                    onClick = {
+                                        val deleted = AddressDeletion.delete(this, meta, address)
+                                        showDeleteConfirmation = false
+                                        if (deleted) finish()
+                                    },
+                                ) {
+                                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showDeleteConfirmation = false }) {
+                                    Text("Cancel")
+                                }
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -93,6 +131,7 @@ private fun AddressDetailsScreen(
     observations: List<AddressObservationRecord>,
     onBack: () -> Unit,
     onMap: () -> Unit,
+    onDelete: () -> Unit,
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -110,6 +149,13 @@ private fun AddressDetailsScreen(
                         "Local delivery memory",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp,
+                    )
+                }
+                IconButton(onClick = onDelete) {
+                    Icon(
+                        Icons.Rounded.Delete,
+                        contentDescription = "Delete address",
+                        tint = MaterialTheme.colorScheme.error,
                     )
                 }
             }
