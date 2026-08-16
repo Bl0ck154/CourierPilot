@@ -27,13 +27,9 @@ class AddressEvidenceV0130Test {
         database = CourierMetaDatabase.get(context)
         CompactAddressConfirmationGate.resetForTests()
         context.getSharedPreferences("courierpilot_delivery_lifecycle", Context.MODE_PRIVATE)
-            .edit()
-            .clear()
-            .commit()
+            .edit().clear().commit()
         context.getSharedPreferences("courierpilot_delivery_memory", Context.MODE_PRIVATE)
-            .edit()
-            .clear()
-            .commit()
+            .edit().clear().commit()
     }
 
     @Test
@@ -46,7 +42,7 @@ class AddressEvidenceV0130Test {
         DeliveryMemory.observeScreen(
             context,
             CourierSignals.WOLT_PACKAGE,
-            "Address\n$goodAddress\nInstructions\nLeave at door",
+            "Dropoff to\nTest Customer\n$goodAddress\nNotes\nLeave at door",
             ScreenTextSource.ACCESSIBILITY,
         )
         val before = findExact(goodAddress)
@@ -73,25 +69,17 @@ class AddressEvidenceV0130Test {
     }
 
     @Test
-    fun newCompactAddressNeedsTwoStableAccessibilityFramesAfterPickup() {
+    fun woltDropoffMarkerCanCreateCompactAddressImmediately() {
         val house = uniqueHouse(400)
         val address = "Pylimo $house"
-        seedPickedUpLifecycle(CourierSignals.WOLT_PACKAGE)
 
         DeliveryMemory.observeScreen(
             context,
             CourierSignals.WOLT_PACKAGE,
-            address,
+            "Dropoff to\nTest Customer\n$address\nNotes\nLeave at door",
             ScreenTextSource.ACCESSIBILITY,
         )
-        assertNull(findExact(address))
 
-        DeliveryMemory.observeScreen(
-            context,
-            CourierSignals.WOLT_PACKAGE,
-            address,
-            ScreenTextSource.ACCESSIBILITY,
-        )
         assertNotNull(findExact(address))
     }
 
@@ -100,13 +88,13 @@ class AddressEvidenceV0130Test {
         val fakeAddress = "Fanta ${uniqueHouse(450)}"
         val restaurantAddress = "Gedimino pr. ${uniqueHouse(460)}"
         val restaurantScreen = """
+            Pickup from
             McDonald's
-            Address
             $restaurantAddress
-            Items (3)
+            Order details
             Big Mac Menu
             $fakeAddress
-            Confirm pickup
+            I've got the items
         """.trimIndent()
 
         repeat(4) {
@@ -320,9 +308,7 @@ class AddressEvidenceV0130Test {
 
     private fun rerunRepair() {
         context.getSharedPreferences("courierpilot_address_repairs", Context.MODE_PRIVATE)
-            .edit()
-            .clear()
-            .commit()
+            .edit().clear().commit()
         AddressDataRepair.runIfNeeded(context)
     }
 
