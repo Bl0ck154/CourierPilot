@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.view.Gravity
+import android.view.View
 import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -48,19 +49,28 @@ internal class LiveOfferAdvisor(private val service: AccessibilityService) {
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var pendingSpeech: String? = null
+    private var currentPlatform: String = ""
 
     fun showBase(platform: String, parsed: ParsedOffer) {
         if (!LiveAdvisorSettings.enabled(service)) {
             hide()
             return
         }
+        currentPlatform = platform
         handler.post {
             ensureView()
             refreshControls()
             platformText?.text = formatBase(platform, parsed)
-            routeText?.text = if (
-                platform.equals("Wolt", ignoreCase = true) && LiveAdvisorSettings.automaticWoltRouting(service)
-            ) "Calculated route: resolving GPS + stops…" else "Calculated route: not requested"
+            val routeEnabled = LiveAdvisorSettings.routeEnabled(service, platform)
+            routeText?.apply {
+                visibility = if (routeEnabled) View.VISIBLE else View.GONE
+                text = when {
+                    !routeEnabled -> ""
+                    platform.equals("Wolt", ignoreCase = true) -> "Route · resolving GPS + stops…"
+                    platform.equals("Bolt", ignoreCase = true) -> "Route · locating pickup + map markers…"
+                    else -> ""
+                }
+            }
             scheduleHide()
             if (LiveAdvisorSettings.voiceEnabled(service)) speak(baseSpeech(platform, parsed))
         }
@@ -70,22 +80,41 @@ internal class LiveOfferAdvisor(private val service: AccessibilityService) {
         if (!LiveAdvisorSettings.enabled(service)) return
         handler.post {
             ensureView()
-            refreshControls()
+            routeText?.visibility = View.VISIBLE
             val pedestrian = comparison.pedestrian.getOrNull()
             val cycleway = comparison.cycleway.getOrNull()
             routeText?.text = buildString {
-                append("Calculated route · $waypointCount points")
-                if (pedestrian != null) {
-                    append("\n🟠 pedestrian: ${formatKm(pedestrian.distanceMeters)} · generic ${formatMinutes(pedestrian.durationSeconds)}")
-                } else {
-                    append("\n🟠 pedestrian: failed")
+                append("Route · $waypointCount points")
+                pedestrian?.let { append("\n🟠 ${formatKm(it.distanceMeters)}") }
+                    ?: append("\n🟠 failed")
+                cycleway?.let { append("   🔵 ${formatKm(it.distanceMeters)}") }
+                    ?: append("   🔵 failed")
+            }
+            scheduleHide()
+        }
+    }
+
+    fun updateBoltRoute(outcome: AutomaticBoltRouteOutcome) {
+        if (!LiveAdvisorSettings.enabled(service)) return
+        handler.post {
+            ensureView()
+            routeText?.visibility = View.VISIBLE
+            val comparison = outcome.comparison
+            if (comparison == null) {
+                routeText?.text = "Route unavailable · ${outcome.failureReason?.take(100) ?: "unknown failure"}"
+                scheduleHide()
+                return@post
+            }
+            val pedestrian = comparison.pedestrian.getOrNull()
+            val cycleway = comparison.cycleway.getOrNull()
+            val scopeLabel = if (outcome.scope == BoltRouteScope.FULL) "Full route" else "To pickup"
+            routeText?.text = buildString {
+                append(scopeLabel)
+                pedestrian?.let { append(" · 🟠 ${formatKm(it.distanceMeters)}") }
+                cycleway?.let { append(" · 🔵 ${formatKm(it.distanceMeters)}") }
+                if (outcome.scope == BoltRouteScope.PICKUP_ONLY) {
+                    append("\nCustomer distance pending Bolt map marker")
                 }
-                if (cycleway != null) {
-                    append("\n🔵 cycleway: ${formatKm(cycleway.distanceMeters)} · generic ${formatMinutes(cycleway.durationSeconds)}")
-                } else {
-                    append("\n🔵 cycleway: failed")
-                }
-                append("\nNo route winner selected")
             }
             scheduleHide()
         }
@@ -95,8 +124,8 @@ internal class LiveOfferAdvisor(private val service: AccessibilityService) {
         if (!LiveAdvisorSettings.enabled(service)) return
         handler.post {
             ensureView()
-            refreshControls()
-            routeText?.text = "Calculated route unavailable · ${reason.take(90)}"
+            routeText?.visibility = View.VISIBLE
+            routeText?.text = "Route unavailable · ${reason.take(100)}"
             scheduleHide()
         }
     }
@@ -128,7 +157,7 @@ internal class LiveOfferAdvisor(private val service: AccessibilityService) {
 
         val container = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(10), dp(14), dp(10))
+            setPadding(dp(14), dp(9), dp(14), dp(10))
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = dp(16).toFloat()
@@ -137,39 +166,38 @@ internal class LiveOfferAdvisor(private val service: AccessibilityService) {
             }
             elevation = dp(10).toFloat()
         }
+
         val topRow = LinearLayout(service).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        val title = TextView(service).apply {
+        topRow.addView(TextView(service).apply {
             text = "CourierPilot"
             setTextColor(Color.WHITE)
-            textSize = 13f
+            textSize = 12.5f
             typeface = Typeface.DEFAULT_BOLD
-        }
-        topRow.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        topRow.addView(TextView(service).apply {
-            text = "×"
-            setTextColor(Color.LTGRAY)
-            textSize = 22f
-            gravity = Gravity.CENTER
-            setPadding(dp(10), 0, dp(2), 0)
-            setOnClickListener { hide() }
-        })
-        container.addView(topRow)
+        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
 
-        val controls = LinearLayout(service).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(3), 0, 0)
-        }
-        routeToggle = controlText(dp(8)).apply {
+        routeToggle = controlText(dp(7)).apply {
             setOnClickListener {
-                LiveAdvisorSettings.setAutomaticWoltRouting(service, !LiveAdvisorSettings.automaticWoltRouting(service))
+                if (currentPlatform.isBlank()) return@setOnClickListener
+                val enabled = !LiveAdvisorSettings.routeEnabled(service, currentPlatform)
+                LiveAdvisorSettings.setRouteEnabled(service, currentPlatform, enabled)
                 refreshControls()
+                routeText?.apply {
+                    if (enabled) {
+                        visibility = View.VISIBLE
+                        text = "Route ON · applies from the next offer"
+                    } else {
+                        visibility = View.GONE
+                        text = ""
+                    }
+                }
             }
         }
-        voiceToggle = controlText(dp(8)).apply {
+        topRow.addView(routeToggle, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+
+        voiceToggle = controlText(dp(6)).apply {
             setOnClickListener {
                 val enabled = !LiveAdvisorSettings.voiceEnabled(service)
                 LiveAdvisorSettings.setVoiceEnabled(service, enabled)
@@ -177,9 +205,17 @@ internal class LiveOfferAdvisor(private val service: AccessibilityService) {
                 refreshControls()
             }
         }
-        controls.addView(routeToggle, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        controls.addView(voiceToggle, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        container.addView(controls)
+        topRow.addView(voiceToggle, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+
+        topRow.addView(TextView(service).apply {
+            text = "×"
+            setTextColor(Color.LTGRAY)
+            textSize = 21f
+            gravity = Gravity.CENTER
+            setPadding(dp(7), 0, 0, 0)
+            setOnClickListener { hide() }
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
+        container.addView(topRow)
 
         platformText = TextView(service).apply {
             setTextColor(Color.WHITE)
@@ -189,8 +225,9 @@ internal class LiveOfferAdvisor(private val service: AccessibilityService) {
         }.also(container::addView)
         routeText = TextView(service).apply {
             setTextColor(Color.rgb(209, 213, 219))
-            textSize = 12f
+            textSize = 11.5f
             setPadding(0, dp(5), 0, 0)
+            visibility = View.GONE
         }.also(container::addView)
 
         val params = WindowManager.LayoutParams(
@@ -212,14 +249,17 @@ internal class LiveOfferAdvisor(private val service: AccessibilityService) {
 
     private fun controlText(horizontalPadding: Int): TextView = TextView(service).apply {
         setTextColor(Color.rgb(147, 197, 253))
-        textSize = 11f
-        setPadding(horizontalPadding, 4, horizontalPadding, 4)
+        textSize = 10.5f
+        setPadding(horizontalPadding, 3, horizontalPadding, 3)
         gravity = Gravity.CENTER
     }
 
     private fun refreshControls() {
-        routeToggle?.text = "Wolt route ${if (LiveAdvisorSettings.automaticWoltRouting(service)) "ON" else "OFF"}"
-        voiceToggle?.text = "Voice ${if (LiveAdvisorSettings.voiceEnabled(service)) "ON" else "OFF"}"
+        routeToggle?.apply {
+            visibility = if (currentPlatform.equals("Wolt", true) || currentPlatform.equals("Bolt", true)) View.VISIBLE else View.GONE
+            text = "Route ${if (LiveAdvisorSettings.routeEnabled(service, currentPlatform)) "ON" else "OFF"}"
+        }
+        voiceToggle?.text = if (LiveAdvisorSettings.voiceEnabled(service)) "🔊" else "🔇"
     }
 
     private fun scheduleHide() {
@@ -232,37 +272,40 @@ internal class LiveOfferAdvisor(private val service: AccessibilityService) {
     private fun formatBase(platform: String, parsed: ParsedOffer): String {
         val economics = PlatformOfferEconomicsCalculator.calculate(parsed)
         val price = parsed.priceCents?.let { "€${"%.2f".format(Locale.US, it / 100.0)}" } ?: "€?"
-        val distance = parsed.distanceMeters?.let(::formatKm) ?: "? km"
         val eta = when {
             parsed.estimatedMinutesMin != null && parsed.estimatedMinutesMax != null && parsed.estimatedMinutesMin != parsed.estimatedMinutesMax ->
                 "${parsed.estimatedMinutesMin}–${parsed.estimatedMinutesMax} min"
             parsed.estimatedMinutesMin != null -> "${parsed.estimatedMinutesMin} min"
-            else -> "ETA ?"
+            else -> null
         }
-        val metricLine = buildList {
-            economics.euroPerKilometer?.let { add("€${"%.2f".format(Locale.US, it)}/km") }
+        val distance = parsed.distanceMeters?.let(::formatKm)
+        val primary = buildList {
+            add(platform.uppercase(Locale.ROOT))
+            add(price)
+            eta?.let(::add)
+            distance?.let(::add)
+        }.joinToString("  ·  ")
+        val metrics = buildList {
             val lo = economics.euroPerHourMin
             val hi = economics.euroPerHourMax
             if (lo != null && hi != null) {
                 add(if (kotlin.math.abs(lo - hi) < 0.05) "€${"%.1f".format(Locale.US, lo)}/h" else "€${"%.1f".format(Locale.US, lo)}–${"%.1f".format(Locale.US, hi)}/h")
             }
-        }.joinToString(" · ")
-        return buildString {
-            append("$platform · $price · $distance · $eta")
-            if (metricLine.isNotBlank()) append("\n$metricLine · platform data")
-        }
+            economics.euroPerKilometer?.let { add("€${"%.2f".format(Locale.US, it)}/km") }
+        }.joinToString("  ·  ")
+        return if (metrics.isBlank()) primary else "$primary\n$metrics"
     }
 
     private fun baseSpeech(platform: String, parsed: ParsedOffer): String {
         val price = parsed.priceCents?.let { "${it / 100} euro ${it % 100}" } ?: "price unknown"
-        val distance = parsed.distanceMeters?.let { "${"%.1f".format(Locale.US, it / 1000.0)} kilometers" } ?: "distance unknown"
+        val distance = parsed.distanceMeters?.let { "${"%.1f".format(Locale.US, it / 1000.0)} kilometers" }
         val eta = when {
             parsed.estimatedMinutesMin != null && parsed.estimatedMinutesMax != null ->
                 "${parsed.estimatedMinutesMin} to ${parsed.estimatedMinutesMax} minutes"
             parsed.estimatedMinutesMin != null -> "${parsed.estimatedMinutesMin} minutes"
-            else -> "time unknown"
+            else -> null
         }
-        return "$platform. $price. $distance. $eta."
+        return listOfNotNull(platform, price, distance, eta).joinToString(". ") + "."
     }
 
     private fun speak(text: String) {
@@ -288,7 +331,6 @@ internal class LiveOfferAdvisor(private val service: AccessibilityService) {
     }
 
     private fun formatKm(meters: Int): String = "${"%.2f".format(Locale.US, meters / 1000.0)} km"
-    private fun formatMinutes(seconds: Int): String = "${"%.1f".format(Locale.US, seconds / 60.0)} min"
 
     companion object {
         private const val DISPLAY_MS = 28_000L
