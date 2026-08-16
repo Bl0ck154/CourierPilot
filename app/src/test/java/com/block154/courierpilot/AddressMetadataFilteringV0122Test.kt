@@ -86,7 +86,7 @@ class AddressMetadataFilteringV0122Test {
     }
 
     @Test
-    fun revisionFourDeletesAlreadyPollutedRowsButKeepsRealAddresses() {
+    fun currentRepairDeletesAlreadyPollutedRowsButKeepsRealAddresses() {
         val context: Context = RuntimeEnvironment.getApplication()
         val database = CourierMetaDatabase.get(context)
         val db = database.writableDatabase
@@ -181,6 +181,7 @@ class AddressMetadataFilteringV0122Test {
         customerName = null,
         detailsText = null,
         rawText = address,
+        evidence = AddressEvidenceSource.ACCESSIBILITY_EXPLICIT_SECTION,
     )
 
     private fun uniqueHouse(offset: Int): Int =

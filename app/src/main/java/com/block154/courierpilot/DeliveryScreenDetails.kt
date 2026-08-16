@@ -53,6 +53,13 @@ internal object DeliveryScreenDetailsExtractor {
         "view",
     )
 
+    /**
+     * Returns the value immediately following an explicit `Address` label even when the rest of the
+     * accepted-delivery detail sheet is not visible yet. The label itself is strong structural
+     * evidence, so compact values such as `Pylimo 9` do not need a broad line guess.
+     */
+    fun addressValue(text: String): String? = singleValue(normalizedLines(text), "address")
+
     fun extract(text: String): DeliveryScreenDetails? {
         val lines = normalizedLines(text)
         if (lines.isEmpty()) return null
