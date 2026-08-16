@@ -177,7 +177,11 @@ class OfferAccessibilityService : AccessibilityService() {
 
         if (parsed.priceCents != null) {
             CaptureEventLog.append(this, "price_accessibility", "Price detected in Accessibility tree", platform, 3_000L)
-            captureCurrentFrameAndPersist(pending, target.windowId, uiText, parsed)
+            if (CaptureStorageSettings.saveOfferScreenshots(this)) {
+                captureCurrentFrameAndPersist(pending, target.windowId, uiText, parsed)
+            } else {
+                persistOffer(null, pending, uiText, parsed)
+            }
         } else {
             CaptureEventLog.append(this, "price_wait", "Price not exposed yet; checking current frame with OCR", platform, 5_000L)
             captureCurrentFrameForOcr(pending, target.windowId, uiText)
@@ -369,7 +373,7 @@ class OfferAccessibilityService : AccessibilityService() {
         else takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, callback)
     }
 
-    private fun persistOffer(bitmap: Bitmap, pending: PendingOffer, rawText: String, parsed: ParsedOffer) {
+    private fun persistOffer(bitmap: Bitmap?, pending: PendingOffer, rawText: String, parsed: ParsedOffer) {
         val platform = OfferState.platformLabel(pending.packageName)
         val current = OfferState.pending(this)
         val stillCurrent = current != null &&
@@ -377,16 +381,16 @@ class OfferAccessibilityService : AccessibilityService() {
             current.armedAt == pending.armedAt &&
             (pending.notificationKey.isBlank() || current.notificationKey == pending.notificationKey)
         if (!stillCurrent) {
-            bitmap.recycle()
+            bitmap?.recycle()
             captureInFlight = false
-            CaptureEventLog.append(this, "stale_callback", "Discarded screenshot from superseded offer", platform)
+            CaptureEventLog.append(this, "stale_callback", "Discarded capture from superseded offer", platform)
             scheduleAttempt(100L)
             return
         }
 
         val priceCents = parsed.priceCents
         if (priceCents == null) {
-            bitmap.recycle()
+            bitmap?.recycle()
             captureInFlight = false
             scheduleAttempt(adaptiveOcrDelay(pending))
             return
@@ -415,12 +419,12 @@ class OfferAccessibilityService : AccessibilityService() {
 
         val duplicate = database.findRecentDuplicate(candidate)
         if (duplicate != null) {
-            bitmap.recycle()
+            bitmap?.recycle()
             captureInFlight = false
             CaptureEventLog.append(
                 this,
                 "duplicate_suppressed",
-                "Same live offer already exists as record #${duplicate.id}; skipped screenshot and history insert",
+                "Same live offer already exists as record #${duplicate.id}; skipped history insert",
                 platform,
             )
             OfferState.clear(this)
@@ -431,14 +435,20 @@ class OfferAccessibilityService : AccessibilityService() {
 
         var saved: SavedScreenshot? = null
         try {
-            saved = ScreenshotStore.save(this, bitmap, pending.sourceName)
-            val stored = candidate.copy(
-                screenshotUri = saved.uri.toString(),
-                screenshotFilename = saved.filename,
-            )
+            if (bitmap != null && CaptureStorageSettings.saveOfferScreenshots(this)) {
+                saved = ScreenshotStore.save(this, bitmap, pending.sourceName)
+            }
+            val stored = if (saved != null) {
+                candidate.copy(
+                    screenshotUri = saved.uri.toString(),
+                    screenshotFilename = saved.filename,
+                )
+            } else {
+                candidate
+            }
             val insertResult = database.insertDeduplicated(stored)
             if (!insertResult.inserted) {
-                ScreenshotStore.delete(this, saved)
+                saved?.let { ScreenshotStore.delete(this, it) }
                 saved = null
                 CaptureEventLog.append(
                     this,
@@ -447,11 +457,14 @@ class OfferAccessibilityService : AccessibilityService() {
                     platform,
                 )
             } else {
-                OfferState.markCapture(this, stored.screenshotFilename)
+                OfferState.markCapture(
+                    this,
+                    saved?.filename ?: "Offer saved · gallery screenshots disabled",
+                )
                 CaptureEventLog.append(
                     this,
                     "saved",
-                    "Offer saved successfully as record #${insertResult.rowId} (${parsed.deliveryCount ?: 1} deliveries)",
+                    "Offer saved successfully as record #${insertResult.rowId} (${parsed.deliveryCount ?: 1} deliveries; screenshot ${if (saved != null) "saved" else "off"})",
                     platform,
                 )
             }
@@ -465,7 +478,7 @@ class OfferAccessibilityService : AccessibilityService() {
             OfferState.markError(this, "Offer save failed: ${t.message ?: t.javaClass.simpleName}")
             CaptureEventLog.append(this, "save_failed", t.javaClass.simpleName, platform)
         } finally {
-            bitmap.recycle()
+            bitmap?.recycle()
             captureInFlight = false
             scheduleAttempt(IDLE_WATCHDOG_MS)
         }

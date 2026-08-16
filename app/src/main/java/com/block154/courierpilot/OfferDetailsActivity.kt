@@ -161,8 +161,6 @@ private fun OfferDetailsScreen(offer: OfferRecord, onBack: () -> Unit) {
 
         if (offer.merchantNames.isNotEmpty() || offer.pickupAddresses.isNotEmpty()) {
             item { OfferSection("Pickup", "Venues and pickup addresses") }
-            // Physical route stops are address-led. Extra summary/name nodes must not fabricate P2/P3
-            // cards when Accessibility exposed only one canonical pickup address.
             val count = if (offer.pickupAddresses.isNotEmpty()) offer.pickupAddresses.size else offer.merchantNames.size
             items(count) { index ->
                 val address = offer.pickupAddresses.getOrNull(index)
@@ -188,8 +186,6 @@ private fun OfferDetailsScreen(offer: OfferRecord, onBack: () -> Unit) {
 
         if (offer.customerNames.isNotEmpty() || offer.dropoffAddresses.isNotEmpty()) {
             item { OfferSection("Drop-off", "Customer and destination") }
-            // As above, one canonical destination is one D card. A generic fallback `Customer`
-            // must never create a second card beside the named customer for the same address.
             val count = if (offer.dropoffAddresses.isNotEmpty()) offer.dropoffAddresses.size else offer.customerNames.size
             items(count) { index ->
                 val address = offer.dropoffAddresses.getOrNull(index)
@@ -226,15 +222,28 @@ private fun OfferDetailsScreen(offer: OfferRecord, onBack: () -> Unit) {
             }
         }
 
-        item { OfferSection("Original", "Screenshot and captured text") }
-        item {
-            FilledTonalButton(
-                onClick = { openOfferScreenshot(context, offer.screenshotUri) },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Icon(Icons.Rounded.Image, contentDescription = null)
-                Spacer(Modifier.size(8.dp))
-                Text("Open original screenshot")
+        item { OfferSection("Captured data", "Original text and optional proof image") }
+        if (offer.screenshotUri.isNotBlank()) {
+            item {
+                FilledTonalButton(
+                    onClick = { openOfferScreenshot(context, offer.screenshotUri) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(Icons.Rounded.Image, contentDescription = null)
+                    Spacer(Modifier.size(8.dp))
+                    Text("Open saved screenshot")
+                }
+            }
+        } else {
+            item {
+                Card(shape = RoundedCornerShape(18.dp)) {
+                    Text(
+                        "Screenshot saving was disabled for this offer. OCR, when needed, was processed in memory only.",
+                        modifier = Modifier.padding(16.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp,
+                    )
+                }
             }
         }
         item {
@@ -314,6 +323,7 @@ private fun OfferSection(title: String, subtitle: String) {
 }
 
 private fun openOfferScreenshot(context: android.content.Context, uriString: String) {
+    if (uriString.isBlank()) return
     runCatching {
         context.startActivity(
             Intent(Intent.ACTION_VIEW).apply {

@@ -99,8 +99,6 @@ internal object CourierSignals {
         "looking for orders",
         "looking for tasks",
         "on duty",
-        "courier app is running",
-        "keep you active while app is in background",
         "laukiame užsakymų",
         "laukiame uzsakymu",
         "ieškome užsakymų",
