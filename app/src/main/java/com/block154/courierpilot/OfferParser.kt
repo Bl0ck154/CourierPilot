@@ -2,6 +2,7 @@ package com.block154.courierpilot
 
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.text.Normalizer
 import java.util.Locale
 
 internal enum class ParsedRouteStopKind {
@@ -44,6 +45,7 @@ internal object OfferParser {
     private val boltMapPoiRegex = Regex(
         "(?i).*(?:\\bpark\\b|\\bstadium\\b|\\bstation\\b|\\bstotis\\b|\\bmuseum\\b|\\bmuziej|\\bold town\\b|\\bsenamiest).*"
     )
+    private val suspiciousInlineOcrGlyphRegex = Regex("(?<=\\p{L})[|¦](?=\\p{L})")
 
     fun parse(text: String): ParsedOffer {
         val lines = normalizedLines(text)
@@ -78,8 +80,8 @@ internal object OfferParser {
             .takeIf { it > 0 }
 
         return ParsedOffer(
-            priceCents = parsePriceCents(text, lines),
-            distanceMeters = parseDistanceMeters(text),
+            priceCents = parsePriceCents(lines.joinToString("\n"), lines),
+            distanceMeters = parseDistanceMeters(lines.joinToString("\n")),
             restaurant = merchantNames.takeIf { it.isNotEmpty() }?.joinToString(", "),
             merchantNames = merchantNames,
             pickupAddresses = pickups,
@@ -119,9 +121,17 @@ internal object OfferParser {
     }
 
     private fun normalizedLines(text: String): List<String> = text.lineSequence()
-        .map { it.trim().replace(Regex("\\s+"), " ") }
+        .map(::sanitizeCapturedLine)
         .filter { it.isNotEmpty() }
         .toList()
+
+    private fun sanitizeCapturedLine(raw: String): String {
+        var value = Normalizer.normalize(raw, Normalizer.Form.NFC)
+            .replace(Regex("\\p{Cf}+"), "")
+            .replace("\uFFFD", "")
+        value = suspiciousInlineOcrGlyphRegex.replace(value, "")
+        return value.trim().replace(Regex("\\s+"), " ")
+    }
 
     private fun parseWoltMerchantSummary(lines: List<String>): Pair<Int, List<String>>? {
         lines.forEachIndexed { index, line ->
