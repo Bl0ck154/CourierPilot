@@ -27,15 +27,16 @@ class BoltOfferRegressionV0144Test {
 
     @Test
     fun hiddenAndInlineOcrGlyphsAreRemovedFromLithuanianAddress() {
+        val badAddress = "Vokieči" + '\u200B' + "|ų g. 9, Vilnius"
         val parsed = OfferParser.parse(
-            """
-            Decline
-            No Forks Mexican Grill (Vokiečių str.)
-            Vokieči\u200B|ų g. 9, Vilnius
-            ~11 min
-            ~8 min
-            19 min, 3,28 €
-            """.trimIndent()
+            listOf(
+                "Decline",
+                "No Forks Mexican Grill (Vokiečių str.)",
+                badAddress,
+                "~11 min",
+                "~8 min",
+                "19 min, 3,28 €",
+            ).joinToString("\n")
         )
 
         assertEquals(listOf("Vokiečių g. 9, Vilnius"), parsed.pickupAddresses)
