@@ -9,6 +9,8 @@ internal object LiveAdvisorSettings {
     private const val KEY_BOLT_ROUTING = "bolt_routing"
     private const val KEY_VOICE = "voice"
     private const val KEY_OVERLAY_Y_PX = "overlay_y_px"
+    private const val KEY_OVERLAY_Y_VERSION = "overlay_y_version"
+    private const val OVERLAY_POSITION_VERSION = 2
 
     /** Local platform-metric overlay. It does not accept/reject anything. */
     fun enabled(context: Context): Boolean = prefs(context).getBoolean(KEY_ENABLED, true)
@@ -59,11 +61,15 @@ internal object LiveAdvisorSettings {
 
     fun overlayYPx(context: Context): Int? {
         val preferences = prefs(context)
+        if (preferences.getInt(KEY_OVERLAY_Y_VERSION, 0) != OVERLAY_POSITION_VERSION) return null
         return if (preferences.contains(KEY_OVERLAY_Y_PX)) preferences.getInt(KEY_OVERLAY_Y_PX, 0) else null
     }
 
     fun setOverlayYPx(context: Context, yPx: Int) {
-        prefs(context).edit().putInt(KEY_OVERLAY_Y_PX, yPx.coerceAtLeast(0)).apply()
+        prefs(context).edit()
+            .putInt(KEY_OVERLAY_Y_PX, yPx.coerceAtLeast(0))
+            .putInt(KEY_OVERLAY_Y_VERSION, OVERLAY_POSITION_VERSION)
+            .apply()
     }
 
     private fun prefs(context: Context) = context.applicationContext
