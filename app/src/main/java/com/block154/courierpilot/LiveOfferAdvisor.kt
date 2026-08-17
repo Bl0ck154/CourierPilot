@@ -47,6 +47,7 @@ internal class LiveOfferAdvisor(
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private val windowManager = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    private val overlayTouchSlop = ViewConfiguration.get(service).scaledTouchSlop
     private var root: LinearLayout? = null
     private var windowParams: WindowManager.LayoutParams? = null
     private var routeText: TextView? = null
@@ -58,7 +59,10 @@ internal class LiveOfferAdvisor(
     private var pendingSpeech: String? = null
     private var currentPlatform: String = ""
     private var dismissedCurrentOffer = false
+    private var gestureDownRawX = 0f
+    private var gestureDownRawY = 0f
     private var gestureStartWindowY = 0
+    private var gestureMode = GESTURE_NONE
 
     fun showBase(platform: String, parsed: ParsedOffer) {
         if (!LiveAdvisorSettings.enabled(service)) {
@@ -153,6 +157,7 @@ internal class LiveOfferAdvisor(
         platformText = null
         routeToggle = null
         voiceToggle = null
+        gestureMode = GESTURE_NONE
     }
 
     fun destroy() {
@@ -172,81 +177,7 @@ internal class LiveOfferAdvisor(
     private fun ensureView() {
         if (root != null) return
 
-        val container = object : LinearLayout(service) {
-            private val touchSlop = ViewConfiguration.get(service).scaledTouchSlop
-            private var downRawX = 0f
-            private var downRawY = 0f
-            private var gestureMode = GESTURE_NONE
-
-            override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
-                when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> {
-                        downRawX = event.rawX
-                        downRawY = event.rawY
-                        gestureMode = GESTURE_NONE
-                        gestureStartWindowY = windowParams?.y ?: dp(DEFAULT_Y_DP)
-                        return false
-                    }
-                    MotionEvent.ACTION_MOVE -> {
-                        if (gestureMode == GESTURE_NONE) {
-                            val dx = event.rawX - downRawX
-                            val dy = event.rawY - downRawY
-                            if (abs(dx) > touchSlop || abs(dy) > touchSlop) {
-                                gestureMode = if (abs(dx) > abs(dy)) GESTURE_HORIZONTAL else GESTURE_VERTICAL
-                            }
-                        }
-                        return gestureMode != GESTURE_NONE
-                    }
-                    MotionEvent.ACTION_UP,
-                    MotionEvent.ACTION_CANCEL,
-                    -> {
-                        gestureMode = GESTURE_NONE
-                        return false
-                    }
-                }
-                return false
-            }
-
-            override fun onTouchEvent(event: MotionEvent): Boolean {
-                val dx = event.rawX - downRawX
-                val dy = event.rawY - downRawY
-                when (event.actionMasked) {
-                    MotionEvent.ACTION_MOVE -> when (gestureMode) {
-                        GESTURE_HORIZONTAL -> {
-                            translationX = dx
-                            alpha = (1f - abs(dx) / (width.coerceAtLeast(1) * 1.25f)).coerceIn(0.35f, 1f)
-                        }
-                        GESTURE_VERTICAL -> moveOverlayTo(gestureStartWindowY + dy.toInt())
-                    }
-                    MotionEvent.ACTION_UP -> {
-                        when (gestureMode) {
-                            GESTURE_HORIZONTAL -> {
-                                val dismissThreshold = kotlin.math.max(
-                                    dp(SWIPE_MIN_DP).toFloat(),
-                                    width * SWIPE_DISMISS_FRACTION,
-                                )
-                                if (abs(dx) >= dismissThreshold) {
-                                    dismissCurrentOffer()
-                                } else {
-                                    animate().translationX(0f).alpha(1f).setDuration(SNAP_BACK_MS).start()
-                                }
-                            }
-                            GESTURE_VERTICAL -> persistOverlayY()
-                        }
-                        gestureMode = GESTURE_NONE
-                    }
-                    MotionEvent.ACTION_CANCEL -> {
-                        if (gestureMode == GESTURE_HORIZONTAL) {
-                            animate().translationX(0f).alpha(1f).setDuration(SNAP_BACK_MS).start()
-                        } else if (gestureMode == GESTURE_VERTICAL) {
-                            persistOverlayY()
-                        }
-                        gestureMode = GESTURE_NONE
-                    }
-                }
-                return true
-            }
-        }.apply {
+        val container = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(9), dp(14), dp(10))
             background = GradientDrawable().apply {
@@ -257,17 +188,22 @@ internal class LiveOfferAdvisor(
             }
             elevation = dp(10).toFloat()
         }
+        installGestureSurface(container)
 
         val topRow = LinearLayout(service).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        topRow.addView(TextView(service).apply {
-            text = "CourierPilot"
+        installGestureSurface(topRow)
+
+        val title = TextView(service).apply {
+            text = "CourierPilot ${BuildConfig.VERSION_NAME}  ↕"
             setTextColor(Color.WHITE)
             textSize = 12.5f
             typeface = Typeface.DEFAULT_BOLD
-        }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        installGestureSurface(title)
+        topRow.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
 
         routeToggle = controlText(dp(7)).apply {
             setOnClickListener {
@@ -315,13 +251,19 @@ internal class LiveOfferAdvisor(
             textSize = 15f
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             setPadding(0, dp(5), 0, 0)
-        }.also(container::addView)
+        }.also {
+            installGestureSurface(it)
+            container.addView(it)
+        }
         routeText = TextView(service).apply {
             setTextColor(Color.rgb(209, 213, 219))
             textSize = 11.5f
             setPadding(0, dp(5), 0, 0)
             visibility = View.GONE
-        }.also(container::addView)
+        }.also {
+            installGestureSurface(it)
+            container.addView(it)
+        }
 
         val screenWidth = service.resources.displayMetrics.widthPixels
         val params = WindowManager.LayoutParams(
@@ -347,11 +289,74 @@ internal class LiveOfferAdvisor(
                     if (clamped != current.y) {
                         current.y = clamped
                         runCatching { windowManager.updateViewLayout(container, current) }
-                        LiveAdvisorSettings.setOverlayYPx(service, clamped)
                     }
                 }
             }
             .onFailure { windowParams = null }
+    }
+
+    private fun installGestureSurface(view: View) {
+        view.isClickable = true
+        view.setOnTouchListener { _, event -> handleOverlayGesture(event) }
+    }
+
+    private fun handleOverlayGesture(event: MotionEvent): Boolean {
+        val view = root
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                gestureDownRawX = event.rawX
+                gestureDownRawY = event.rawY
+                gestureStartWindowY = windowParams?.y ?: dp(DEFAULT_Y_DP)
+                gestureMode = GESTURE_NONE
+                handler.removeCallbacks(hideRunnable)
+                view?.animate()?.cancel()
+                view?.translationX = 0f
+                view?.alpha = 1f
+                return true
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                val dx = event.rawX - gestureDownRawX
+                val dy = event.rawY - gestureDownRawY
+                if (gestureMode == GESTURE_NONE && (abs(dx) > overlayTouchSlop || abs(dy) > overlayTouchSlop)) {
+                    gestureMode = if (abs(dx) >= abs(dy)) GESTURE_HORIZONTAL else GESTURE_VERTICAL
+                }
+                when (gestureMode) {
+                    GESTURE_HORIZONTAL -> view?.let {
+                        it.translationX = dx
+                        it.alpha = (1f - abs(dx) / (it.width.coerceAtLeast(1) * 1.1f)).coerceIn(0.3f, 1f)
+                    }
+                    GESTURE_VERTICAL -> moveOverlayTo(gestureStartWindowY + dy.toInt())
+                }
+                return true
+            }
+
+            MotionEvent.ACTION_UP,
+            MotionEvent.ACTION_CANCEL,
+            -> {
+                val dx = event.rawX - gestureDownRawX
+                val mode = gestureMode
+                gestureMode = GESTURE_NONE
+
+                if (mode == GESTURE_HORIZONTAL) {
+                    val currentView = root
+                    val dismissThreshold = currentView?.let {
+                        maxOf(dp(SWIPE_MIN_DP).toFloat(), it.width * SWIPE_DISMISS_FRACTION)
+                    } ?: dp(SWIPE_MIN_DP).toFloat()
+                    if (event.actionMasked == MotionEvent.ACTION_UP && abs(dx) >= dismissThreshold) {
+                        dismissCurrentOffer()
+                        return true
+                    }
+                    currentView?.animate()?.translationX(0f)?.alpha(1f)?.setDuration(SNAP_BACK_MS)?.start()
+                } else if (mode == GESTURE_VERTICAL) {
+                    persistOverlayY()
+                }
+
+                if (!dismissedCurrentOffer) scheduleHide()
+                return true
+            }
+        }
+        return true
     }
 
     private fun moveOverlayTo(targetY: Int) {
@@ -419,7 +424,7 @@ internal class LiveOfferAdvisor(
             val lo = economics.euroPerHourMin
             val hi = economics.euroPerHourMax
             if (lo != null && hi != null) {
-                add(if (kotlin.math.abs(lo - hi) < 0.05) "€${"%.1f".format(Locale.US, lo)}/h" else "€${"%.1f".format(Locale.US, lo)}–${"%.1f".format(Locale.US, hi)}/h")
+                add(if (kotlin.math.abs(lo - hi) < 0.05) "€${"%.1f".format(Locale.US, lo)}/h" else "€${"%.1f".format(Locale.US, lo)}–€${"%.1f".format(Locale.US, hi)}/h")
             }
             economics.euroPerKilometer?.let { add("€${"%.2f".format(Locale.US, it)}/km") }
         }.joinToString("  ·  ")
@@ -464,13 +469,13 @@ internal class LiveOfferAdvisor(
 
     companion object {
         private const val DISPLAY_MS = 28_000L
-        private const val DEFAULT_Y_DP = 28
-        private const val MIN_Y_DP = 8
+        private const val DEFAULT_Y_DP = 48
+        private const val MIN_Y_DP = 12
         private const val BOTTOM_MARGIN_DP = 16
-        private const val HORIZONTAL_MARGIN_DP = 8
-        private const val SWIPE_MIN_DP = 72
-        private const val SWIPE_DISMISS_FRACTION = 0.28f
-        private const val SNAP_BACK_MS = 160L
+        private const val HORIZONTAL_MARGIN_DP = 12
+        private const val SWIPE_MIN_DP = 44
+        private const val SWIPE_DISMISS_FRACTION = 0.16f
+        private const val SNAP_BACK_MS = 140L
         private const val GESTURE_NONE = 0
         private const val GESTURE_HORIZONTAL = 1
         private const val GESTURE_VERTICAL = 2
