@@ -38,6 +38,12 @@ internal object OfferParser {
     private val singleMinuteRegex = Regex("(?i)~?\\s*(\\d{1,3})\\s*min\\b")
     private val stackedHeaderRegex = Regex("(?i)^\\s*(\\d+)\\s+deliver(?:y|ies)\\s+from\\s*$")
     private val minuteOnlyRegex = Regex("(?i)^~?\\s*\\d{1,3}\\s*min$")
+    private val boltBranchNameRegex = Regex(
+        "(?i).*\\([^)]*(?:\\bstr\\.?|\\bstreet|\\bg\\.?|\\bgatv(?:ė|e)?|\\bpr\\.?|\\bprospektas|\\bave\\.?|\\bavenue|\\brd\\.?|\\broad)[^)]*\\)\\s*$"
+    )
+    private val boltMapPoiRegex = Regex(
+        "(?i).*(?:\\bpark\\b|\\bstadium\\b|\\bstation\\b|\\bstotis\\b|\\bmuseum\\b|\\bmuziej|\\bold town\\b|\\bsenamiest).*"
+    )
 
     fun parse(text: String): ParsedOffer {
         val lines = normalizedLines(text)
@@ -137,15 +143,73 @@ internal object OfferParser {
         return null
     }
 
+    /**
+     * Bolt renders the order card on top of a live map. ML Kit may interleave labels from that map
+     * (for example a park, museum or just "Vilnius") between the real venue title and its address.
+     * Treat the address + nearby ETA/price as the card anchor and score all nearby name candidates
+     * instead of accepting whichever map label happens to be closest in OCR reading order.
+     */
     private fun parseBoltMerchant(lines: List<String>): String? {
-        lines.forEachIndexed { index, line ->
-            if (!looksLikeAddress(line)) return@forEachIndexed
-            for (i in index - 1 downTo maxOf(0, index - 3)) {
-                val candidate = lines[i]
-                if (isStopNameCandidate(candidate)) return candidate
+        data class Candidate(val name: String, val score: Int, val lineIndex: Int)
+
+        val candidates = mutableListOf<Candidate>()
+        lines.forEachIndexed { addressIndex, address ->
+            if (!looksLikeAddress(address)) return@forEachIndexed
+
+            val cardScore = boltCardAddressScore(lines, addressIndex)
+            val start = maxOf(0, addressIndex - BOLT_NAME_LOOKBACK_LINES)
+            for (index in start until addressIndex) {
+                val candidate = lines[index]
+                if (!isStopNameCandidate(candidate)) continue
+
+                val distance = addressIndex - index
+                var score = cardScore + (BOLT_NEARBY_NAME_SCORE - distance * 2)
+                if (boltBranchNameRegex.matches(candidate)) score += BOLT_BRANCH_NAME_BONUS
+                if (index == addressIndex - 1) score += BOLT_ADJACENT_NAME_BONUS
+                if (looksLikeBoltMapLabel(candidate, address)) score -= BOLT_MAP_LABEL_PENALTY
+                candidates += Candidate(candidate, score, index)
             }
         }
-        return null
+
+        return candidates
+            .maxWithOrNull(compareBy<Candidate> { it.score }.thenBy { it.lineIndex })
+            ?.takeIf { it.score >= BOLT_MIN_MERCHANT_SCORE }
+            ?.name
+    }
+
+    private fun boltCardAddressScore(lines: List<String>, addressIndex: Int): Int {
+        var score = 0
+        if ((1..3).any { offset ->
+                lines.getOrNull(addressIndex + offset)?.let(minuteOnlyRegex::matches) == true
+            }) {
+            score += BOLT_CARD_ETA_BONUS
+        }
+        if ((1..7).any { offset ->
+                lines.getOrNull(addressIndex + offset)?.let(priceRegex::containsMatchIn) == true
+            }) {
+            score += BOLT_CARD_PRICE_BONUS
+        }
+        return score
+    }
+
+    private fun looksLikeBoltMapLabel(candidate: String, address: String): Boolean {
+        val normalizedCandidate = candidate.lowercase(Locale.ROOT).trim()
+
+        // A standalone locality copied from the address ("Vilnius" in "..., Vilnius") is a map
+        // label, not a merchant name. Strip postal codes before comparing address components.
+        val addressLocalities = address.split(',')
+            .drop(1)
+            .map { component ->
+                component
+                    .replace(Regex("(?i)\\bLT-?\\d+\\b"), "")
+                    .replace(Regex("\\b\\d{4,6}\\b"), "")
+                    .trim()
+                    .lowercase(Locale.ROOT)
+            }
+            .filter { it.isNotBlank() }
+        if (normalizedCandidate in addressLocalities) return true
+
+        return boltMapPoiRegex.matches(normalizedCandidate)
     }
 
     private data class AddressStop(val name: String?, val address: String, val isMerchant: Boolean)
@@ -292,6 +356,14 @@ internal object OfferParser {
         "принять", "отклонить", "заказ", "задание", "прийняти", "відхилити", "замовлення", "завдання"
     )
 
+    private const val BOLT_NAME_LOOKBACK_LINES = 6
+    private const val BOLT_NEARBY_NAME_SCORE = 18
+    private const val BOLT_BRANCH_NAME_BONUS = 100
+    private const val BOLT_ADJACENT_NAME_BONUS = 8
+    private const val BOLT_MAP_LABEL_PENALTY = 120
+    private const val BOLT_CARD_ETA_BONUS = 60
+    private const val BOLT_CARD_PRICE_BONUS = 25
+    private const val BOLT_MIN_MERCHANT_SCORE = 0
     private const val MIN_PRICE_CENTS = 20
     private const val MAX_PRICE_CENTS = 10_000
     private const val MAX_DISTANCE_METERS = 100_000
