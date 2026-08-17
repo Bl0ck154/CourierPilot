@@ -277,4 +277,45 @@ class OfferParserTest {
         assertTrue(parsed.customerNames.isEmpty())
         assertTrue(parsed.dropoffAddresses.isEmpty())
     }
+
+    @Test
+    fun prefersBoltMerchantCardTitleOverInterleavedMapLabels() {
+        val parsed = OfferParser.parse(
+            """
+            Decline
+            OLD TOWN
+            No Forks Mexican Grill (Vokiečių str.)
+            Railway Park
+            Vokiečių g. 9, Vilnius
+            ~11 min
+            Vilnius
+            ~8 min
+            19 min, 3,28 €
+            """.trimIndent()
+        )
+
+        assertEquals(328, parsed.priceCents)
+        assertEquals("No Forks Mexican Grill (Vokiečių str.)", parsed.restaurant)
+        assertEquals(listOf("No Forks Mexican Grill (Vokiečių str.)"), parsed.merchantNames)
+        assertEquals(listOf("Vokiečių g. 9, Vilnius"), parsed.pickupAddresses)
+    }
+
+    @Test
+    fun prefersSimpleBoltMerchantOverNearbyPoiLabel() {
+        val parsed = OfferParser.parse(
+            """
+            Decline
+            Show map
+            KFC
+            Railway Park
+            Gedimino pr. 5, Vilnius
+            ~9 min
+            ~7 min
+            16 min, 4,45 €
+            """.trimIndent()
+        )
+
+        assertEquals(listOf("KFC"), parsed.merchantNames)
+        assertEquals(listOf("Gedimino pr. 5, Vilnius"), parsed.pickupAddresses)
+    }
 }
