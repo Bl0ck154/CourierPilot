@@ -9,11 +9,14 @@ import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.util.Locale
+import kotlin.math.abs
 
 internal data class PlatformOfferEconomics(
     val euroPerKilometer: Double?,
@@ -45,6 +48,7 @@ internal class LiveOfferAdvisor(
     private val handler = Handler(Looper.getMainLooper())
     private val windowManager = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var root: LinearLayout? = null
+    private var windowParams: WindowManager.LayoutParams? = null
     private var routeText: TextView? = null
     private var platformText: TextView? = null
     private var routeToggle: TextView? = null
@@ -53,6 +57,8 @@ internal class LiveOfferAdvisor(
     private var ttsReady = false
     private var pendingSpeech: String? = null
     private var currentPlatform: String = ""
+    private var dismissedCurrentOffer = false
+    private var gestureStartWindowY = 0
 
     fun showBase(platform: String, parsed: ParsedOffer) {
         if (!LiveAdvisorSettings.enabled(service)) {
@@ -60,6 +66,7 @@ internal class LiveOfferAdvisor(
             return
         }
         currentPlatform = platform
+        dismissedCurrentOffer = false
         handler.post {
             ensureView()
             refreshControls()
@@ -80,8 +87,9 @@ internal class LiveOfferAdvisor(
     }
 
     fun updateRoute(comparison: RouteComparison, waypointCount: Int) {
-        if (!LiveAdvisorSettings.enabled(service)) return
+        if (!LiveAdvisorSettings.enabled(service) || dismissedCurrentOffer) return
         handler.post {
+            if (dismissedCurrentOffer) return@post
             ensureView()
             routeText?.visibility = View.VISIBLE
             val pedestrian = comparison.pedestrian.getOrNull()
@@ -98,8 +106,9 @@ internal class LiveOfferAdvisor(
     }
 
     fun updateBoltRoute(outcome: AutomaticBoltRouteOutcome) {
-        if (!LiveAdvisorSettings.enabled(service)) return
+        if (!LiveAdvisorSettings.enabled(service) || dismissedCurrentOffer) return
         handler.post {
+            if (dismissedCurrentOffer) return@post
             ensureView()
             routeText?.visibility = View.VISIBLE
             val comparison = outcome.comparison
@@ -124,8 +133,9 @@ internal class LiveOfferAdvisor(
     }
 
     fun updateRouteUnavailable(reason: String) {
-        if (!LiveAdvisorSettings.enabled(service)) return
+        if (!LiveAdvisorSettings.enabled(service) || dismissedCurrentOffer) return
         handler.post {
+            if (dismissedCurrentOffer) return@post
             ensureView()
             routeText?.visibility = View.VISIBLE
             routeText?.text = "Route unavailable · ${reason.take(100)}"
@@ -138,6 +148,7 @@ internal class LiveOfferAdvisor(
         val view = root ?: return
         runCatching { windowManager.removeView(view) }
         root = null
+        windowParams = null
         routeText = null
         platformText = null
         routeToggle = null
@@ -153,12 +164,89 @@ internal class LiveOfferAdvisor(
         pendingSpeech = null
     }
 
+    private fun dismissCurrentOffer() {
+        dismissedCurrentOffer = true
+        hide()
+    }
+
     private fun ensureView() {
         if (root != null) return
-        val density = service.resources.displayMetrics.density
-        fun dp(value: Int): Int = (value * density).toInt()
 
-        val container = LinearLayout(service).apply {
+        val container = object : LinearLayout(service) {
+            private val touchSlop = ViewConfiguration.get(service).scaledTouchSlop
+            private var downRawX = 0f
+            private var downRawY = 0f
+            private var gestureMode = GESTURE_NONE
+
+            override fun onInterceptTouchEvent(event: MotionEvent): Boolean {
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        downRawX = event.rawX
+                        downRawY = event.rawY
+                        gestureMode = GESTURE_NONE
+                        gestureStartWindowY = windowParams?.y ?: dp(DEFAULT_Y_DP)
+                        return false
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        if (gestureMode == GESTURE_NONE) {
+                            val dx = event.rawX - downRawX
+                            val dy = event.rawY - downRawY
+                            if (abs(dx) > touchSlop || abs(dy) > touchSlop) {
+                                gestureMode = if (abs(dx) > abs(dy)) GESTURE_HORIZONTAL else GESTURE_VERTICAL
+                            }
+                        }
+                        return gestureMode != GESTURE_NONE
+                    }
+                    MotionEvent.ACTION_UP,
+                    MotionEvent.ACTION_CANCEL,
+                    -> {
+                        gestureMode = GESTURE_NONE
+                        return false
+                    }
+                }
+                return false
+            }
+
+            override fun onTouchEvent(event: MotionEvent): Boolean {
+                val dx = event.rawX - downRawX
+                val dy = event.rawY - downRawY
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_MOVE -> when (gestureMode) {
+                        GESTURE_HORIZONTAL -> {
+                            translationX = dx
+                            alpha = (1f - abs(dx) / (width.coerceAtLeast(1) * 1.25f)).coerceIn(0.35f, 1f)
+                        }
+                        GESTURE_VERTICAL -> moveOverlayTo(gestureStartWindowY + dy.toInt())
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        when (gestureMode) {
+                            GESTURE_HORIZONTAL -> {
+                                val dismissThreshold = kotlin.math.max(
+                                    dp(SWIPE_MIN_DP).toFloat(),
+                                    width * SWIPE_DISMISS_FRACTION,
+                                )
+                                if (abs(dx) >= dismissThreshold) {
+                                    dismissCurrentOffer()
+                                } else {
+                                    animate().translationX(0f).alpha(1f).setDuration(SNAP_BACK_MS).start()
+                                }
+                            }
+                            GESTURE_VERTICAL -> persistOverlayY()
+                        }
+                        gestureMode = GESTURE_NONE
+                    }
+                    MotionEvent.ACTION_CANCEL -> {
+                        if (gestureMode == GESTURE_HORIZONTAL) {
+                            animate().translationX(0f).alpha(1f).setDuration(SNAP_BACK_MS).start()
+                        } else if (gestureMode == GESTURE_VERTICAL) {
+                            persistOverlayY()
+                        }
+                        gestureMode = GESTURE_NONE
+                    }
+                }
+                return true
+            }
+        }.apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(14), dp(9), dp(14), dp(10))
             background = GradientDrawable().apply {
@@ -218,7 +306,7 @@ internal class LiveOfferAdvisor(
             textSize = 21f
             gravity = Gravity.CENTER
             setPadding(dp(7), 0, 0, 0)
-            setOnClickListener { hide() }
+            setOnClickListener { dismissCurrentOffer() }
         }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         container.addView(topRow)
 
@@ -235,8 +323,9 @@ internal class LiveOfferAdvisor(
             visibility = View.GONE
         }.also(container::addView)
 
+        val screenWidth = service.resources.displayMetrics.widthPixels
         val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
+            (screenWidth - dp(HORIZONTAL_MARGIN_DP * 2)).coerceAtLeast(1),
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
@@ -246,11 +335,47 @@ internal class LiveOfferAdvisor(
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             x = 0
-            y = dp(18)
+            y = LiveAdvisorSettings.overlayYPx(service) ?: dp(DEFAULT_Y_DP)
         }
+        windowParams = params
         runCatching { windowManager.addView(container, params) }
-            .onSuccess { root = container }
+            .onSuccess {
+                root = container
+                container.post {
+                    val current = windowParams ?: return@post
+                    val clamped = clampOverlayY(current.y, container)
+                    if (clamped != current.y) {
+                        current.y = clamped
+                        runCatching { windowManager.updateViewLayout(container, current) }
+                        LiveAdvisorSettings.setOverlayYPx(service, clamped)
+                    }
+                }
+            }
+            .onFailure { windowParams = null }
     }
+
+    private fun moveOverlayTo(targetY: Int) {
+        val view = root ?: return
+        val params = windowParams ?: return
+        val clamped = clampOverlayY(targetY, view)
+        if (params.y == clamped) return
+        params.y = clamped
+        runCatching { windowManager.updateViewLayout(view, params) }
+    }
+
+    private fun persistOverlayY() {
+        val y = windowParams?.y ?: return
+        LiveAdvisorSettings.setOverlayYPx(service, y)
+    }
+
+    private fun clampOverlayY(targetY: Int, view: View): Int {
+        val minY = dp(MIN_Y_DP)
+        val screenHeight = service.resources.displayMetrics.heightPixels
+        val maxY = (screenHeight - view.height - dp(BOTTOM_MARGIN_DP)).coerceAtLeast(minY)
+        return targetY.coerceIn(minY, maxY)
+    }
+
+    private fun dp(value: Int): Int = (value * service.resources.displayMetrics.density).toInt()
 
     private fun controlText(horizontalPadding: Int): TextView = TextView(service).apply {
         setTextColor(Color.rgb(147, 197, 253))
@@ -339,5 +464,15 @@ internal class LiveOfferAdvisor(
 
     companion object {
         private const val DISPLAY_MS = 28_000L
+        private const val DEFAULT_Y_DP = 28
+        private const val MIN_Y_DP = 8
+        private const val BOTTOM_MARGIN_DP = 16
+        private const val HORIZONTAL_MARGIN_DP = 8
+        private const val SWIPE_MIN_DP = 72
+        private const val SWIPE_DISMISS_FRACTION = 0.28f
+        private const val SNAP_BACK_MS = 160L
+        private const val GESTURE_NONE = 0
+        private const val GESTURE_HORIZONTAL = 1
+        private const val GESTURE_VERTICAL = 2
     }
 }
