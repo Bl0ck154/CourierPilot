@@ -1,0 +1,102 @@
+name: One-shot stale branch cleanup
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: github.repository == 'Bl0ck154/CourierPilot'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete reviewed stale branches
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          branches=(
+            'agent/courierpilot-release-signing'
+            'agent/valhalla-route-research-v0.8'
+            'bugfixes-20260813'
+            'feat/bolt-delivery-details-v0.11.5'
+            'feat/bolt-delivery-details-v0.12.1'
+            'feature/address-database-ui-v0.8'
+            'feature/auto-presence-screen-capture-codes-v0.7'
+            'feature/gps-trace-v0.11'
+            'feature/live-advisor-v0.10'
+            'feature/route-research-v0.9'
+            'feature/v0.5.0'
+            'fix/address-detail-lines-v0.12.2'
+            'fix/address-identity-v0.11.4'
+            'fix/atomic-offer-dedupe-v0.7.2'
+            'fix/bolt-live-advisor-and-recovery'
+            'fix/capture-dedupe-v0.7.2'
+            'fix/dedupe-address-memory-v0.11.1'
+            'fix/real-device-dedupe-v0.11.3'
+            'fix/real-device-parsing-dedupe-v0.7.1'
+            'fix/route-research-v0.9'
+            'fix/startup-crash'
+            'fix/wolt-same-venue-stacked-heartbeat'
+            'integration/settings-presence-storage-v0.14.0'
+            'public-polish'
+            'refactor/address-evidence-v0.13.0'
+            'refactor/ui-v2-audit-fixes'
+            'release/v0.5.1-branding'
+            'release/v0.12.1-dispatch'
+            'release/v0.12.1-dispatch-2'
+            'release/v0.12.1-dispatch-3'
+            'release/v0.12.1-dispatch-4'
+            'release/v0.12.2-dispatch'
+            'release/v0.13.0-dispatch'
+            'release/v0.14.0-dispatch'
+            'release/v0.14.0'
+            'reliability-v0.4'
+            'route-intelligence-groundwork'
+            'route-intelligence-scaffolding'
+            'tmp-noop'
+            'ui-search-parser-v0.5.3'
+            'ui-v0.3'
+            'ux/settings-presence-storage-v0.14.0'
+          )
+
+          for branch in "${branches[@]}"; do
+            if [[ "$branch" == "main" ]]; then
+              echo 'Refusing to delete main' >&2
+              exit 1
+            fi
+
+            encoded="$(python3 - "$branch" <<'PY'
+          import sys
+          from urllib.parse import quote
+          print(quote(sys.argv[1], safe=''))
+          PY
+            )"
+
+            url="https://api.github.com/repos/${GITHUB_REPOSITORY}/git/refs/heads/${encoded}"
+            code="$(curl -sS -o /tmp/github-delete-response.json -w '%{http_code}' \
+              -X DELETE \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              "$url")"
+
+            case "$code" in
+              204)
+                echo "Deleted $branch"
+                ;;
+              404|422)
+                echo "Already absent or not deletable: $branch (HTTP $code)"
+                cat /tmp/github-delete-response.json || true
+                ;;
+              *)
+                echo "Failed to delete $branch (HTTP $code)" >&2
+                cat /tmp/github-delete-response.json >&2 || true
+                exit 1
+                ;;
+            esac
+          done
