@@ -183,6 +183,11 @@ internal object AutomaticBoltRouteCoordinator {
             return
         }
 
+        // Preserve marker geometry while the priced Bolt offer is still the active window. GPS and
+        // pickup geocoding below are asynchronous, so reading rootInActiveWindow only afterwards can
+        // race with Bolt UI changes and unnecessarily degrade a valid full route to pickup-only.
+        val initialMapMarkers = captureMapMarkers(context, parsed)
+
         RouteResearchLocation.requestCurrent(app) { locationResult ->
             val fix = locationResult.getOrElse {
                 completeFailure(app, offerId, platform, parsed, emptyList(), null, "current location unavailable", onComplete)
@@ -211,7 +216,8 @@ internal object AutomaticBoltRouteCoordinator {
                     ),
                 )
 
-                val recoveredDropoff = recoverDropoff(context, parsed, fix.point, pickup)
+                val mapMarkers = initialMapMarkers ?: captureMapMarkers(context, parsed)
+                val recoveredDropoff = recoverDropoff(mapMarkers, fix.point, pickup)
                 val waypoints = if (recoveredDropoff != null) baseWaypoints + recoveredDropoff else baseWaypoints
                 val scope = if (recoveredDropoff != null) BoltRouteScope.FULL else BoltRouteScope.PICKUP_ONLY
                 val note = if (scope == BoltRouteScope.FULL) {
@@ -257,19 +263,25 @@ internal object AutomaticBoltRouteCoordinator {
         }
     }
 
-    private fun recoverDropoff(
+    private fun captureMapMarkers(
         context: Context,
         parsed: ParsedOffer,
-        current: RoutePoint,
-        pickup: RoutePoint,
-    ): ResolvedWaypoint? {
+    ): BoltSemanticMarkers? {
         val service = context as? AccessibilityService ?: return null
         val root = service.rootInActiveWindow ?: return null
         if (root.packageName?.toString() != CourierSignals.BOLT_PACKAGE) return null
-        val markers = runCatching { BoltMarkerSemanticExtractor.extract(root, parsed) }.getOrNull() ?: return null
-        val currentMarker = markers.currentLocation ?: return null
-        val pickupMarker = markers.pickup ?: return null
-        val dropoffMarker = markers.dropoff ?: return null
+        return runCatching { BoltMarkerSemanticExtractor.extract(root, parsed) }.getOrNull()
+    }
+
+    private fun recoverDropoff(
+        markers: BoltSemanticMarkers?,
+        current: RoutePoint,
+        pickup: RoutePoint,
+    ): ResolvedWaypoint? {
+        val evidence = markers ?: return null
+        val currentMarker = evidence.currentLocation ?: return null
+        val pickupMarker = evidence.pickup ?: return null
+        val dropoffMarker = evidence.dropoff ?: return null
 
         val transform = runCatching {
             LocalMapTransform.fromTwoAnchors(
