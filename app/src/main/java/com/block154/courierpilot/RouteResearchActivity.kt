@@ -39,6 +39,7 @@ class RouteResearchActivity : Activity() {
     private lateinit var endpointField: EditText
     private lateinit var tokenField: EditText
     private lateinit var enabledSwitch: Switch
+    private lateinit var endpointStatusText: TextView
     private lateinit var fromLatField: EditText
     private lateinit var fromLonField: EditText
     private lateinit var toLatField: EditText
@@ -61,6 +62,7 @@ class RouteResearchActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (::endpointStatusText.isInitialized) refreshEndpointStatus()
         if (::boltSampleStatusText.isInitialized) refreshBoltSampleStatus()
     }
 
@@ -109,7 +111,10 @@ class RouteResearchActivity : Activity() {
             ).top(dp(8)))
         }.top(dp(20)))
 
-        root.addView(section("Protected endpoint", "Saved privately on this device and excluded from backup").top(dp(20)))
+        root.addView(section(
+            "Protected endpoint",
+            "The private token is stored only on this app install and intentionally excluded from Android backup",
+        ).top(dp(20)))
         root.addView(card().apply {
             endpointField = field("HTTPS base URL", config.baseUrl)
             addView(endpointField)
@@ -124,8 +129,16 @@ class RouteResearchActivity : Activity() {
                 setTextColor(TEXT)
             }
             addView(enabledSwitch.top(dp(10)))
+            endpointStatusText = text("", 12f, MUTED)
+            addView(endpointStatusText.top(dp(8)))
+            addView(text(
+                "If CourierPilot is reinstalled or its app data is cleared, paste the private token again. Normal app updates keep it.",
+                11f,
+                MUTED,
+            ).top(dp(5)))
             addView(button("Save endpoint") { saveEndpoint() }.top(dp(8)))
         }.top(dp(8)))
+        refreshEndpointStatus(config)
 
         root.addView(section("Start", "Use a fresh phone fix instead of typing latitude/longitude").top(dp(20)))
         root.addView(card().apply {
@@ -206,15 +219,46 @@ class RouteResearchActivity : Activity() {
     }
 
     private fun saveEndpoint() {
-        val candidate = RouteEndpointConfig(enabledSwitch.isChecked, endpointField.text.toString(), tokenField.text.toString())
+        val candidate = currentEndpointInput()
+        if (candidate.enabled && candidate.bearerToken.isBlank()) {
+            refreshEndpointStatus(candidate)
+            showStatus("Route token missing. Paste the private server token, then tap Save endpoint.", true)
+            return
+        }
         runCatching { RouteEndpointSettings.save(this, candidate) }
             .onSuccess {
                 val saved = RouteEndpointSettings.load(this)
                 endpointField.setText(saved.baseUrl)
                 tokenField.setText(saved.bearerToken)
-                showStatus(if (saved.enabled) "Protected endpoint enabled." else "Endpoint saved but disabled.", false)
+                refreshEndpointStatus(saved)
+                showStatus(if (saved.enabled) "Protected route service enabled." else "Endpoint saved; route requests remain disabled.", false)
             }
-            .onFailure { showStatus(it.message ?: "Could not save endpoint.", true) }
+            .onFailure {
+                refreshEndpointStatus(candidate)
+                showStatus(it.message ?: "Could not save endpoint.", true)
+            }
+    }
+
+    private fun currentEndpointInput() = RouteEndpointConfig(
+        enabled = enabledSwitch.isChecked,
+        baseUrl = endpointField.text.toString(),
+        bearerToken = tokenField.text.toString(),
+    )
+
+    private fun refreshEndpointStatus(config: RouteEndpointConfig = RouteEndpointSettings.load(this)) {
+        if (!::endpointStatusText.isInitialized) return
+        val (message, color) = when {
+            config.bearerToken.isBlank() ->
+                "TOKEN MISSING — paste the private server token, enable requests, then Save endpoint." to RED
+            !config.enabled ->
+                "ROUTE REQUESTS DISABLED — enable the switch and tap Save endpoint." to AMBER
+            runCatching { config.validated() }.isFailure ->
+                "ENDPOINT CONFIG INVALID — check the HTTPS URL/token and save again." to RED
+            else ->
+                "READY — protected Valhalla route service is configured on this device." to GREEN
+        }
+        endpointStatusText.text = message
+        endpointStatusText.setTextColor(color)
     }
 
     private fun useCurrentLocation() {
@@ -245,8 +289,17 @@ class RouteResearchActivity : Activity() {
 
     private fun runComparison() {
         if (runningRequest?.isDone == false) return
-        val config = runCatching { RouteEndpointSettings.load(this).validated() }.getOrElse {
-            showStatus(it.message ?: "Configure and enable the endpoint first.", true)
+        val savedConfig = RouteEndpointSettings.load(this)
+        val config = runCatching { savedConfig.validated() }.getOrElse { failure ->
+            refreshEndpointStatus(savedConfig)
+            val message = when {
+                savedConfig.bearerToken.isBlank() ->
+                    "Route token missing. Paste the private server token under Protected endpoint, enable requests, and tap Save endpoint."
+                !savedConfig.enabled ->
+                    "Route requests are disabled. Enable route research requests and tap Save endpoint."
+                else -> failure.message ?: "Route endpoint configuration is invalid."
+            }
+            showStatus(message, true)
             return
         }
         val points = runCatching {
@@ -449,5 +502,6 @@ class RouteResearchActivity : Activity() {
         private val BLUE = Color.parseColor("#2563EB")
         private val AMBER = Color.parseColor("#D97706")
         private val RED = Color.parseColor("#DC2626")
+        private val GREEN = Color.parseColor("#059669")
     }
 }
