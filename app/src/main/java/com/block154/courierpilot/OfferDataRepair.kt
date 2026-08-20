@@ -11,7 +11,10 @@ import android.net.Uri
 internal object OfferDataRepair {
     private const val PREFS = "courier_offer_repairs"
     private const val KEY_REVISION = "parser_repair_revision"
-    private const val CURRENT_REVISION = 6
+    // Revision 7 re-runs historical cleanup with the Bolt stable-field identity introduced in 0.14.5.
+    // This removes the already-stored multi-captures (and their extra Gallery screenshots) without
+    // applying any merchant-name length/wording heuristics.
+    private const val CURRENT_REVISION = 7
     private const val LIST_SEPARATOR = "\u001F"
 
     fun runIfNeeded(context: Context) {
