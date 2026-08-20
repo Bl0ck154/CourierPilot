@@ -105,7 +105,10 @@ internal object BoltScreenshotMarkerExtractor {
             }
         }
 
-        val minimumScore = maxOf(18, binSize * binSize / 9)
+        // The coarse pass samples only one pixel out of four, so keep this threshold deliberately
+        // below a small marker body's sampled area. The subsequent full-resolution count and the
+        // strict Bolt palette still reject isolated map details and thin route polylines.
+        val minimumScore = maxOf(8, binSize * binSize / 20)
         if (bestColumn < 0 || bestScore < minimumScore) return null
 
         val left = maxOf(0, (bestColumn - 2) * binSize)
