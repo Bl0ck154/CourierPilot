@@ -15,7 +15,6 @@ import android.text.InputType
 import android.text.method.PasswordTransformationMethod
 import android.view.Gravity
 import android.view.View
-import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -57,7 +56,6 @@ class RouteResearchActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.statusBarColor = BG
         window.navigationBarColor = BG
-        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         setContentView(buildScreen().also { it.applySystemBarsPadding() })
     }
 

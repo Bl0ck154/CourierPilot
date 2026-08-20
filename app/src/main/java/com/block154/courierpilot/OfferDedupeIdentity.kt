@@ -10,9 +10,27 @@ internal object OfferDedupeIdentity {
     const val PERSIST_DEDUPE_WINDOW_MS = 10L * 60L * 1000L
     private const val NORMAL_FUZZY_WINDOW_MS = 3L * 60L * 1000L
     private const val SPARSE_FRAME_WINDOW_MS = 45L * 1000L
+    private const val BOLT_CARD_BURST_WINDOW_MS = 45L * 1000L
+    private const val BOLT_ETA_TOLERANCE_MINUTES = 2
     private const val DISTANCE_TOLERANCE_METERS = 150
 
     fun burstFingerprint(packageName: String, parsed: ParsedOffer): String {
+        if (packageName == CourierSignals.BOLT_PACKAGE) {
+            // Bolt OCR can see different map labels while the lower offer card has not changed.
+            // Keep the burst identity tied to stable card fields, never to the merchant spelling.
+            val addresses = addressTokens(parsed.pickupAddresses + parsed.dropoffAddresses)
+                .sorted()
+                .joinToString(";")
+            return buildString {
+                append(packageName)
+                append("|p=").append(parsed.priceCents ?: -1)
+                append("|n=").append(parsed.deliveryCount ?: -1)
+                append("|e=").append(parsed.estimatedMinutesMin ?: -1)
+                    .append('-').append(parsed.estimatedMinutesMax ?: -1)
+                append("|a=").append(addresses)
+            }
+        }
+
         val merchants = merchantTokens(parsed)
             .sorted()
             .joinToString(";")
@@ -42,6 +60,25 @@ internal object OfferDedupeIdentity {
         if (first.priceCents != second.priceCents) return false
         val elapsed = abs(first.capturedAt - second.capturedAt)
         if (elapsed > PERSIST_DEDUPE_WINDOW_MS) return false
+
+        // The current Bolt build exposes its map as an empty Accessibility container. Full-screen
+        // OCR used to alternate between map labels and the real venue name, creating several rows
+        // and screenshots for one offer. During one short live-card burst, the same canonical route
+        // address + price is stronger identity than merchant text. This deliberately makes no
+        // assumptions about merchant-name length or wording.
+        if (first.packageName == CourierSignals.BOLT_PACKAGE && elapsed <= BOLT_CARD_BURST_WINDOW_MS) {
+            val firstRouteAddresses = addressTokens(first.pickupAddresses + first.dropoffAddresses)
+            val secondRouteAddresses = addressTokens(second.pickupAddresses + second.dropoffAddresses)
+            val countCompatible = first.deliveryCount == null || second.deliveryCount == null ||
+                first.deliveryCount == second.deliveryCount
+            if (
+                overlaps(firstRouteAddresses, secondRouteAddresses) &&
+                countCompatible &&
+                boltEtaCompatible(first, second)
+            ) {
+                return true
+            }
+        }
 
         val firstDistance = first.distanceMeters
         val secondDistance = second.distanceMeters
@@ -108,6 +145,21 @@ internal object OfferDedupeIdentity {
         }
 
         return pickupMatches && venueMatches && distanceMatches && countCompatible
+    }
+
+    private fun boltEtaCompatible(first: OfferRecord, second: OfferRecord): Boolean {
+        val firstMin = first.estimatedMinutesMin
+        val firstMax = first.estimatedMinutesMax
+        val secondMin = second.estimatedMinutesMin
+        val secondMax = second.estimatedMinutesMax
+        if ((firstMin == null && firstMax == null) || (secondMin == null && secondMax == null)) return true
+
+        val aMin = firstMin ?: firstMax ?: return true
+        val aMax = firstMax ?: firstMin ?: return true
+        val bMin = secondMin ?: secondMax ?: return true
+        val bMax = secondMax ?: secondMin ?: return true
+        return aMin <= bMax + BOLT_ETA_TOLERANCE_MINUTES &&
+            bMin <= aMax + BOLT_ETA_TOLERANCE_MINUTES
     }
 
     private fun OfferRecord.asParsedOffer(): ParsedOffer = ParsedOffer(
