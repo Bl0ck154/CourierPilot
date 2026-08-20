@@ -175,7 +175,10 @@ class OfferAccessibilityService : AccessibilityService() {
         if (uiText.isNotBlank()) OfferState.saveUiText(this, uiText)
         val parsed = OfferParser.parse(uiText)
 
-        if (parsed.priceCents != null) {
+        // Bolt's map is not semantically exposed on the current real-device build. Even if a future
+        // build exposes a price through Accessibility, keep Bolt metadata on the spatially isolated
+        // bottom-card OCR path so map labels can never become merchant names.
+        if (parsed.priceCents != null && target.packageName != CourierSignals.BOLT_PACKAGE) {
             CaptureEventLog.append(this, "price_accessibility", "Price detected in Accessibility tree", platform, 3_000L)
             if (CaptureStorageSettings.saveOfferScreenshots(this)) {
                 captureCurrentFrameAndPersist(pending, target.windowId, uiText, parsed)
@@ -269,7 +272,7 @@ class OfferAccessibilityService : AccessibilityService() {
                     }
                     recognizer.process(InputImage.fromBitmap(bitmap, 0))
                         .addOnSuccessListener { result ->
-                            val combined = mergeText(accessibilityText, result.text)
+                            val combined = OfferOcrText.combine(window.packageName, accessibilityText, result, bitmap.height)
                             observeCourierScreen(window.packageName, combined, ScreenTextSource.OCR_AUGMENTED)
                             if (combined.isNotBlank()) OfferState.saveUiText(this@OfferAccessibilityService, combined)
                             val parsed = OfferParser.parse(combined)
@@ -314,7 +317,7 @@ class OfferAccessibilityService : AccessibilityService() {
 
                     recognizer.process(InputImage.fromBitmap(bitmap, 0))
                         .addOnSuccessListener { result ->
-                            val combined = mergeText(accessibilityText, result.text)
+                            val combined = OfferOcrText.combine(pending.packageName, accessibilityText, result, bitmap.height)
                             observeCourierScreen(pending.packageName, combined, ScreenTextSource.OCR_AUGMENTED)
                             if (combined.isNotBlank()) OfferState.saveUiText(this@OfferAccessibilityService, combined)
                             val parsed = OfferParser.parse(combined)
