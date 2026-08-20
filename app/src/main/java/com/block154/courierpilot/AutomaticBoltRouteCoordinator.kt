@@ -2,7 +2,9 @@ package com.block154.courierpilot
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.graphics.Rect
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityNodeInfo
@@ -148,9 +150,9 @@ internal object BoltMarkerSemanticExtractor {
 
 /**
  * Bolt route pipeline. Bolt reliably exposes textual pickup data more often than the customer
- * destination. Therefore current -> pickup is a useful real route even when full map recovery is
- * impossible. A customer point is appended only when the Accessibility map exposes enough marker
- * evidence to derive a two-anchor transform from current GPS + geocoded pickup.
+ * destination. Current -> pickup remains useful on its own. For the customer point, prefer semantic
+ * Accessibility markers when Bolt exposes them and otherwise recover the three stable Bolt marker
+ * colors from the already-persisted clean offer screenshot.
  */
 internal object AutomaticBoltRouteCoordinator {
     private val executor = Executors.newSingleThreadExecutor()
@@ -183,10 +185,10 @@ internal object AutomaticBoltRouteCoordinator {
             return
         }
 
-        // Preserve marker geometry while the priced Bolt offer is still the active window. GPS and
-        // pickup geocoding below are asynchronous, so reading rootInActiveWindow only afterwards can
-        // race with Bolt UI changes and unnecessarily degrade a valid full route to pickup-only.
-        val initialMapMarkers = captureMapMarkers(context, parsed)
+        // Preserve semantic geometry while the priced offer is still active. The user's current Bolt
+        // build exposes only empty containers, but keeping this path costs nothing and supports other
+        // app versions that may expose proper marker semantics.
+        val initialSemanticMarkers = captureMapMarkers(context, parsed)?.takeIf(::hasCompleteMarkers)
 
         RouteResearchLocation.requestCurrent(app) { locationResult ->
             val fix = locationResult.getOrElse {
@@ -216,17 +218,30 @@ internal object AutomaticBoltRouteCoordinator {
                     ),
                 )
 
-                val mapMarkers = initialMapMarkers ?: captureMapMarkers(context, parsed)
-                val recoveredDropoff = recoverDropoff(mapMarkers, fix.point, pickup)
-                val waypoints = if (recoveredDropoff != null) baseWaypoints + recoveredDropoff else baseWaypoints
-                val scope = if (recoveredDropoff != null) BoltRouteScope.FULL else BoltRouteScope.PICKUP_ONLY
-                val note = if (scope == BoltRouteScope.FULL) {
-                    "customer marker recovered from Bolt map semantics"
-                } else {
-                    "customer marker not recoverable yet; showing route to pickup only"
-                }
+                val lateSemanticMarkers = initialSemanticMarkers
+                    ?: captureMapMarkers(context, parsed)?.takeIf(::hasCompleteMarkers)
 
                 executor.execute {
+                    val screenshotMarkers = if (lateSemanticMarkers == null) {
+                        loadScreenshotMarkers(app, offerId)
+                    } else {
+                        null
+                    }
+                    val mapMarkers = lateSemanticMarkers ?: screenshotMarkers
+                    val markerSource = when {
+                        lateSemanticMarkers != null -> "Accessibility semantics"
+                        screenshotMarkers != null -> "offer screenshot"
+                        else -> null
+                    }
+                    val recoveredDropoff = recoverDropoff(mapMarkers, fix.point, pickup)
+                    val waypoints = if (recoveredDropoff != null) baseWaypoints + recoveredDropoff else baseWaypoints
+                    val scope = if (recoveredDropoff != null) BoltRouteScope.FULL else BoltRouteScope.PICKUP_ONLY
+                    val note = if (scope == BoltRouteScope.FULL) {
+                        "customer marker recovered from Bolt ${markerSource ?: "map"}"
+                    } else {
+                        "customer marker not recoverable yet; showing route to pickup only"
+                    }
+
                     val comparison = runCatching {
                         RouteComparisonEngine(ValhallaRouteProvider(config)).compare(waypoints.map { it.point })
                     }.getOrElse { failure ->
@@ -272,6 +287,24 @@ internal object AutomaticBoltRouteCoordinator {
         if (root.packageName?.toString() != CourierSignals.BOLT_PACKAGE) return null
         return runCatching { BoltMarkerSemanticExtractor.extract(root, parsed) }.getOrNull()
     }
+
+    private fun loadScreenshotMarkers(context: Context, offerId: Long): BoltSemanticMarkers? {
+        val screenshotUri = runCatching { OfferDatabase.get(context).findById(offerId)?.screenshotUri }
+            .getOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        val bitmap = runCatching {
+            context.contentResolver.openInputStream(Uri.parse(screenshotUri))?.use(BitmapFactory::decodeStream)
+        }.getOrNull() ?: return null
+        return try {
+            BoltScreenshotMarkerExtractor.extract(bitmap)
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
+    private fun hasCompleteMarkers(markers: BoltSemanticMarkers): Boolean =
+        markers.currentLocation != null && markers.pickup != null && markers.dropoff != null
 
     private fun recoverDropoff(
         markers: BoltSemanticMarkers?,
