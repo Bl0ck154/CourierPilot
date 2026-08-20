@@ -31,8 +31,8 @@ android {
         applicationId = "com.block154.courierpilot"
         minSdk = 30
         targetSdk = 35
-        versionCode = 33
-        versionName = "0.14.6"
+        versionCode = 34
+        versionName = "0.14.7"
     }
 
     signingConfigs {
@@ -79,6 +79,7 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
 dependencies {
     implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
     implementation("androidx.core:core-ktx:1.15.0")
+    implementation("org.osmdroid:osmdroid-android:6.1.20")
 
     // Keep UI dependencies on the API-35 generation. Activity 1.11+ is compiled with API 36.
     implementation("androidx.activity:activity-compose:1.10.1")

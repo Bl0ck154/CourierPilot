@@ -1,117 +1,116 @@
 package com.block154.courierpilot
 
 import android.content.Context
-import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Path
-import android.view.View
-import kotlin.math.PI
-import kotlin.math.cos
-import kotlin.math.max
-import kotlin.math.min
+import android.graphics.drawable.GradientDrawable
+import android.widget.FrameLayout
+import org.osmdroid.config.Configuration
+import org.osmdroid.tileprovider.tilesource.TileSourceFactory
+import org.osmdroid.util.BoundingBox
+import org.osmdroid.util.GeoPoint
+import org.osmdroid.views.MapView
+import org.osmdroid.views.overlay.CopyrightOverlay
+import org.osmdroid.views.overlay.Marker
+import org.osmdroid.views.overlay.Polyline
 
 /**
- * Lightweight geometry-only preview for research. It intentionally has no third-party map tiles;
- * the goal is to expose detours and route-shape differences without sending coordinates elsewhere.
+ * Interactive route-research map backed by OpenStreetMap tiles.
+ *
+ * The route geometry itself still comes only from our Valhalla response. If tiles are unavailable,
+ * osmdroid keeps rendering the route overlays so research is still usable without a basemap.
  */
-internal class RoutePreviewView(context: Context) : View(context) {
-    private var pedestrian: List<RoutePoint> = emptyList()
-    private var cycleway: List<RoutePoint> = emptyList()
+internal class RoutePreviewView(context: Context) : FrameLayout(context) {
+    private val mapView: MapView
 
-    private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#E5E7EB")
-        strokeWidth = dp(1f)
-    }
-    private val pedestrianPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#D97706")
-        strokeWidth = dp(4f)
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
-        strokeJoin = Paint.Join.ROUND
-    }
-    private val cyclePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#2563EB")
-        strokeWidth = dp(4f)
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
-        strokeJoin = Paint.Join.ROUND
-    }
-    private val endpointPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#111827")
-        style = Paint.Style.FILL
+    init {
+        Configuration.getInstance().userAgentValue = context.packageName
+        setBackgroundColor(Color.WHITE)
+
+        mapView = MapView(context).apply {
+            setTileSource(TileSourceFactory.MAPNIK)
+            setMultiTouchControls(true)
+            setBuiltInZoomControls(false)
+            setTilesScaledToDpi(true)
+            minZoomLevel = 3.0
+            maxZoomLevel = 20.0
+            controller.setZoom(14.0)
+        }
+        addView(
+            mapView,
+            LayoutParams(LayoutParams.MATCH_PARENT, dp(260f).toInt()),
+        )
+        resetOverlays()
     }
 
     fun setRoutes(pedestrian: RouteResult?, cycleway: RouteResult?) {
-        this.pedestrian = pedestrian?.let(RoutePolyline::decodeRoute).orEmpty()
-        this.cycleway = cycleway?.let(RoutePolyline::decodeRoute).orEmpty()
-        invalidate()
+        val pedestrianPoints = pedestrian?.let(RoutePolyline::decodeRoute).orEmpty()
+        val cyclewayPoints = cycleway?.let(RoutePolyline::decodeRoute).orEmpty()
+
+        resetOverlays()
+        addRoute(pedestrianPoints, PEDESTRIAN_COLOR, "Pedestrian shortcut")
+        addRoute(cyclewayPoints, CYCLEWAY_COLOR, "Cycleway biased")
+
+        val all = (pedestrianPoints + cyclewayPoints)
+            .map { GeoPoint(it.latitude, it.longitude) }
+        if (all.isNotEmpty()) {
+            val reference = pedestrianPoints.ifEmpty { cyclewayPoints }
+            reference.firstOrNull()?.let { addEndpoint(it, "Start", Color.parseColor("#111827")) }
+            reference.lastOrNull()?.let { addEndpoint(it, "Finish", Color.parseColor("#111827")) }
+            fitRoutes(all)
+        }
+        mapView.invalidate()
     }
 
-    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val width = MeasureSpec.getSize(widthMeasureSpec)
-        setMeasuredDimension(width, dp(220f).toInt())
+    private fun resetOverlays() {
+        mapView.overlays.clear()
+        mapView.overlays += CopyrightOverlay(context)
     }
 
-    override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-        canvas.drawColor(Color.WHITE)
-        val step = dp(32f)
-        var x = 0f
-        while (x < width) { canvas.drawLine(x, 0f, x, height.toFloat(), gridPaint); x += step }
-        var y = 0f
-        while (y < height) { canvas.drawLine(0f, y, width.toFloat(), y, gridPaint); y += step }
-
-        val all = pedestrian + cycleway
-        if (all.size < 2) return
-
-        val centerLat = all.map { it.latitude }.average()
-        val lonFactor = cos(centerLat * PI / 180.0).coerceAtLeast(0.01)
-        val projected = all.map { point ->
-            ProjectedPoint(point.longitude * lonFactor, point.latitude)
+    private fun addRoute(points: List<RoutePoint>, color: Int, title: String) {
+        if (points.size < 2) return
+        mapView.overlays += Polyline(mapView).apply {
+            setPoints(points.map { GeoPoint(it.latitude, it.longitude) })
+            outlinePaint.color = color
+            outlinePaint.strokeWidth = dp(5f)
+            outlinePaint.strokeCap = Paint.Cap.ROUND
+            outlinePaint.strokeJoin = Paint.Join.ROUND
+            this.title = title
         }
-        val minX = projected.minOf { it.x }
-        val maxX = projected.maxOf { it.x }
-        val minY = projected.minOf { it.y }
-        val maxY = projected.maxOf { it.y }
-        val spanX = max(maxX - minX, 0.000001)
-        val spanY = max(maxY - minY, 0.000001)
-        val padding = dp(18f)
-        val availableWidth = (width - 2 * padding).coerceAtLeast(1f)
-        val availableHeight = (height - 2 * padding).coerceAtLeast(1f)
-        val scale = min(availableWidth / spanX.toFloat(), availableHeight / spanY.toFloat())
-        val usedWidth = spanX.toFloat() * scale
-        val usedHeight = spanY.toFloat() * scale
-        val offsetX = padding + (availableWidth - usedWidth) / 2f
-        val offsetY = padding + (availableHeight - usedHeight) / 2f
+    }
 
-        fun map(point: RoutePoint): Pair<Float, Float> {
-            val projectedX = point.longitude * lonFactor
-            val px = offsetX + ((projectedX - minX).toFloat() * scale)
-            val py = offsetY + ((maxY - point.latitude).toFloat() * scale)
-            return px to py
+    private fun addEndpoint(point: RoutePoint, title: String, color: Int) {
+        val markerSize = dp(16f).toInt()
+        val markerDrawable = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(color)
+            setStroke(dp(2f).toInt(), Color.WHITE)
+            setSize(markerSize, markerSize)
         }
+        mapView.overlays += Marker(mapView).apply {
+            position = GeoPoint(point.latitude, point.longitude)
+            icon = markerDrawable
+            setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+            this.title = title
+        }
+    }
 
-        fun drawRoute(points: List<RoutePoint>, paint: Paint) {
-            if (points.size < 2) return
-            val path = Path()
-            points.forEachIndexed { index, point ->
-                val (px, py) = map(point)
-                if (index == 0) path.moveTo(px, py) else path.lineTo(px, py)
+    private fun fitRoutes(points: List<GeoPoint>) {
+        post {
+            if (points.size == 1) {
+                mapView.controller.setCenter(points.first())
+                mapView.controller.setZoom(17.0)
+                return@post
             }
-            canvas.drawPath(path, paint)
-        }
-
-        drawRoute(pedestrian, pedestrianPaint)
-        drawRoute(cycleway, cyclePaint)
-        val reference = pedestrian.ifEmpty { cycleway }
-        if (reference.isNotEmpty()) {
-            map(reference.first()).also { canvas.drawCircle(it.first, it.second, dp(6f), endpointPaint) }
-            map(reference.last()).also { canvas.drawCircle(it.first, it.second, dp(6f), endpointPaint) }
+            val bounds = BoundingBox.fromGeoPoints(points)
+            mapView.zoomToBoundingBox(bounds, true, dp(36f).toInt())
         }
     }
-
-    private data class ProjectedPoint(val x: Double, val y: Double)
 
     private fun dp(value: Float): Float = value * resources.displayMetrics.density
+
+    companion object {
+        private val PEDESTRIAN_COLOR = Color.parseColor("#D97706")
+        private val CYCLEWAY_COLOR = Color.parseColor("#2563EB")
+    }
 }
