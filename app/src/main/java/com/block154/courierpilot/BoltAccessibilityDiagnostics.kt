@@ -243,7 +243,6 @@ class BoltAccessibilityDiagnosticsService : AccessibilityService() {
         if (event?.packageName?.toString() != CourierSignals.BOLT_PACKAGE) return
         val root = rootInActiveWindow ?: return
         if (root.packageName?.toString() != CourierSignals.BOLT_PACKAGE) return
-        if (!BoltAccessibilityDiagnostics.consumeArm(this)) return
 
         captureInFlight = true
         val tree = runCatching { BoltAccessibilityTreeSerializer.serialize(root) }.getOrElse { error ->
@@ -255,22 +254,65 @@ class BoltAccessibilityDiagnosticsService : AccessibilityService() {
         takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
             override fun onSuccess(screenshot: ScreenshotResult) {
                 val bitmap = screenshotToBitmap(screenshot)
+                if (bitmap == null) {
+                    captureInFlight = false
+                    CaptureEventLog.append(
+                        this@BoltAccessibilityDiagnosticsService,
+                        "bolt_sample_waiting",
+                        "Screenshot unavailable; arm remains active",
+                        "Bolt",
+                        3_000L,
+                    )
+                    return
+                }
+
+                // Do not consume the one-shot arm on Bolt's splash/loading screen. The current Bolt
+                // Accessibility tree is nearly empty, so the clean screenshot itself is the reliable
+                // proof that the actual offer map with all three markers is visible.
+                if (!BoltScreenshotMarkerExtractor.looksLikeOfferMap(bitmap)) {
+                    bitmap.recycle()
+                    captureInFlight = false
+                    CaptureEventLog.append(
+                        this@BoltAccessibilityDiagnosticsService,
+                        "bolt_sample_waiting",
+                        "Bolt is visible but the real offer map is not ready yet; arm remains active",
+                        "Bolt",
+                        3_000L,
+                    )
+                    return
+                }
+                if (!BoltAccessibilityDiagnostics.consumeArm(this@BoltAccessibilityDiagnosticsService)) {
+                    bitmap.recycle()
+                    captureInFlight = false
+                    return
+                }
+
                 BoltAccessibilityDiagnostics.saveSample(
                     this@BoltAccessibilityDiagnosticsService,
                     tree,
                     bitmap,
-                    if (bitmap == null) "Screenshot buffer conversion failed" else null,
+                    null,
                     location,
                 )
-                bitmap?.recycle()
+                bitmap.recycle()
                 captureInFlight = false
-                CaptureEventLog.append(this@BoltAccessibilityDiagnosticsService, "bolt_sample_saved", "Saved tree + ${if (bitmap != null) "screenshot" else "no screenshot"} + ${if (location != null) "cached GPS" else "no GPS"}", "Bolt")
+                CaptureEventLog.append(
+                    this@BoltAccessibilityDiagnosticsService,
+                    "bolt_sample_saved",
+                    "Saved verified offer map + tree + ${if (location != null) "cached GPS" else "no GPS"}",
+                    "Bolt",
+                )
             }
 
             override fun onFailure(errorCode: Int) {
-                BoltAccessibilityDiagnostics.saveSample(this@BoltAccessibilityDiagnosticsService, tree, null, "Android screenshot error $errorCode", location)
                 captureInFlight = false
-                CaptureEventLog.append(this@BoltAccessibilityDiagnosticsService, "bolt_sample_saved", "Saved tree; screenshot failed with Android error $errorCode", "Bolt")
+                CaptureEventLog.append(
+                    this@BoltAccessibilityDiagnosticsService,
+                    "bolt_sample_waiting",
+                    "Android screenshot error $errorCode; arm remains active",
+                    "Bolt",
+                    3_000L,
+                )
             }
         })
     }
