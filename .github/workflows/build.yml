@@ -65,10 +65,23 @@ jobs:
           test "$ACTUAL_CERT_SHA256" = "$EXPECTED_CERT_SHA256"
           sha256sum "$APK"
 
-      - name: Prepare named release APK
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Resolve release version
         shell: bash
-        run: cp app/build/outputs/apk/release/app-release.apk "CourierPilot-${GITHUB_REF_NAME}.apk"
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="$GITHUB_REF_NAME"
+          else
+            VERSION_NAME="$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' app/build.gradle.kts | head -n1)"
+            test -n "$VERSION_NAME"
+            TAG="v$VERSION_NAME"
+          fi
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+          echo "RELEASE_APK=CourierPilot-$TAG.apk" >> "$GITHUB_ENV"
+
+      - name: Prepare named release APK
+        shell: bash
+        run: cp app/build/outputs/apk/release/app-release.apk "$RELEASE_APK"
 
       - name: Upload signed release APK artifact
         uses: actions/upload-artifact@v4
@@ -79,19 +92,17 @@ jobs:
           retention-days: 30
 
       - name: Publish APK to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          APK="CourierPilot-${GITHUB_REF_NAME}.apk"
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$APK" --repo "$GITHUB_REPOSITORY" --clobber
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$RELEASE_APK" --repo "$GITHUB_REPOSITORY" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "$APK" \
+            gh release create "$RELEASE_TAG" "$RELEASE_APK" \
               --repo "$GITHUB_REPOSITORY" \
-              --verify-tag \
-              --title "CourierPilot ${GITHUB_REF_NAME#v}" \
+              --target "$GITHUB_SHA" \
+              --title "CourierPilot ${RELEASE_TAG#v}" \
               --generate-notes
           fi
