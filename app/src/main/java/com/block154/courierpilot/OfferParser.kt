@@ -171,10 +171,10 @@ internal object OfferParser {
             if (!looksLikeAddress(address)) return@forEachIndexed
 
             val cardScore = boltCardAddressScore(lines, addressIndex)
-            // Real pickup rows are followed closely by their ~N min line. Requiring that anchor
-            // prevents an address-shaped map label from opening a new merchant segment when OCR
-            // falls back to the full screenshot.
-            if (cardScore < BOLT_CARD_ETA_BONUS) return@forEachIndexed
+            // Real pickup rows are followed by ETA and/or belong to the priced bottom sheet. Keep
+            // price-only evidence as a fallback when OCR misses an ETA line; do not require a
+            // particular merchant-name shape or length.
+            if (cardScore < BOLT_CARD_PRICE_BONUS) return@forEachIndexed
 
             val start = maxOf(
                 previousCardAddressIndex + 1,
