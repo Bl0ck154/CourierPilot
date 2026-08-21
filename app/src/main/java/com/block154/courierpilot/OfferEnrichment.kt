@@ -5,12 +5,21 @@ import java.util.Locale
 
 /**
  * Re-runs the current parser against stored raw text so UI fixes also improve previously captured
- * records. The final pass below is deliberately semantic: Accessibility can expose the same stop
- * more than once with invisible whitespace/post-code differences, so route arrays are collapsed by
- * canonical building identity before they reach dedupe, history repair, address memory or UI.
+ * records. Bolt records are first passed through the same bottom-card text sanitizer used by the
+ * live OCR pipeline so old full-screen OCR fallbacks can no longer keep map/account text as offer
+ * metadata.
+ *
+ * The final pass below is deliberately semantic: Accessibility can expose the same stop more than
+ * once with invisible whitespace/post-code differences, so route arrays are collapsed by canonical
+ * building identity before they reach dedupe, history repair, address memory or UI.
  */
 internal fun OfferRecord.withCurrentParsedStructure(): OfferRecord {
-    val parsed = rawText.takeIf(String::isNotBlank)?.let(OfferParser::parse)
+    val parseText = when {
+        rawText.isBlank() -> ""
+        packageName == CourierSignals.BOLT_PACKAGE -> BoltOfferTextSanitizer.sanitizeStoredRawText(rawText)
+        else -> rawText
+    }
+    val parsed = parseText.takeIf(String::isNotBlank)?.let(OfferParser::parse)
 
     val sourceMerchants = parsed?.merchantNames?.takeIf { it.isNotEmpty() } ?: merchantNames
     val sourcePickups = parsed?.pickupAddresses?.takeIf { it.isNotEmpty() } ?: pickupAddresses
@@ -19,9 +28,11 @@ internal fun OfferRecord.withCurrentParsedStructure(): OfferRecord {
 
     val normalizedPickups = canonicalDistinctAddresses(sourcePickups)
     val normalizedDropoffs = canonicalDistinctAddresses(sourceDropoffs)
-    val normalizedMerchants = normalizedNames(sourceMerchants).let { names ->
-        if (normalizedPickups.size == 1 && names.isNotEmpty()) listOf(names.first()) else names
-    }
+    val normalizedMerchants = normalizedNames(sourceMerchants)
+        .filterNot { packageName == CourierSignals.BOLT_PACKAGE && BoltOfferTextSanitizer.isOrphanBranchFragment(it) }
+        .let { names ->
+            if (normalizedPickups.size == 1 && names.isNotEmpty()) listOf(names.first()) else names
+        }
     val normalizedCustomers = normalizedNames(sourceCustomers).let { names ->
         if (normalizedDropoffs.size == 1 && names.isNotEmpty()) {
             listOf(names.firstOrNull { !isGenericCustomer(it) } ?: names.first())
@@ -47,7 +58,7 @@ internal fun OfferRecord.withCurrentParsedStructure(): OfferRecord {
     return copy(
         priceCents = parsed?.priceCents ?: priceCents,
         distanceMeters = parsed?.distanceMeters ?: distanceMeters,
-        restaurant = parsed?.restaurant ?: restaurant,
+        restaurant = parsed?.restaurant ?: normalizedMerchants.takeIf { it.isNotEmpty() }?.joinToString(", ") ?: restaurant,
         merchantNames = normalizedMerchants,
         pickupAddresses = normalizedPickups,
         customerNames = normalizedCustomers,
