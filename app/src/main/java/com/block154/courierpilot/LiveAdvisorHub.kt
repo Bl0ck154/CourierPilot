@@ -33,10 +33,14 @@ internal object LiveAdvisorHub {
         }
     }
 
-    /** Hide an older card while CourierPilot is collecting the clean screenshot for a new offer. */
+    /**
+     * Hide an older card while CourierPilot is collecting the clean screenshot for a new offer.
+     * Clearing currentOffer also invalidates any old asynchronous route callback.
+     */
     fun hideForCapture(context: Context) {
         attach(context)
-        advisor?.hide()
+        currentOffer = null
+        advisor?.suppressCurrentOffer()
     }
 
     fun onOfferPersisted(offerId: Long, record: OfferRecord) {
@@ -105,6 +109,7 @@ internal object LiveAdvisorHub {
                 parsed,
                 supplementalPickupAddresses = current.supplementalBoltPickupAddresses,
             ) { outcome ->
+                if (!isCurrentOffer(current)) return@start
                 advisor?.updateBoltRoute(outcome)
             }
             return
@@ -112,12 +117,16 @@ internal object LiveAdvisorHub {
 
         if (record.platform.equals("Wolt", ignoreCase = true)) {
             AutomaticWoltRouteCoordinator.start(service, current.offerId, record.platform, parsed) { outcome ->
+                if (!isCurrentOffer(current)) return@start
                 val comparison = outcome.comparison
                 if (comparison != null) advisor?.updateRoute(comparison, outcome.waypoints.size)
                 else advisor?.updateRouteUnavailable(outcome.failureReason ?: "unknown failure")
             }
         }
     }
+
+    private fun isCurrentOffer(expected: CurrentAdvisorOffer): Boolean =
+        currentOffer?.offerId == expected.offerId
 
     fun observeScreen(context: Context, packageName: String, text: String) {
         attach(context)
