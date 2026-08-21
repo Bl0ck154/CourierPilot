@@ -35,7 +35,7 @@ internal object BoltScreenshotMarkerExtractor {
             palette = Palette.BLUE,
             kind = BoltMarkerKind.PICKUP,
             clusters = pickupClusters,
-            duplicateTipDistancePx = 14.0,
+            duplicateTipDistancePx = 40.0,
             label = "pickup",
         )
         val dropoffs = markerEvidence(
@@ -46,7 +46,7 @@ internal object BoltScreenshotMarkerExtractor {
             clusters = dropoffClusters,
             // Customer pins can genuinely overlap on dense double orders, so dedupe only tips that
             // are nearly identical. Duplicate density peaks from one icon converge to the same tip.
-            duplicateTipDistancePx = 12.0,
+            duplicateTipDistancePx = 24.0,
             label = "customer",
         )
         if (pickups.isEmpty() || dropoffs.isEmpty()) return null
@@ -128,9 +128,7 @@ internal object BoltScreenshotMarkerExtractor {
             absoluteMinimum,
             (bestScore * RELATIVE_PEAK_THRESHOLD).roundToInt(),
         )
-        // Stacked Bolt pins can partially overlap. Keep nearby density peaks and let the pin-tip
-        // stage collapse only peaks that converge to essentially the same visual marker.
-        val minimumSeparationPx = maxOf(16.0, binSize * 1.15)
+        val minimumSeparationPx = maxOf(30.0, binSize * 2.35)
         val accepted = mutableListOf<Cluster>()
 
         for (peak in peaks.sortedByDescending { it.score }) {

@@ -8,9 +8,8 @@
 - Remove remembered active pickups when an explicit `picked up` screen for that building is observed; stale entries expire after 3 hours.
 - Stop collapsing distinct stacked customer markers merely because projected coordinates are within 35 m.
 - Reduce projected marker dedupe to effectively-identical points only.
-- Make screenshot marker detection more tolerant of partially overlapping blue/green pins while retaining duplicate-tip suppression.
 - Preserve fail-closed behavior: if Bolt says two drop-offs but only one customer pin is actually recoverable, CourierPilot still routes only the known pickups instead of inventing a full route.
 
 ## Tests
 
-Regression coverage now includes active-pickup merge/dedupe, close-but-distinct customer stops, single-pin duplicate protection, and partially overlapping customer pins.
+Regression coverage now includes active-pickup merge/dedupe and close-but-distinct customer stops while preserving the existing conservative screenshot detector.
