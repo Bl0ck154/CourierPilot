@@ -41,9 +41,11 @@ internal object PlatformOfferEconomicsCalculator {
 }
 
 /**
- * Small TYPE_ACCESSIBILITY_OVERLAY card shown only after CourierPilot has persisted the original
- * offer screenshot. The card is intentionally offer-scoped: it stays visible while the same offer
- * is on screen, and disappears when the courier app/offer screen is no longer foreground.
+ * Compact TYPE_ACCESSIBILITY_OVERLAY advisor shown after a priced offer is persisted.
+ *
+ * Important: an accessibility overlay can itself become rootInActiveWindow on some Android/OEM
+ * builds. Therefore foreground detection must look through AccessibilityService.windows for the
+ * underlying Wolt/Bolt window before deciding that the courier app disappeared.
  */
 internal class LiveOfferAdvisor(
     private val service: AccessibilityService,
@@ -52,21 +54,25 @@ internal class LiveOfferAdvisor(
     private val handler = Handler(Looper.getMainLooper())
     private val windowManager = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val overlayTouchSlop = ViewConfiguration.get(service).scaledTouchSlop
+
     private var root: LinearLayout? = null
     private var windowParams: WindowManager.LayoutParams? = null
     private var routeText: TextView? = null
     private var economicsText: TextView? = null
     private var routeToggle: TextView? = null
     private var voiceToggle: TextView? = null
+
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var pendingSpeech: String? = null
-    private var currentPlatform: String = ""
-    private var expectedPackageName: String = ""
+
+    private var currentPlatform = ""
+    private var expectedPackageName = ""
     private var dismissedCurrentOffer = false
-    private var offerScreenConfirmedByAccessibility = false
+    private var offerGeneration = 0L
     private var missingOfferSinceElapsed = 0L
     private var missingOfferChecks = 0
+
     private var gestureDownRawX = 0f
     private var gestureDownRawY = 0f
     private var gestureStartWindowY = 0
@@ -84,16 +90,21 @@ internal class LiveOfferAdvisor(
 
     fun showBase(platform: String, parsed: ParsedOffer) {
         if (!LiveAdvisorSettings.enabled(service)) {
-            suppressCurrentOffer()
+            suppressCurrentOffer("advisor disabled")
             return
         }
+
+        offerGeneration += 1
+        val generation = offerGeneration
         currentPlatform = platform
         expectedPackageName = packageForPlatform(platform)
         dismissedCurrentOffer = false
-        offerScreenConfirmedByAccessibility = platform.equals("Wolt", ignoreCase = true)
         resetMissingOfferEvidence()
+
         handler.post {
+            if (generation != offerGeneration || dismissedCurrentOffer) return@post
             ensureView()
+            if (root == null) return@post
             refreshControls()
             economicsText?.apply {
                 val value = formatEconomics(parsed)
@@ -105,6 +116,12 @@ internal class LiveOfferAdvisor(
                 visibility = if (routeEnabled) View.VISIBLE else View.GONE
                 text = if (routeEnabled) "Calculating routes…" else ""
             }
+            CaptureEventLog.append(
+                service,
+                stage = "overlay_show",
+                platform = platform,
+                message = "Live advisor shown; route=${if (routeEnabled) "on" else "off"}",
+            )
             startVisibilityWatchdog()
             if (LiveAdvisorSettings.voiceEnabled(service)) speak(baseSpeech(platform, parsed))
         }
@@ -119,6 +136,12 @@ internal class LiveOfferAdvisor(
             val pedestrian = comparison.pedestrian.getOrNull()
             val cycleway = comparison.cycleway.getOrNull()
             routeText?.text = formatRouteComparison(pedestrian, cycleway)
+            CaptureEventLog.append(
+                service,
+                stage = "route_ready",
+                platform = currentPlatform,
+                message = "Route comparison ready; points=$waypointCount",
+            )
         }
     }
 
@@ -131,6 +154,12 @@ internal class LiveOfferAdvisor(
             val comparison = outcome.comparison
             if (comparison == null) {
                 routeText?.text = "Route unavailable"
+                CaptureEventLog.append(
+                    service,
+                    stage = "bolt_route_failed",
+                    platform = "Bolt",
+                    message = outcome.failureReason ?: "unknown route failure",
+                )
                 return@post
             }
             val pedestrian = comparison.pedestrian.getOrNull()
@@ -141,6 +170,12 @@ internal class LiveOfferAdvisor(
             } else {
                 route
             }
+            CaptureEventLog.append(
+                service,
+                stage = "bolt_route_ready",
+                platform = "Bolt",
+                message = "scope=${outcome.scope}; waypoints=${outcome.waypoints.size}; ${outcome.note.orEmpty()}".take(300),
+            )
         }
     }
 
@@ -151,19 +186,33 @@ internal class LiveOfferAdvisor(
             ensureView()
             routeText?.visibility = View.VISIBLE
             routeText?.text = "Route unavailable"
+            CaptureEventLog.append(
+                service,
+                stage = "route_failed",
+                platform = currentPlatform,
+                message = reason,
+            )
         }
     }
 
-    /** Prevent stale asynchronous route callbacks from recreating a card that is no longer valid. */
-    fun suppressCurrentOffer() {
+    fun suppressCurrentOffer(reason: String = "superseded") {
+        if (!dismissedCurrentOffer || root != null) {
+            CaptureEventLog.append(
+                service,
+                stage = "overlay_hide",
+                platform = currentPlatform,
+                message = reason,
+                dedupeWindowMs = 500L,
+            )
+        }
         dismissedCurrentOffer = true
+        offerGeneration += 1
         hide()
     }
 
     fun hide() {
         handler.removeCallbacks(visibilityWatchdog)
-        val view = root
-        if (view != null) runCatching { windowManager.removeView(view) }
+        root?.let { view -> runCatching { windowManager.removeView(view) } }
         root = null
         windowParams = null
         routeText = null
@@ -175,16 +224,12 @@ internal class LiveOfferAdvisor(
     }
 
     fun destroy() {
-        suppressCurrentOffer()
+        suppressCurrentOffer("advisor destroyed")
         tts?.stop()
         tts?.shutdown()
         tts = null
         ttsReady = false
         pendingSpeech = null
-    }
-
-    private fun dismissCurrentOffer() {
-        suppressCurrentOffer()
     }
 
     private fun ensureView() {
@@ -254,7 +299,7 @@ internal class LiveOfferAdvisor(
             textSize = 21f
             gravity = Gravity.CENTER
             setPadding(dp(7), 0, 0, 0)
-            setOnClickListener { dismissCurrentOffer() }
+            setOnClickListener { suppressCurrentOffer("closed by user") }
         }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
         container.addView(topRow)
 
@@ -267,6 +312,7 @@ internal class LiveOfferAdvisor(
             installGestureSurface(it)
             container.addView(it)
         }
+
         routeText = TextView(service).apply {
             setTextColor(Color.rgb(226, 232, 240))
             textSize = 13.5f
@@ -293,6 +339,7 @@ internal class LiveOfferAdvisor(
             y = LiveAdvisorSettings.overlayYPx(service) ?: dp(DEFAULT_Y_DP)
         }
         windowParams = params
+
         runCatching { windowManager.addView(container, params) }
             .onSuccess {
                 root = container
@@ -305,7 +352,15 @@ internal class LiveOfferAdvisor(
                     }
                 }
             }
-            .onFailure { windowParams = null }
+            .onFailure { error ->
+                windowParams = null
+                CaptureEventLog.append(
+                    service,
+                    stage = "overlay_add_failed",
+                    platform = currentPlatform,
+                    message = error.javaClass.simpleName + ": " + error.message.orEmpty(),
+                )
+            }
     }
 
     private fun installGestureSurface(view: View) {
@@ -343,20 +398,17 @@ internal class LiveOfferAdvisor(
                 return true
             }
 
-            MotionEvent.ACTION_UP,
-            MotionEvent.ACTION_CANCEL,
-            -> {
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 val dx = event.rawX - gestureDownRawX
                 val mode = gestureMode
                 gestureMode = GESTURE_NONE
-
                 if (mode == GESTURE_HORIZONTAL) {
                     val currentView = root
                     val dismissThreshold = currentView?.let {
                         maxOf(dp(SWIPE_MIN_DP).toFloat(), it.width * SWIPE_DISMISS_FRACTION)
                     } ?: dp(SWIPE_MIN_DP).toFloat()
                     if (event.actionMasked == MotionEvent.ACTION_UP && abs(dx) >= dismissThreshold) {
-                        dismissCurrentOffer()
+                        suppressCurrentOffer("swiped by user")
                         return true
                     }
                     currentView?.animate()?.translationX(0f)?.alpha(1f)?.setDuration(SNAP_BACK_MS)?.start()
@@ -375,50 +427,72 @@ internal class LiveOfferAdvisor(
     }
 
     private fun checkOfferStillVisible() {
-        val expectedPackage = expectedPackageName
-        if (expectedPackage.isBlank()) return
+        val expected = expectedPackageName
+        if (expected.isBlank()) return
 
         val activeRoot = service.rootInActiveWindow
         val activePackage = activeRoot?.packageName?.toString().orEmpty()
+        val courierRoot = findVisiblePackageRoot(expected)
 
-        // A definite foreground-package change is enough evidence: the overlay must never float over
-        // an unrelated application/home screen.
-        if (activePackage.isNotBlank() && activePackage != expectedPackage) {
-            suppressCurrentOffer()
+        if (courierRoot == null) {
+            val definitelyForeign = activePackage.isNotBlank() &&
+                activePackage != expected &&
+                activePackage != service.packageName &&
+                activePackage != SYSTEM_UI_PACKAGE
+
+            if (definitelyForeign) {
+                suppressCurrentOffer("foreground changed to $activePackage")
+                return
+            }
+
+            if (registerMissingOfferEvidence()) {
+                suppressCurrentOffer("courier window disappeared; active=$activePackage")
+            }
             return
         }
 
-        if (activeRoot == null || activePackage != expectedPackage) {
-            if (registerMissingOfferEvidence()) suppressCurrentOffer()
-            return
-        }
-
-        val visibleText = collectVisibleText(activeRoot)
-        val parsed = OfferParser.parse(visibleText)
-        val hasOfferUi = CourierSignals.looksLikeOfferScreen(visibleText, parsed) || hasDecisionPair(visibleText)
-        if (hasOfferUi) {
-            offerScreenConfirmedByAccessibility = true
-            resetMissingOfferEvidence()
-            return
-        }
-
-        // Explicit post-offer lifecycle or online/offline home-screen text is strong evidence that
-        // the priced offer card is no longer the active decision screen.
+        resetMissingOfferEvidence()
+        val visibleText = collectVisibleText(courierRoot)
         val lifecycle = DeliveryLifecycleTracking.detect(visibleText)
         val presence = CourierSignals.detectPresence(visibleText)
-        if (lifecycle != null || presence != PresenceSignal.UNKNOWN) {
-            suppressCurrentOffer()
+        if (lifecycle != null) {
+            suppressCurrentOffer("offer ended: ${lifecycle.type}")
+            return
+        }
+        if (presence != PresenceSignal.UNKNOWN) {
+            suppressCurrentOffer("offer screen replaced by presence=$presence")
             return
         }
 
-        // Wolt exposes its offer card reliably through Accessibility. Bolt's live map is less
-        // semantic, so only use generic absence after Bolt has exposed recognizable decision UI at
-        // least once; this avoids hiding a valid Bolt overlay just because its map tree is sparse.
-        if (currentPlatform.equals("Wolt", ignoreCase = true) || offerScreenConfirmedByAccessibility) {
-            if (registerMissingOfferEvidence()) suppressCurrentOffer()
-        } else {
-            resetMissingOfferEvidence()
+        val parsed = OfferParser.parse(visibleText)
+        val hasOfferUi = CourierSignals.looksLikeOfferScreen(visibleText, parsed) || hasDecisionPair(visibleText)
+
+        if (currentPlatform.equals("Bolt", ignoreCase = true)) {
+            // Bolt's map/card is often almost invisible to Accessibility. As long as a Bolt window is
+            // actually present, absence of semantic text is NOT evidence that the offer vanished.
+            // We only hide on explicit lifecycle/presence text or when the Bolt window itself leaves.
+            return
         }
+
+        if (hasOfferUi) {
+            resetMissingOfferEvidence()
+            return
+        }
+
+        if (registerMissingOfferEvidence()) {
+            suppressCurrentOffer("offer controls no longer visible")
+        }
+    }
+
+    private fun findVisiblePackageRoot(packageName: String): AccessibilityNodeInfo? {
+        val active = service.rootInActiveWindow
+        if (active?.packageName?.toString() == packageName) return active
+
+        service.windows.forEach { window ->
+            val candidate = runCatching { window.root }.getOrNull() ?: return@forEach
+            if (candidate.packageName?.toString() == packageName) return candidate
+        }
+        return null
     }
 
     private fun registerMissingOfferEvidence(nowElapsed: Long = SystemClock.elapsedRealtime()): Boolean {
@@ -566,8 +640,9 @@ internal class LiveOfferAdvisor(
     private fun formatKm(meters: Int): String = "${"%.2f".format(Locale.US, meters / 1000.0)} km"
 
     companion object {
-        private const val VISIBILITY_CHECK_MS = 750L
-        private const val OFFER_GONE_GRACE_MS = 1_500L
+        private const val SYSTEM_UI_PACKAGE = "com.android.systemui"
+        private const val VISIBILITY_CHECK_MS = 650L
+        private const val OFFER_GONE_GRACE_MS = 1_800L
         private const val MIN_MISSING_CHECKS = 3
         private const val DEFAULT_Y_DP = 48
         private const val MIN_Y_DP = 12
