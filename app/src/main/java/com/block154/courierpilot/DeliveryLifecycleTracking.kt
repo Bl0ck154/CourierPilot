@@ -131,6 +131,8 @@ internal object DeliveryLifecycleTracking {
             ),
             DeliveryEventType.ACCEPTED to listOf(
                 "navigate to pickup", "head to pickup", "going to pickup",
+                // Real Bolt accepted pickup screen. This is not shown on the priced offer card.
+                "order is ready for pickup",
             ),
         )
         ordered.forEach { (type, cues) ->
