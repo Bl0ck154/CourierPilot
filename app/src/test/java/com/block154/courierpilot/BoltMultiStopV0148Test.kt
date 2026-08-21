@@ -143,6 +143,80 @@ class BoltMultiStopV0148Test {
         assertEquals(2, recovery.orderedDropoffs.size)
     }
 
+
+    @Test
+    fun activePickupFallbackComesFirstAndDoesNotDuplicateSameRestaurant() {
+        val merged = BoltPickupAddressPlanner.merge(
+            active = listOf("Basanavičiaus g. 19, Vilnius"),
+            offered = listOf("BASANAVIČIAUS G. 19, VILNIUS", "Gedimino pr. 5, Vilnius"),
+        )
+
+        assertEquals(2, merged.size)
+        assertTrue(BoltPickupAddressPlanner.sameAddress("Basanavičiaus g. 19, Vilnius", merged[0]))
+        assertTrue(BoltPickupAddressPlanner.sameAddress("Gedimino pr. 5, Vilnius", merged[1]))
+    }
+
+    @Test
+    fun twoExpectedCustomersAreNotCollapsedJustBecauseTheyAreWithinThirtyFiveMeters() {
+        val current = RoutePoint(54.6800000, 25.2800000)
+        val metersPerPixel = 5.0
+        val currentScreen = ScreenPoint(100.0, 100.0)
+        val pickupScreen = ScreenPoint(200.0, 100.0)
+        val pickupPoint = screenToGeoNorthUp(current, currentScreen, pickupScreen, metersPerPixel)
+
+        val recovery = BoltMultiStopMapRecovery.recover(
+            markers = markers(
+                current = currentScreen,
+                pickups = listOf(pickupScreen),
+                dropoffs = listOf(ScreenPoint(300.0, 200.0), ScreenPoint(304.0, 202.0)),
+            ),
+            current = current,
+            knownPickups = listOf(pickup(pickupPoint, "Restaurant")),
+            expectedDropoffs = 2,
+        )
+
+        assertNotNull(recovery)
+        assertEquals(2, recovery!!.orderedDropoffs.size)
+    }
+
+    @Test
+    fun screenshotDetectorDoesNotSplitSinglePinsAfterOverlapSensitivityIncrease() {
+        val bitmap = Bitmap.createBitmap(700, 1_500, Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(Color.rgb(245, 245, 245))
+        val green = Color.rgb(34, 147, 93)
+        val blue = Color.rgb(94, 105, 235)
+        val cyan = Color.rgb(60, 177, 224)
+
+        drawDisk(bitmap, 180, 180, 18, cyan)
+        drawDisk(bitmap, 300, 480, 36, blue)
+        drawDisk(bitmap, 430, 820, 36, green)
+
+        val markers = BoltScreenshotMarkerExtractor.extract(bitmap)
+        assertNotNull(markers)
+        assertEquals(1, markers!!.pickups.size)
+        assertEquals(1, markers.dropoffs.size)
+        bitmap.recycle()
+    }
+
+    @Test
+    fun screenshotDetectorCanKeepPartiallyOverlappingCustomerPins() {
+        val bitmap = Bitmap.createBitmap(700, 1_500, Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(Color.rgb(245, 245, 245))
+        val green = Color.rgb(34, 147, 93)
+        val blue = Color.rgb(94, 105, 235)
+        val cyan = Color.rgb(60, 177, 224)
+
+        drawDisk(bitmap, 180, 180, 18, cyan)
+        drawDisk(bitmap, 300, 480, 36, blue)
+        drawDisk(bitmap, 420, 820, 36, green)
+        drawDisk(bitmap, 450, 820, 36, green)
+
+        val markers = BoltScreenshotMarkerExtractor.extract(bitmap)
+        assertNotNull(markers)
+        assertEquals(2, markers!!.dropoffs.size)
+        bitmap.recycle()
+    }
+
     private fun markers(
         current: ScreenPoint,
         pickups: List<ScreenPoint>,

@@ -13,6 +13,7 @@ internal object LiveAdvisorHub {
         val offerId: Long,
         val record: OfferRecord,
         val parsed: ParsedOffer,
+        val supplementalBoltPickupAddresses: List<String> = emptyList(),
     )
 
     private var serviceRef = WeakReference<AccessibilityService>(null)
@@ -57,7 +58,19 @@ internal object LiveAdvisorHub {
             estimatedMinutesMax = record.estimatedMinutesMax ?: parsedFromScreen.estimatedMinutesMax,
         )
 
-        val current = CurrentAdvisorOffer(offerId, record, parsed)
+        val supplementalBoltPickups = if (record.packageName == CourierSignals.BOLT_PACKAGE) {
+            // Snapshot the previously accepted task before onOfferCaptured() advances the legacy
+            // single-offer lifecycle pointer to this new (possibly add-on) offer.
+            BoltActivePickupStore.rememberUncollectedTask(
+                service,
+                DeliveryLifecycleTracking.currentTask(service, record.packageName),
+            )
+            BoltActivePickupStore.supplementalForOffer(service, parsed.pickupAddresses)
+        } else {
+            emptyList()
+        }
+
+        val current = CurrentAdvisorOffer(offerId, record, parsed, supplementalBoltPickups)
         currentOffer = current
 
         DeliveryLifecycleTracking.onOfferCaptured(service, record.packageName, offerId, record.capturedAt)
@@ -85,7 +98,13 @@ internal object LiveAdvisorHub {
                     )
                 }
             }
-            AutomaticBoltRouteCoordinator.start(service, current.offerId, record.platform, parsed) { outcome ->
+            AutomaticBoltRouteCoordinator.start(
+                service,
+                current.offerId,
+                record.platform,
+                parsed,
+                supplementalPickupAddresses = current.supplementalBoltPickupAddresses,
+            ) { outcome ->
                 advisor?.updateBoltRoute(outcome)
             }
             return

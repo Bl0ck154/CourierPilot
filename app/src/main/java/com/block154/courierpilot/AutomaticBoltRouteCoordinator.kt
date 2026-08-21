@@ -154,6 +154,24 @@ internal object BoltMarkerSemanticExtractor {
     private val STOP_TOKENS = setOf("vilnius", "vilniaus", "street", "str", "gatve", "map", "marker")
 }
 
+internal object BoltPickupAddressPlanner {
+    /** Active pickups go first: an add-on offer must not make us forget the task already in hand. */
+    fun merge(active: List<String>, offered: List<String>): List<String> {
+        val result = mutableListOf<String>()
+        (active + offered).filter(String::isNotBlank).forEach { candidate ->
+            if (result.none { sameAddress(it, candidate) }) result += candidate.trim()
+        }
+        return result
+    }
+
+    fun sameAddress(first: String, second: String): Boolean {
+        val firstIdentity = DeliveryAddressNormalizer.identity(first)
+        val secondIdentity = DeliveryAddressNormalizer.identity(second)
+        if (firstIdentity != null && secondIdentity != null) return firstIdentity.key == secondIdentity.key
+        return first.trim().equals(second.trim(), ignoreCase = true)
+    }
+}
+
 internal data class BoltMapStopRecovery(
     val orderedPickups: List<ResolvedWaypoint>,
     val orderedDropoffs: List<ResolvedWaypoint>,
@@ -213,7 +231,7 @@ internal object BoltMultiStopMapRecovery {
             nearestNeighborOrder(current, knownPickups + inferredPickups)
         }
 
-        var dropoffs = evidence.dropoffs.mapNotNull { marker ->
+        val projectedDropoffs = evidence.dropoffs.mapNotNull { marker ->
             val projected = projectValidated(transform, marker.screenCenter, current, allPickups.map { it.point })
                 ?: return@mapNotNull null
             ResolvedWaypoint(
@@ -223,7 +241,16 @@ internal object BoltMultiStopMapRecovery {
                 provenance = CoordinateProvenance.BOLT_MAP_RECOVERY,
                 confidence = minOf(marker.confidence, 0.72),
             )
-        }.dedupeByDistance()
+        }
+        // Every surviving screen marker is separate evidence. For a stacked order, never collapse
+        // two customer pins merely because their projected coordinates are <35 m apart: two flats
+        // or neighbouring buildings can legitimately be almost on top of each other. If Bolt says
+        // there is only one delivery, tiny projected duplicates are still removed.
+        var dropoffs = if ((expectedDropoffs ?: 0) > 1) {
+            projectedDropoffs
+        } else {
+            projectedDropoffs.dedupeByDistance()
+        }
 
         expectedDropoffs?.takeIf { it > 0 }?.let { expected ->
             if (dropoffs.size > expected) dropoffs = dropoffs.take(expected)
@@ -391,7 +418,9 @@ internal object BoltMultiStopMapRecovery {
     private const val MAX_KNOWN_PICKUP_RESIDUAL_METERS = 400.0
     private const val MIN_PROJECTED_DISTANCE_METERS = 20.0
     private const val MAX_PROJECTED_DISTANCE_METERS = 40_000.0
-    private const val DUPLICATE_STOP_METERS = 35.0
+    // Only collapse effectively identical projected points. Screen-marker identity is stronger
+    // evidence than geographic proximity for stacked orders.
+    private const val DUPLICATE_STOP_METERS = 3.0
 }
 
 /**
@@ -409,6 +438,7 @@ internal object AutomaticBoltRouteCoordinator {
         offerId: Long,
         platform: String,
         parsed: ParsedOffer,
+        supplementalPickupAddresses: List<String> = emptyList(),
         onComplete: (AutomaticBoltRouteOutcome) -> Unit,
     ) {
         val app = context.applicationContext
@@ -424,7 +454,7 @@ internal object AutomaticBoltRouteCoordinator {
             completeFailure(app, offerId, platform, parsed, emptyList(), null, "location permission missing", onComplete)
             return
         }
-        if (parsed.pickupAddresses.none { it.isNotBlank() }) {
+        if (parsed.pickupAddresses.none { it.isNotBlank() } && supplementalPickupAddresses.none { it.isNotBlank() }) {
             completeFailure(app, offerId, platform, parsed, emptyList(), null, "Bolt pickup address unavailable", onComplete)
             return
         }
@@ -436,7 +466,7 @@ internal object AutomaticBoltRouteCoordinator {
                 completeFailure(app, offerId, platform, parsed, emptyList(), null, "current location unavailable", onComplete)
                 return@requestCurrent
             }
-            resolvePickups(app, parsed) { knownPickups ->
+            resolvePickups(app, parsed, supplementalPickupAddresses) { knownPickups ->
                 if (knownPickups.isEmpty()) {
                     completeFailure(
                         app,
@@ -530,9 +560,10 @@ internal object AutomaticBoltRouteCoordinator {
     private fun resolvePickups(
         context: Context,
         parsed: ParsedOffer,
+        supplementalPickupAddresses: List<String>,
         callback: (List<ResolvedWaypoint>) -> Unit,
     ) {
-        val addresses = parsed.pickupAddresses.filter { it.isNotBlank() }.distinct()
+        val addresses = BoltPickupAddressPlanner.merge(supplementalPickupAddresses, parsed.pickupAddresses)
         val result = mutableListOf<ResolvedWaypoint>()
 
         fun next(index: Int) {
@@ -543,12 +574,20 @@ internal object AutomaticBoltRouteCoordinator {
             val address = addresses[index]
             resolveStopWithTimeout(context, address) { resolution ->
                 resolution.getOrNull()?.let { point ->
+                    val offeredIndex = parsed.pickupAddresses.indexOfFirst { offered ->
+                        BoltPickupAddressPlanner.sameAddress(offered, address)
+                    }
+                    val label = if (offeredIndex >= 0) {
+                        parsed.merchantNames.getOrNull(offeredIndex) ?: address
+                    } else {
+                        "Active Bolt pickup · $address"
+                    }
                     result += ResolvedWaypoint(
                         kind = WaypointKind.PICKUP,
                         point = point,
-                        label = parsed.merchantNames.getOrNull(index) ?: address,
+                        label = label,
                         provenance = CoordinateProvenance.GEOCODED_ADDRESS,
-                        confidence = 0.85,
+                        confidence = if (offeredIndex >= 0) 0.85 else 0.82,
                     )
                 }
                 next(index + 1)
