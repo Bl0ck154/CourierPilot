@@ -109,18 +109,18 @@ internal object LiveAdvisorHub {
                 parsed,
                 supplementalPickupAddresses = current.supplementalBoltPickupAddresses,
             ) { outcome ->
-                if (!isCurrentOffer(current)) return@start
-                advisor?.updateBoltRoute(outcome)
+                if (isCurrentOffer(current)) advisor?.updateBoltRoute(outcome)
             }
             return
         }
 
         if (record.platform.equals("Wolt", ignoreCase = true)) {
             AutomaticWoltRouteCoordinator.start(service, current.offerId, record.platform, parsed) { outcome ->
-                if (!isCurrentOffer(current)) return@start
-                val comparison = outcome.comparison
-                if (comparison != null) advisor?.updateRoute(comparison, outcome.waypoints.size)
-                else advisor?.updateRouteUnavailable(outcome.failureReason ?: "unknown failure")
+                if (isCurrentOffer(current)) {
+                    val comparison = outcome.comparison
+                    if (comparison != null) advisor?.updateRoute(comparison, outcome.waypoints.size)
+                    else advisor?.updateRouteUnavailable(outcome.failureReason ?: "unknown failure")
+                }
             }
         }
     }
