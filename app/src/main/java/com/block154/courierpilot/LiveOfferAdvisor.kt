@@ -7,14 +7,17 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.speech.tts.TextToSpeech
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
+import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.LinearLayout
 import android.widget.TextView
+import java.util.ArrayDeque
 import java.util.Locale
 import kotlin.math.abs
 
@@ -39,7 +42,8 @@ internal object PlatformOfferEconomicsCalculator {
 
 /**
  * Small TYPE_ACCESSIBILITY_OVERLAY card shown only after CourierPilot has persisted the original
- * offer screenshot. It never clicks, accepts, rejects or covers capture with its own UI.
+ * offer screenshot. The card is intentionally offer-scoped: it stays visible while the same offer
+ * is on screen, and disappears when the courier app/offer screen is no longer foreground.
  */
 internal class LiveOfferAdvisor(
     private val service: AccessibilityService,
@@ -58,19 +62,36 @@ internal class LiveOfferAdvisor(
     private var ttsReady = false
     private var pendingSpeech: String? = null
     private var currentPlatform: String = ""
+    private var expectedPackageName: String = ""
     private var dismissedCurrentOffer = false
+    private var offerScreenConfirmedByAccessibility = false
+    private var missingOfferSinceElapsed = 0L
+    private var missingOfferChecks = 0
     private var gestureDownRawX = 0f
     private var gestureDownRawY = 0f
     private var gestureStartWindowY = 0
     private var gestureMode = GESTURE_NONE
 
+    private val visibilityWatchdog = object : Runnable {
+        override fun run() {
+            if (dismissedCurrentOffer || root == null) return
+            checkOfferStillVisible()
+            if (!dismissedCurrentOffer && root != null) {
+                handler.postDelayed(this, VISIBILITY_CHECK_MS)
+            }
+        }
+    }
+
     fun showBase(platform: String, parsed: ParsedOffer) {
         if (!LiveAdvisorSettings.enabled(service)) {
-            hide()
+            suppressCurrentOffer()
             return
         }
         currentPlatform = platform
+        expectedPackageName = packageForPlatform(platform)
         dismissedCurrentOffer = false
+        offerScreenConfirmedByAccessibility = platform.equals("Wolt", ignoreCase = true)
+        resetMissingOfferEvidence()
         handler.post {
             ensureView()
             refreshControls()
@@ -84,7 +105,7 @@ internal class LiveOfferAdvisor(
                 visibility = if (routeEnabled) View.VISIBLE else View.GONE
                 text = if (routeEnabled) "Calculating routes…" else ""
             }
-            scheduleHide()
+            startVisibilityWatchdog()
             if (LiveAdvisorSettings.voiceEnabled(service)) speak(baseSpeech(platform, parsed))
         }
     }
@@ -98,7 +119,6 @@ internal class LiveOfferAdvisor(
             val pedestrian = comparison.pedestrian.getOrNull()
             val cycleway = comparison.cycleway.getOrNull()
             routeText?.text = formatRouteComparison(pedestrian, cycleway)
-            scheduleHide()
         }
     }
 
@@ -111,7 +131,6 @@ internal class LiveOfferAdvisor(
             val comparison = outcome.comparison
             if (comparison == null) {
                 routeText?.text = "Route unavailable"
-                scheduleHide()
                 return@post
             }
             val pedestrian = comparison.pedestrian.getOrNull()
@@ -122,7 +141,6 @@ internal class LiveOfferAdvisor(
             } else {
                 route
             }
-            scheduleHide()
         }
     }
 
@@ -133,14 +151,19 @@ internal class LiveOfferAdvisor(
             ensureView()
             routeText?.visibility = View.VISIBLE
             routeText?.text = "Route unavailable"
-            scheduleHide()
         }
     }
 
+    /** Prevent stale asynchronous route callbacks from recreating a card that is no longer valid. */
+    fun suppressCurrentOffer() {
+        dismissedCurrentOffer = true
+        hide()
+    }
+
     fun hide() {
-        handler.removeCallbacks(hideRunnable)
-        val view = root ?: return
-        runCatching { windowManager.removeView(view) }
+        handler.removeCallbacks(visibilityWatchdog)
+        val view = root
+        if (view != null) runCatching { windowManager.removeView(view) }
         root = null
         windowParams = null
         routeText = null
@@ -148,10 +171,11 @@ internal class LiveOfferAdvisor(
         routeToggle = null
         voiceToggle = null
         gestureMode = GESTURE_NONE
+        resetMissingOfferEvidence()
     }
 
     fun destroy() {
-        hide()
+        suppressCurrentOffer()
         tts?.stop()
         tts?.shutdown()
         tts = null
@@ -160,8 +184,7 @@ internal class LiveOfferAdvisor(
     }
 
     private fun dismissCurrentOffer() {
-        dismissedCurrentOffer = true
-        hide()
+        suppressCurrentOffer()
     }
 
     private fun ensureView() {
@@ -211,7 +234,6 @@ internal class LiveOfferAdvisor(
                     }
                 }
                 onRouteToggleChanged?.invoke(currentPlatform, enabled)
-                scheduleHide()
             }
         }
         topRow.addView(routeToggle, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT))
@@ -299,7 +321,6 @@ internal class LiveOfferAdvisor(
                 gestureDownRawY = event.rawY
                 gestureStartWindowY = windowParams?.y ?: dp(DEFAULT_Y_DP)
                 gestureMode = GESTURE_NONE
-                handler.removeCallbacks(hideRunnable)
                 view?.animate()?.cancel()
                 view?.translationX = 0f
                 view?.alpha = 1f
@@ -342,12 +363,108 @@ internal class LiveOfferAdvisor(
                 } else if (mode == GESTURE_VERTICAL) {
                     persistOverlayY()
                 }
-
-                if (!dismissedCurrentOffer) scheduleHide()
                 return true
             }
         }
         return true
+    }
+
+    private fun startVisibilityWatchdog() {
+        handler.removeCallbacks(visibilityWatchdog)
+        handler.postDelayed(visibilityWatchdog, VISIBILITY_CHECK_MS)
+    }
+
+    private fun checkOfferStillVisible() {
+        val expectedPackage = expectedPackageName
+        if (expectedPackage.isBlank()) return
+
+        val activeRoot = service.rootInActiveWindow
+        val activePackage = activeRoot?.packageName?.toString().orEmpty()
+
+        // A definite foreground-package change is enough evidence: the overlay must never float over
+        // an unrelated application/home screen.
+        if (activePackage.isNotBlank() && activePackage != expectedPackage) {
+            suppressCurrentOffer()
+            return
+        }
+
+        if (activeRoot == null || activePackage != expectedPackage) {
+            if (registerMissingOfferEvidence()) suppressCurrentOffer()
+            return
+        }
+
+        val visibleText = collectVisibleText(activeRoot)
+        val parsed = OfferParser.parse(visibleText)
+        val hasOfferUi = CourierSignals.looksLikeOfferScreen(visibleText, parsed) || hasDecisionPair(visibleText)
+        if (hasOfferUi) {
+            offerScreenConfirmedByAccessibility = true
+            resetMissingOfferEvidence()
+            return
+        }
+
+        // Explicit post-offer lifecycle or online/offline home-screen text is strong evidence that
+        // the priced offer card is no longer the active decision screen.
+        val lifecycle = DeliveryLifecycleTracking.detect(visibleText)
+        val presence = CourierSignals.detectPresence(visibleText)
+        if (lifecycle != null || presence != PresenceSignal.UNKNOWN) {
+            suppressCurrentOffer()
+            return
+        }
+
+        // Wolt exposes its offer card reliably through Accessibility. Bolt's live map is less
+        // semantic, so only use generic absence after Bolt has exposed recognizable decision UI at
+        // least once; this avoids hiding a valid Bolt overlay just because its map tree is sparse.
+        if (currentPlatform.equals("Wolt", ignoreCase = true) || offerScreenConfirmedByAccessibility) {
+            if (registerMissingOfferEvidence()) suppressCurrentOffer()
+        } else {
+            resetMissingOfferEvidence()
+        }
+    }
+
+    private fun registerMissingOfferEvidence(nowElapsed: Long = SystemClock.elapsedRealtime()): Boolean {
+        if (missingOfferSinceElapsed == 0L) missingOfferSinceElapsed = nowElapsed
+        missingOfferChecks += 1
+        return missingOfferChecks >= MIN_MISSING_CHECKS &&
+            nowElapsed - missingOfferSinceElapsed >= OFFER_GONE_GRACE_MS
+    }
+
+    private fun resetMissingOfferEvidence() {
+        missingOfferSinceElapsed = 0L
+        missingOfferChecks = 0
+    }
+
+    private fun collectVisibleText(root: AccessibilityNodeInfo): String {
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        val pieces = mutableListOf<String>()
+        queue.add(root)
+        var visited = 0
+
+        fun addPiece(value: CharSequence?) {
+            val cleaned = value?.toString()?.trim()?.takeIf(String::isNotEmpty) ?: return
+            if (pieces.lastOrNull() != cleaned) pieces += cleaned
+        }
+
+        while (queue.isNotEmpty() && visited < 500) {
+            val node = queue.removeFirst()
+            visited += 1
+            addPiece(node.text)
+            addPiece(node.contentDescription)
+            for (index in 0 until node.childCount) node.getChild(index)?.let(queue::addLast)
+        }
+        return pieces.joinToString("\n")
+    }
+
+    private fun hasDecisionPair(text: String): Boolean {
+        val lower = text.lowercase(Locale.ROOT)
+        val accept = listOf("accept", "priimti", "принять", "прийняти").any(lower::contains)
+        val decline = listOf("decline", "reject", "atmesti", "отклонить", "відхилити").any(lower::contains)
+        return accept && decline
+    }
+
+    private fun packageForPlatform(platform: String): String = when {
+        platform.equals("Wolt", ignoreCase = true) -> CourierSignals.WOLT_PACKAGE
+        platform.equals("Bolt", ignoreCase = true) -> CourierSignals.BOLT_PACKAGE
+        else -> ""
     }
 
     private fun moveOverlayTo(targetY: Int) {
@@ -387,13 +504,6 @@ internal class LiveOfferAdvisor(
         }
         voiceToggle?.text = if (LiveAdvisorSettings.voiceEnabled(service)) "🔊" else "🔇"
     }
-
-    private fun scheduleHide() {
-        handler.removeCallbacks(hideRunnable)
-        handler.postDelayed(hideRunnable, DISPLAY_MS)
-    }
-
-    private val hideRunnable = Runnable { hide() }
 
     private fun formatEconomics(parsed: ParsedOffer): String {
         val economics = PlatformOfferEconomicsCalculator.calculate(parsed)
@@ -456,7 +566,9 @@ internal class LiveOfferAdvisor(
     private fun formatKm(meters: Int): String = "${"%.2f".format(Locale.US, meters / 1000.0)} km"
 
     companion object {
-        private const val DISPLAY_MS = 28_000L
+        private const val VISIBILITY_CHECK_MS = 750L
+        private const val OFFER_GONE_GRACE_MS = 1_500L
+        private const val MIN_MISSING_CHECKS = 3
         private const val DEFAULT_Y_DP = 48
         private const val MIN_Y_DP = 12
         private const val BOTTOM_MARGIN_DP = 16
