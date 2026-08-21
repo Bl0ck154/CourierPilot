@@ -11,10 +11,10 @@ import android.net.Uri
 internal object OfferDataRepair {
     private const val PREFS = "courier_offer_repairs"
     private const val KEY_REVISION = "parser_repair_revision"
-    // Revision 7 re-runs historical cleanup with the Bolt stable-field identity introduced in 0.14.5.
-    // This removes the already-stored multi-captures (and their extra Gallery screenshots) without
-    // applying any merchant-name length/wording heuristics.
-    private const val CURRENT_REVISION = 7
+    // Revision 8 re-runs Bolt history through the bottom-card sanitizer and the longer stable-address
+    // dedupe window. This repairs old full-screen OCR pollution, drops clipped branch fragments and
+    // removes duplicate rows from the same live card.
+    private const val CURRENT_REVISION = 8
     private const val LIST_SEPARATOR = "\u001F"
 
     fun runIfNeeded(context: Context) {
