@@ -46,6 +46,12 @@ class LiveAdvisorV010Test {
             DeliveryEventType.DELIVERED,
             DeliveryLifecycleTracking.detect("Delivery completed")?.type,
         )
+        assertEquals(
+            DeliveryEventType.ACCEPTED,
+            DeliveryLifecycleTracking.detect(
+                "Order is ready for pickup\nArrive in 7 min\nVynoteka (Kapsų str.)\nKapsų g. 3-43, Vilnius",
+            )?.type,
+        )
         assertNull(DeliveryLifecycleTracking.detect("Restaurant · Customer · 2.4 km"))
         assertNull(DeliveryLifecycleTracking.detect("Accept · Decline · €7.20"))
 
