@@ -55,10 +55,14 @@ internal fun OfferRecord.withCurrentParsedStructure(): OfferRecord {
         ?: parsed?.deliveryCount
         ?: deliveryCount
 
+    val safeStoredRestaurant = restaurant?.takeUnless {
+        packageName == CourierSignals.BOLT_PACKAGE && BoltOfferTextSanitizer.isOrphanBranchFragment(it)
+    }
+
     return copy(
         priceCents = parsed?.priceCents ?: priceCents,
         distanceMeters = parsed?.distanceMeters ?: distanceMeters,
-        restaurant = parsed?.restaurant ?: normalizedMerchants.takeIf { it.isNotEmpty() }?.joinToString(", ") ?: restaurant,
+        restaurant = parsed?.restaurant ?: normalizedMerchants.takeIf { it.isNotEmpty() }?.joinToString(", ") ?: safeStoredRestaurant,
         merchantNames = normalizedMerchants,
         pickupAddresses = normalizedPickups,
         customerNames = normalizedCustomers,
