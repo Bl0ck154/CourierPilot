@@ -143,6 +143,42 @@ class BoltMultiStopV0148Test {
         assertEquals(2, recovery.orderedDropoffs.size)
     }
 
+
+    @Test
+    fun activePickupFallbackComesFirstAndDoesNotDuplicateSameRestaurant() {
+        val merged = BoltPickupAddressPlanner.merge(
+            active = listOf("Basanavičiaus g. 19, Vilnius"),
+            offered = listOf("BASANAVIČIAUS G. 19, VILNIUS", "Gedimino pr. 5, Vilnius"),
+        )
+
+        assertEquals(2, merged.size)
+        assertTrue(BoltPickupAddressPlanner.sameAddress("Basanavičiaus g. 19, Vilnius", merged[0]))
+        assertTrue(BoltPickupAddressPlanner.sameAddress("Gedimino pr. 5, Vilnius", merged[1]))
+    }
+
+    @Test
+    fun twoExpectedCustomersAreNotCollapsedJustBecauseTheyAreWithinThirtyFiveMeters() {
+        val current = RoutePoint(54.6800000, 25.2800000)
+        val metersPerPixel = 5.0
+        val currentScreen = ScreenPoint(100.0, 100.0)
+        val pickupScreen = ScreenPoint(200.0, 100.0)
+        val pickupPoint = screenToGeoNorthUp(current, currentScreen, pickupScreen, metersPerPixel)
+
+        val recovery = BoltMultiStopMapRecovery.recover(
+            markers = markers(
+                current = currentScreen,
+                pickups = listOf(pickupScreen),
+                dropoffs = listOf(ScreenPoint(300.0, 200.0), ScreenPoint(304.0, 202.0)),
+            ),
+            current = current,
+            knownPickups = listOf(pickup(pickupPoint, "Restaurant")),
+            expectedDropoffs = 2,
+        )
+
+        assertNotNull(recovery)
+        assertEquals(2, recovery!!.orderedDropoffs.size)
+    }
+
     private fun markers(
         current: ScreenPoint,
         pickups: List<ScreenPoint>,

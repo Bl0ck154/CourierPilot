@@ -4,6 +4,7 @@ import android.content.Context
 import java.util.Locale
 
 internal data class DeliveryLifecycleEvidence(val type: DeliveryEventType, val cue: String)
+internal data class DeliveryLifecycleTask(val offerId: Long, val state: DeliveryEventType)
 
 /**
  * Conservative delivery outcome tracker. It records only explicit textual state cues from the
@@ -37,8 +38,14 @@ internal object DeliveryLifecycleTracking {
         if (text.isBlank()) return
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val prefix = keyPrefix(packageName)
-        val offerId = prefs.getLong("${prefix}_offer", -1L).takeIf { it > 0 } ?: return
         val evidence = detect(text) ?: return
+        // Pickup completion can belong to an older Bolt task while an add-on offer is currently
+        // tracked as the latest offer. Update the independent active-pickup fallback before the
+        // single-offer lifecycle gate potentially rejects this transition.
+        if (packageName == CourierSignals.BOLT_PACKAGE && evidence.type == DeliveryEventType.PICKED_UP) {
+            BoltActivePickupStore.markPickedUp(context, stopKey(text, evidence.type))
+        }
+        val offerId = prefs.getLong("${prefix}_offer", -1L).takeIf { it > 0 } ?: return
         val now = System.currentTimeMillis()
         val lastType = prefs.getString("${prefix}_last_event", null)
             ?.let { runCatching { DeliveryEventType.valueOf(it) }.getOrNull() }
@@ -69,14 +76,20 @@ internal object DeliveryLifecycleTracking {
         }
     }
 
-    /** Current trusted lifecycle state for this courier app, if CourierPilot has an active task. */
-    fun currentState(context: Context, packageName: String): DeliveryEventType? {
+    /** Current trusted lifecycle task for this courier app, if CourierPilot has one. */
+    fun currentTask(context: Context, packageName: String): DeliveryLifecycleTask? {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val prefix = keyPrefix(packageName)
-        if (prefs.getLong("${prefix}_offer", -1L) <= 0L) return null
-        return prefs.getString("${prefix}_last_event", null)
+        val offerId = prefs.getLong("${prefix}_offer", -1L).takeIf { it > 0L } ?: return null
+        val state = prefs.getString("${prefix}_last_event", null)
             ?.let { runCatching { DeliveryEventType.valueOf(it) }.getOrNull() }
+            ?: return null
+        return DeliveryLifecycleTask(offerId, state)
     }
+
+    /** Current trusted lifecycle state for this courier app, if CourierPilot has an active task. */
+    fun currentState(context: Context, packageName: String): DeliveryEventType? =
+        currentTask(context, packageName)?.state
 
     internal fun canAdvance(from: DeliveryEventType, to: DeliveryEventType): Boolean = when (from) {
         DeliveryEventType.OFFER_CAPTURED -> to in setOf(DeliveryEventType.ACCEPTED, DeliveryEventType.CANCELLED)
