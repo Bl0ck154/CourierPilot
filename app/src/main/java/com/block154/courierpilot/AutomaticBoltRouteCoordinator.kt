@@ -12,6 +12,7 @@ import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
@@ -33,10 +34,15 @@ internal data class AutomaticBoltRouteOutcome(
 
 internal data class BoltSemanticMarkers(
     val currentLocation: BoltMarkerEvidence?,
-    val pickup: BoltMarkerEvidence?,
-    val dropoff: BoltMarkerEvidence?,
+    val pickups: List<BoltMarkerEvidence>,
+    val dropoffs: List<BoltMarkerEvidence>,
     val unknown: List<BoltMarkerEvidence>,
-)
+) {
+    val pickup: BoltMarkerEvidence?
+        get() = pickups.maxByOrNull { it.confidence }
+    val dropoff: BoltMarkerEvidence?
+        get() = dropoffs.maxByOrNull { it.confidence }
+}
 
 /**
  * Conservative Accessibility-only map-marker extraction. A node must live in a map-ish subtree or
@@ -49,8 +55,8 @@ internal object BoltMarkerSemanticExtractor {
         walk(root, insideMap = false, parsed = parsed, out = markers, depth = 0)
         return BoltSemanticMarkers(
             currentLocation = markers.filter { it.kind == BoltMarkerKind.CURRENT_LOCATION }.maxByOrNull { it.confidence },
-            pickup = markers.filter { it.kind == BoltMarkerKind.PICKUP }.maxByOrNull { it.confidence },
-            dropoff = markers.filter { it.kind == BoltMarkerKind.DROPOFF }.maxByOrNull { it.confidence },
+            pickups = markers.filter { it.kind == BoltMarkerKind.PICKUP }.sortedByDescending { it.confidence },
+            dropoffs = markers.filter { it.kind == BoltMarkerKind.DROPOFF }.sortedByDescending { it.confidence },
             unknown = markers.filter { it.kind == BoltMarkerKind.UNKNOWN },
         )
     }
@@ -148,11 +154,251 @@ internal object BoltMarkerSemanticExtractor {
     private val STOP_TOKENS = setOf("vilnius", "vilniaus", "street", "str", "gatve", "map", "marker")
 }
 
+internal data class BoltMapStopRecovery(
+    val orderedPickups: List<ResolvedWaypoint>,
+    val orderedDropoffs: List<ResolvedWaypoint>,
+    val transform: LocalMapTransform,
+    val matchedPickupMarkerIndices: Set<Int>,
+)
+
+/** Pure multi-marker recovery, separated from Android I/O so real stacked Bolt cases can be tested. */
+internal object BoltMultiStopMapRecovery {
+    private data class Candidate(
+        val transform: LocalMapTransform,
+        val anchorKnownIndex: Int,
+        val anchorMarkerIndex: Int,
+        val score: Double,
+        val residualMeters: Double?,
+    )
+
+    fun recover(
+        markers: BoltSemanticMarkers?,
+        current: RoutePoint,
+        knownPickups: List<ResolvedWaypoint>,
+        expectedDropoffs: Int?,
+    ): BoltMapStopRecovery? {
+        val evidence = markers ?: return null
+        val currentMarker = evidence.currentLocation ?: return null
+        if (knownPickups.isEmpty() || evidence.pickups.isEmpty()) return null
+
+        val selected = selectTransform(currentMarker, current, knownPickups, evidence.pickups) ?: return null
+        val transform = selected.transform
+        val matched = matchKnownPickups(
+            transform = transform,
+            knownPickups = knownPickups,
+            pickupMarkers = evidence.pickups,
+            anchorKnownIndex = selected.anchorKnownIndex,
+            anchorMarkerIndex = selected.anchorMarkerIndex,
+        )
+
+        val inferredPickups = evidence.pickups.mapIndexedNotNull { index, marker ->
+            if (index in matched.values) return@mapIndexedNotNull null
+            val projected = projectValidated(transform, marker.screenCenter, current, knownPickups.map { it.point })
+                ?: return@mapIndexedNotNull null
+            if (knownPickups.any { distanceMeters(it.point, projected) < DUPLICATE_STOP_METERS }) {
+                return@mapIndexedNotNull null
+            }
+            ResolvedWaypoint(
+                kind = WaypointKind.PICKUP,
+                point = projected,
+                label = "Bolt pickup map marker",
+                provenance = CoordinateProvenance.BOLT_MAP_RECOVERY,
+                confidence = minOf(marker.confidence, 0.72),
+            )
+        }.dedupeByDistance()
+
+        val allPickups = if (inferredPickups.isEmpty()) {
+            knownPickups
+        } else {
+            nearestNeighborOrder(current, knownPickups + inferredPickups)
+        }
+
+        var dropoffs = evidence.dropoffs.mapNotNull { marker ->
+            val projected = projectValidated(transform, marker.screenCenter, current, allPickups.map { it.point })
+                ?: return@mapNotNull null
+            ResolvedWaypoint(
+                kind = WaypointKind.DROPOFF,
+                point = projected,
+                label = "Bolt customer map marker",
+                provenance = CoordinateProvenance.BOLT_MAP_RECOVERY,
+                confidence = minOf(marker.confidence, 0.72),
+            )
+        }.dedupeByDistance()
+
+        expectedDropoffs?.takeIf { it > 0 }?.let { expected ->
+            if (dropoffs.size > expected) dropoffs = dropoffs.take(expected)
+        }
+        val startForDropoffs = allPickups.lastOrNull()?.point ?: current
+        dropoffs = nearestNeighborOrder(startForDropoffs, dropoffs)
+
+        return BoltMapStopRecovery(
+            orderedPickups = allPickups,
+            orderedDropoffs = dropoffs,
+            transform = transform,
+            matchedPickupMarkerIndices = matched.values.toSet(),
+        )
+    }
+
+    private fun selectTransform(
+        currentMarker: BoltMarkerEvidence,
+        current: RoutePoint,
+        knownPickups: List<ResolvedWaypoint>,
+        pickupMarkers: List<BoltMarkerEvidence>,
+    ): Candidate? {
+        val candidates = mutableListOf<Candidate>()
+        knownPickups.forEachIndexed { knownIndex, known ->
+            pickupMarkers.forEachIndexed { markerIndex, marker ->
+                val transform = runCatching {
+                    LocalMapTransform.fromTwoAnchors(
+                        KnownMapAnchor(currentMarker.screenCenter, current),
+                        KnownMapAnchor(marker.screenCenter, known.point),
+                    )
+                }.getOrNull() ?: return@forEachIndexed
+                if (transform.metersPerPixel !in MIN_METERS_PER_PIXEL..MAX_METERS_PER_PIXEL) return@forEachIndexed
+                if (abs(transform.clockwiseRotationDegrees) > MAX_ABS_ROTATION_DEGREES) return@forEachIndexed
+
+                val residual = validationResidual(
+                    transform,
+                    knownPickups,
+                    pickupMarkers,
+                    knownIndex,
+                    markerIndex,
+                )
+                if (residual != null && residual > MAX_KNOWN_PICKUP_RESIDUAL_METERS) return@forEachIndexed
+
+                val scalePenalty = when {
+                    transform.metersPerPixel < 0.10 -> 500.0
+                    transform.metersPerPixel > 50.0 -> 500.0
+                    else -> 0.0
+                }
+                val score = abs(transform.clockwiseRotationDegrees) * ROTATION_PENALTY_PER_DEGREE +
+                    (residual ?: 0.0) + scalePenalty
+                candidates += Candidate(transform, knownIndex, markerIndex, score, residual)
+            }
+        }
+        return candidates.minByOrNull { it.score }
+    }
+
+    private fun validationResidual(
+        transform: LocalMapTransform,
+        knownPickups: List<ResolvedWaypoint>,
+        pickupMarkers: List<BoltMarkerEvidence>,
+        anchorKnownIndex: Int,
+        anchorMarkerIndex: Int,
+    ): Double? {
+        if (knownPickups.size < 2 || pickupMarkers.size < 2) return null
+        val remainingMarkers = pickupMarkers.indices.filter { it != anchorMarkerIndex }.toMutableSet()
+        var total = 0.0
+        var matchedCount = 0
+        knownPickups.indices
+            .filter { it != anchorKnownIndex }
+            .forEach { knownIndex ->
+                val best = remainingMarkers
+                    .map { markerIndex ->
+                        val projected = runCatching { transform.screenToGeo(pickupMarkers[markerIndex].screenCenter) }
+                            .getOrNull() ?: return@map markerIndex to Double.POSITIVE_INFINITY
+                        markerIndex to distanceMeters(knownPickups[knownIndex].point, projected)
+                    }
+                    .minByOrNull { it.second }
+                    ?: return@forEach
+                if (!best.second.isFinite()) return@forEach
+                total += best.second
+                matchedCount++
+                remainingMarkers.remove(best.first)
+            }
+        return if (matchedCount > 0) total / matchedCount else null
+    }
+
+    private fun matchKnownPickups(
+        transform: LocalMapTransform,
+        knownPickups: List<ResolvedWaypoint>,
+        pickupMarkers: List<BoltMarkerEvidence>,
+        anchorKnownIndex: Int,
+        anchorMarkerIndex: Int,
+    ): Map<Int, Int> {
+        val result = mutableMapOf(anchorKnownIndex to anchorMarkerIndex)
+        val unusedMarkers = pickupMarkers.indices.filter { it != anchorMarkerIndex }.toMutableSet()
+        knownPickups.indices
+            .filter { it != anchorKnownIndex }
+            .forEach { knownIndex ->
+                val best = unusedMarkers
+                    .map { markerIndex ->
+                        val projected = runCatching { transform.screenToGeo(pickupMarkers[markerIndex].screenCenter) }
+                            .getOrNull() ?: return@map markerIndex to Double.POSITIVE_INFINITY
+                        markerIndex to distanceMeters(knownPickups[knownIndex].point, projected)
+                    }
+                    .minByOrNull { it.second }
+                    ?: return@forEach
+                if (best.second <= MAX_KNOWN_PICKUP_RESIDUAL_METERS) {
+                    result[knownIndex] = best.first
+                    unusedMarkers.remove(best.first)
+                }
+            }
+        return result
+    }
+
+    private fun projectValidated(
+        transform: LocalMapTransform,
+        screen: ScreenPoint,
+        current: RoutePoint,
+        anchors: List<RoutePoint>,
+    ): RoutePoint? {
+        val projected = runCatching { transform.screenToGeo(screen) }.getOrNull() ?: return null
+        if (distanceMeters(current, projected) !in MIN_PROJECTED_DISTANCE_METERS..MAX_PROJECTED_DISTANCE_METERS) return null
+        if (anchors.isNotEmpty() && anchors.minOf { distanceMeters(it, projected) } > MAX_PROJECTED_DISTANCE_METERS) return null
+        return projected
+    }
+
+    private fun List<ResolvedWaypoint>.dedupeByDistance(): List<ResolvedWaypoint> {
+        val result = mutableListOf<ResolvedWaypoint>()
+        for (candidate in this) {
+            if (result.none { distanceMeters(it.point, candidate.point) < DUPLICATE_STOP_METERS }) result += candidate
+        }
+        return result
+    }
+
+    private fun nearestNeighborOrder(
+        start: RoutePoint,
+        points: List<ResolvedWaypoint>,
+    ): List<ResolvedWaypoint> {
+        if (points.size <= 1) return points
+        val remaining = points.toMutableList()
+        val ordered = mutableListOf<ResolvedWaypoint>()
+        var cursor = start
+        while (remaining.isNotEmpty()) {
+            val next = remaining.minByOrNull { distanceMeters(cursor, it.point) } ?: break
+            ordered += next
+            remaining.remove(next)
+            cursor = next.point
+        }
+        return ordered
+    }
+
+    private fun distanceMeters(a: RoutePoint, b: RoutePoint): Double {
+        val radius = 6_371_000.0
+        val p1 = Math.toRadians(a.latitude)
+        val p2 = Math.toRadians(b.latitude)
+        val dLat = Math.toRadians(b.latitude - a.latitude)
+        val dLon = Math.toRadians(b.longitude - a.longitude)
+        val h = sin(dLat / 2) * sin(dLat / 2) + cos(p1) * cos(p2) * sin(dLon / 2) * sin(dLon / 2)
+        return radius * 2 * atan2(sqrt(h), sqrt(1 - h))
+    }
+
+    private const val MIN_METERS_PER_PIXEL = 0.05
+    private const val MAX_METERS_PER_PIXEL = 100.0
+    private const val MAX_ABS_ROTATION_DEGREES = 45.0
+    private const val ROTATION_PENALTY_PER_DEGREE = 8.0
+    private const val MAX_KNOWN_PICKUP_RESIDUAL_METERS = 400.0
+    private const val MIN_PROJECTED_DISTANCE_METERS = 20.0
+    private const val MAX_PROJECTED_DISTANCE_METERS = 40_000.0
+    private const val DUPLICATE_STOP_METERS = 35.0
+}
+
 /**
- * Bolt route pipeline. Bolt reliably exposes textual pickup data more often than the customer
- * destination. Current -> pickup remains useful on its own. For the customer point, prefer semantic
- * Accessibility markers when Bolt exposes them and otherwise recover the three stable Bolt marker
- * colors from the already-persisted clean offer screenshot.
+ * Bolt route pipeline. Textual pickup rows are geocoded first. Map pixels then add any hidden pickup
+ * (for example an add-on offered while another order is already active) and all customer markers.
+ * If the screenshot cannot recover the full expected drop-off set, routing fails closed to known
+ * pickups rather than inventing a partial customer route.
  */
 internal object AutomaticBoltRouteCoordinator {
     private val executor = Executors.newSingleThreadExecutor()
@@ -178,68 +424,71 @@ internal object AutomaticBoltRouteCoordinator {
             completeFailure(app, offerId, platform, parsed, emptyList(), null, "location permission missing", onComplete)
             return
         }
-
-        val pickupAddress = parsed.pickupAddresses.firstOrNull()?.takeIf { it.isNotBlank() }
-        if (pickupAddress == null) {
+        if (parsed.pickupAddresses.none { it.isNotBlank() }) {
             completeFailure(app, offerId, platform, parsed, emptyList(), null, "Bolt pickup address unavailable", onComplete)
             return
         }
 
-        // Preserve semantic geometry while the priced offer is still active. The user's current Bolt
-        // build exposes only empty containers, but keeping this path costs nothing and supports other
-        // app versions that may expose proper marker semantics.
-        val initialSemanticMarkers = captureMapMarkers(context, parsed)?.takeIf(::hasCompleteMarkers)
+        val initialSemanticMarkers = captureMapMarkers(context, parsed)?.takeIf(::hasUsefulMarkers)
 
         RouteResearchLocation.requestCurrent(app) { locationResult ->
             val fix = locationResult.getOrElse {
                 completeFailure(app, offerId, platform, parsed, emptyList(), null, "current location unavailable", onComplete)
                 return@requestCurrent
             }
-            resolveStopWithTimeout(app, pickupAddress) { pickupResult ->
-                val pickup = pickupResult.getOrElse {
-                    completeFailure(app, offerId, platform, parsed, currentOnly(fix), fix.accuracyMeters, "Bolt pickup geocoding failed", onComplete)
-                    return@resolveStopWithTimeout
+            resolvePickups(app, parsed) { knownPickups ->
+                if (knownPickups.isEmpty()) {
+                    completeFailure(
+                        app,
+                        offerId,
+                        platform,
+                        parsed,
+                        currentOnly(fix),
+                        fix.accuracyMeters,
+                        "Bolt pickup geocoding failed",
+                        onComplete,
+                    )
+                    return@resolvePickups
                 }
 
-                val baseWaypoints = listOf(
-                    ResolvedWaypoint(
-                        kind = WaypointKind.CURRENT_LOCATION,
-                        point = fix.point,
-                        label = "Current location",
-                        provenance = CoordinateProvenance.DEVICE_GPS,
-                        confidence = locationConfidence(fix),
-                    ),
-                    ResolvedWaypoint(
-                        kind = WaypointKind.PICKUP,
-                        point = pickup,
-                        label = parsed.restaurant ?: parsed.merchantNames.firstOrNull() ?: pickupAddress,
-                        provenance = CoordinateProvenance.GEOCODED_ADDRESS,
-                        confidence = 0.85,
-                    ),
-                )
-
                 val lateSemanticMarkers = initialSemanticMarkers
-                    ?: captureMapMarkers(context, parsed)?.takeIf(::hasCompleteMarkers)
+                    ?: captureMapMarkers(context, parsed)?.takeIf(::hasUsefulMarkers)
 
                 executor.execute {
-                    val screenshotMarkers = if (lateSemanticMarkers == null) {
-                        loadScreenshotMarkers(app, offerId)
-                    } else {
-                        null
-                    }
+                    val screenshotMarkers = if (lateSemanticMarkers == null) loadScreenshotMarkers(app, offerId) else null
                     val mapMarkers = lateSemanticMarkers ?: screenshotMarkers
                     val markerSource = when {
                         lateSemanticMarkers != null -> "Accessibility semantics"
                         screenshotMarkers != null -> "offer screenshot"
                         else -> null
                     }
-                    val recoveredDropoff = recoverDropoff(mapMarkers, fix.point, pickup)
-                    val waypoints = if (recoveredDropoff != null) baseWaypoints + recoveredDropoff else baseWaypoints
-                    val scope = if (recoveredDropoff != null) BoltRouteScope.FULL else BoltRouteScope.PICKUP_ONLY
+
+                    val recovery = BoltMultiStopMapRecovery.recover(
+                        markers = mapMarkers,
+                        current = fix.point,
+                        knownPickups = knownPickups,
+                        expectedDropoffs = parsed.deliveryCount,
+                    )
+                    val expectedDropoffs = parsed.deliveryCount?.takeIf { it > 0 }
+                    val fullDropoffSet = recovery?.orderedDropoffs?.takeIf { recovered ->
+                        recovered.isNotEmpty() && (expectedDropoffs == null || recovered.size >= expectedDropoffs)
+                    }
+
+                    val currentWaypoint = currentOnly(fix).first()
+                    val routedPickups = recovery?.orderedPickups ?: knownPickups
+                    val waypoints = buildList {
+                        add(currentWaypoint)
+                        addAll(routedPickups)
+                        if (fullDropoffSet != null) addAll(fullDropoffSet)
+                    }
+                    val scope = if (fullDropoffSet != null) BoltRouteScope.FULL else BoltRouteScope.PICKUP_ONLY
+                    val pickupCount = routedPickups.size
+                    val dropoffCount = fullDropoffSet?.size ?: 0
                     val note = if (scope == BoltRouteScope.FULL) {
-                        "customer marker recovered from Bolt ${markerSource ?: "map"}"
+                        "$pickupCount pickup${if (pickupCount == 1) "" else "s"} + $dropoffCount drop-off${if (dropoffCount == 1) "" else "s"} recovered from Bolt ${markerSource ?: "map"}"
                     } else {
-                        "customer marker not recoverable yet; showing route to pickup only"
+                        val expectedLabel = expectedDropoffs?.let { " ($it expected)" }.orEmpty()
+                        "showing $pickupCount pickup${if (pickupCount == 1) "" else "s"}; customer marker set incomplete$expectedLabel"
                     }
 
                     val comparison = runCatching {
@@ -278,6 +527,36 @@ internal object AutomaticBoltRouteCoordinator {
         }
     }
 
+    private fun resolvePickups(
+        context: Context,
+        parsed: ParsedOffer,
+        callback: (List<ResolvedWaypoint>) -> Unit,
+    ) {
+        val addresses = parsed.pickupAddresses.filter { it.isNotBlank() }.distinct()
+        val result = mutableListOf<ResolvedWaypoint>()
+
+        fun next(index: Int) {
+            if (index >= addresses.size) {
+                callback(result.toList())
+                return
+            }
+            val address = addresses[index]
+            resolveStopWithTimeout(context, address) { resolution ->
+                resolution.getOrNull()?.let { point ->
+                    result += ResolvedWaypoint(
+                        kind = WaypointKind.PICKUP,
+                        point = point,
+                        label = parsed.merchantNames.getOrNull(index) ?: address,
+                        provenance = CoordinateProvenance.GEOCODED_ADDRESS,
+                        confidence = 0.85,
+                    )
+                }
+                next(index + 1)
+            }
+        }
+        next(0)
+    }
+
     private fun captureMapMarkers(
         context: Context,
         parsed: ParsedOffer,
@@ -303,41 +582,8 @@ internal object AutomaticBoltRouteCoordinator {
         }
     }
 
-    private fun hasCompleteMarkers(markers: BoltSemanticMarkers): Boolean =
-        markers.currentLocation != null && markers.pickup != null && markers.dropoff != null
-
-    private fun recoverDropoff(
-        markers: BoltSemanticMarkers?,
-        current: RoutePoint,
-        pickup: RoutePoint,
-    ): ResolvedWaypoint? {
-        val evidence = markers ?: return null
-        val currentMarker = evidence.currentLocation ?: return null
-        val pickupMarker = evidence.pickup ?: return null
-        val dropoffMarker = evidence.dropoff ?: return null
-
-        val transform = runCatching {
-            LocalMapTransform.fromTwoAnchors(
-                KnownMapAnchor(currentMarker.screenCenter, current),
-                KnownMapAnchor(pickupMarker.screenCenter, pickup),
-            )
-        }.getOrNull() ?: return null
-        if (transform.metersPerPixel !in 0.05..250.0) return null
-
-        val projected = runCatching { transform.screenToGeo(dropoffMarker.screenCenter) }.getOrNull() ?: return null
-        val fromCurrent = distanceMeters(current, projected)
-        val fromPickup = distanceMeters(pickup, projected)
-        if (fromCurrent !in 20.0..40_000.0 || fromPickup !in 20.0..40_000.0) return null
-
-        val confidence = minOf(currentMarker.confidence, pickupMarker.confidence, dropoffMarker.confidence, 0.78)
-        return ResolvedWaypoint(
-            kind = WaypointKind.DROPOFF,
-            point = projected,
-            label = "Bolt customer map marker",
-            provenance = CoordinateProvenance.BOLT_MAP_RECOVERY,
-            confidence = confidence,
-        )
-    }
+    private fun hasUsefulMarkers(markers: BoltSemanticMarkers): Boolean =
+        markers.currentLocation != null && markers.pickups.isNotEmpty() && markers.dropoffs.isNotEmpty()
 
     private fun currentOnly(fix: CurrentLocationFix) = listOf(
         ResolvedWaypoint(
@@ -402,16 +648,6 @@ internal object AutomaticBoltRouteCoordinator {
         fix.accuracyMeters <= 50f -> 0.9
         fix.accuracyMeters <= 100f -> 0.75
         else -> 0.6
-    }
-
-    private fun distanceMeters(a: RoutePoint, b: RoutePoint): Double {
-        val radius = 6_371_000.0
-        val p1 = Math.toRadians(a.latitude)
-        val p2 = Math.toRadians(b.latitude)
-        val dLat = Math.toRadians(b.latitude - a.latitude)
-        val dLon = Math.toRadians(b.longitude - a.longitude)
-        val h = sin(dLat / 2) * sin(dLat / 2) + cos(p1) * cos(p2) * sin(dLon / 2) * sin(dLon / 2)
-        return radius * 2 * atan2(sqrt(h), sqrt(1 - h))
     }
 
     private const val GEOCODER_TIMEOUT_MS = 7_000L
