@@ -10,7 +10,7 @@ internal object OfferDedupeIdentity {
     const val PERSIST_DEDUPE_WINDOW_MS = 10L * 60L * 1000L
     private const val NORMAL_FUZZY_WINDOW_MS = 3L * 60L * 1000L
     private const val SPARSE_FRAME_WINDOW_MS = 45L * 1000L
-    private const val BOLT_CARD_BURST_WINDOW_MS = 45L * 1000L
+    private const val BOLT_CARD_BURST_WINDOW_MS = 120L * 1000L
     private const val BOLT_ETA_TOLERANCE_MINUTES = 2
     private const val DISTANCE_TOLERANCE_METERS = 150
 
@@ -61,16 +61,17 @@ internal object OfferDedupeIdentity {
         val elapsed = abs(first.capturedAt - second.capturedAt)
         if (elapsed > PERSIST_DEDUPE_WINDOW_MS) return false
 
-        // The current Bolt build exposes its map as an empty Accessibility container. Full-screen
-        // OCR used to alternate between map labels and the real venue name, creating several rows
-        // and screenshots for one offer. During one short live-card burst, the same canonical route
-        // address + price is stronger identity than merchant text. This deliberately makes no
-        // assumptions about merchant-name length or wording.
+        // Bolt's bottom card can be captured more than once while OCR enriches the same screen. The
+        // venue spelling and ETA may change frame-to-frame, so for a short live-card burst an exact
+        // canonical address set + price is enough proof. If only part of the route is visible, fall
+        // back to address overlap plus compatible ETA.
         if (first.packageName == CourierSignals.BOLT_PACKAGE && elapsed <= BOLT_CARD_BURST_WINDOW_MS) {
             val firstRouteAddresses = addressTokens(first.pickupAddresses + first.dropoffAddresses)
             val secondRouteAddresses = addressTokens(second.pickupAddresses + second.dropoffAddresses)
             val countCompatible = first.deliveryCount == null || second.deliveryCount == null ||
                 first.deliveryCount == second.deliveryCount
+            val exactAddressSet = firstRouteAddresses.isNotEmpty() && firstRouteAddresses == secondRouteAddresses
+            if (exactAddressSet && countCompatible) return true
             if (
                 overlaps(firstRouteAddresses, secondRouteAddresses) &&
                 countCompatible &&
