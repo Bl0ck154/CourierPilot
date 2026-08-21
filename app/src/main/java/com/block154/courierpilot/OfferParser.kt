@@ -193,13 +193,16 @@ internal object OfferParser {
                 candidates += Candidate(candidate, score, index)
             }
 
-            candidates
+            val bestCandidate = candidates
                 .maxWithOrNull(compareBy<Candidate> { it.score }.thenBy { it.lineIndex })
-                ?.takeIf { it.score >= BOLT_MIN_MERCHANT_SCORE }
-                ?.name
-                ?.let { merchant ->
-                    if (merchants.none { namesEquivalent(it, merchant) }) merchants += merchant
-                }
+            // A venue can legitimately contain words such as "Park". The old map-label penalty is
+            // only a ranking signal when several candidates compete; never let it discard the sole
+            // card-title candidate for an address row.
+            val chosen = bestCandidate?.takeIf { it.score >= BOLT_MIN_MERCHANT_SCORE }
+                ?: candidates.singleOrNull()
+            chosen?.name?.let { merchant ->
+                if (merchants.none { namesEquivalent(it, merchant) }) merchants += merchant
+            }
 
             previousCardAddressIndex = addressIndex
         }
