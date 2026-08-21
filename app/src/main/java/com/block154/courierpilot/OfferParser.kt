@@ -39,6 +39,7 @@ internal object OfferParser {
     private val singleMinuteRegex = Regex("(?i)~?\\s*(\\d{1,3})\\s*min\\b")
     private val stackedHeaderRegex = Regex("(?i)^\\s*(\\d+)\\s+deliver(?:y|ies)\\s+from\\s*$")
     private val minuteOnlyRegex = Regex("(?i)^~?\\s*\\d{1,3}\\s*min$")
+    private val boltDropoffCountRegex = Regex("(?i)^\\s*drop[- ]?off\\s+points?\\s*:\\s*(\\d+)\\s*$")
     private val boltBranchNameRegex = Regex(
         "(?i).*\\([^)]*(?:\\bstr\\.?|\\bstreet|\\bg\\.?|\\bgatv(?:ė|e)?|\\bpr\\.?|\\bprospektas|\\bave\\.?|\\bavenue|\\brd\\.?|\\broad)[^)]*\\)\\s*$"
     )
@@ -50,7 +51,7 @@ internal object OfferParser {
     fun parse(text: String): ParsedOffer {
         val lines = normalizedLines(text)
         val merchantSummary = parseWoltMerchantSummary(lines)
-        val merchantNames = merchantSummary?.second ?: parseBoltMerchant(lines)?.let(::listOf).orEmpty()
+        val merchantNames = merchantSummary?.second ?: parseBoltMerchants(lines)
         val stops = parseAddressStops(lines, merchantNames)
         val merchantStops = stops.filter { it.isMerchant }
         val customerStops = stops.filterNot { it.isMerchant }
@@ -74,9 +75,12 @@ internal object OfferParser {
         // present, but also count parsed customer stops because Wolt occasionally keeps a singular
         // "Delivery from" heading for a multi-drop route.
         val headerDeliveryCount = merchantSummary?.first ?: 0
+        val boltDropoffCount = lines.firstNotNullOfOrNull { line ->
+            boltDropoffCountRegex.matchEntire(line)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        } ?: 0
         val customerStopCount = customerStops.size
         val baselineCount = if (merchantNames.isNotEmpty()) 1 else 0
-        val deliveryCount = maxOf(headerDeliveryCount, customerStopCount, baselineCount)
+        val deliveryCount = maxOf(headerDeliveryCount, boltDropoffCount, customerStopCount, baselineCount)
             .takeIf { it > 0 }
 
         return ParsedOffer(
@@ -154,20 +158,29 @@ internal object OfferParser {
     }
 
     /**
-     * Bolt renders the order card on top of a live map. ML Kit may interleave labels from that map
-     * (for example a park, museum or just "Vilnius") between the real venue title and its address.
-     * Treat the address + nearby ETA/price as the card anchor and score all nearby name candidates
-     * instead of accepting whichever map label happens to be closest in OCR reading order.
+     * Bolt renders the order card on top of a live map. Each address in the bottom sheet anchors
+     * one visible pickup row, so stacked offers must keep a merchant per row instead of choosing one
+     * global winner for the whole screen. Merchant names are never rejected just for being short.
      */
-    private fun parseBoltMerchant(lines: List<String>): String? {
+    private fun parseBoltMerchants(lines: List<String>): List<String> {
         data class Candidate(val name: String, val score: Int, val lineIndex: Int)
 
-        val candidates = mutableListOf<Candidate>()
+        val merchants = mutableListOf<String>()
+        var previousCardAddressIndex = -1
         lines.forEachIndexed { addressIndex, address ->
             if (!looksLikeAddress(address)) return@forEachIndexed
 
             val cardScore = boltCardAddressScore(lines, addressIndex)
-            val start = maxOf(0, addressIndex - BOLT_NAME_LOOKBACK_LINES)
+            // Real pickup rows are followed by ETA and/or belong to the priced bottom sheet. Keep
+            // price-only evidence as a fallback when OCR misses an ETA line; do not require a
+            // particular merchant-name shape or length.
+            if (cardScore < BOLT_CARD_PRICE_BONUS) return@forEachIndexed
+
+            val start = maxOf(
+                previousCardAddressIndex + 1,
+                maxOf(0, addressIndex - BOLT_NAME_LOOKBACK_LINES),
+            )
+            val candidates = mutableListOf<Candidate>()
             for (index in start until addressIndex) {
                 val candidate = lines[index]
                 if (!isStopNameCandidate(candidate)) continue
@@ -179,12 +192,21 @@ internal object OfferParser {
                 if (looksLikeBoltMapLabel(candidate, address)) score -= BOLT_MAP_LABEL_PENALTY
                 candidates += Candidate(candidate, score, index)
             }
-        }
 
-        return candidates
-            .maxWithOrNull(compareBy<Candidate> { it.score }.thenBy { it.lineIndex })
-            ?.takeIf { it.score >= BOLT_MIN_MERCHANT_SCORE }
-            ?.name
+            val bestCandidate = candidates
+                .maxWithOrNull(compareBy<Candidate> { it.score }.thenBy { it.lineIndex })
+            // A venue can legitimately contain words such as "Park". The old map-label penalty is
+            // only a ranking signal when several candidates compete; never let it discard the sole
+            // card-title candidate for an address row.
+            val chosen = bestCandidate?.takeIf { it.score >= BOLT_MIN_MERCHANT_SCORE }
+                ?: candidates.singleOrNull()
+            chosen?.name?.let { merchant ->
+                if (merchants.none { namesEquivalent(it, merchant) }) merchants += merchant
+            }
+
+            previousCardAddressIndex = addressIndex
+        }
+        return merchants
     }
 
     private fun boltCardAddressScore(lines: List<String>, addressIndex: Int): Int {
@@ -304,6 +326,7 @@ internal object OfferParser {
         if (line.length !in 2..140) return false
         if (priceRegex.containsMatchIn(line) || distanceRegex.matches(line) || estimateRegex.containsMatchIn(line)) return false
         if (minuteOnlyRegex.matches(line) || looksLikeAddress(line)) return false
+        if (boltDropoffCountRegex.matches(line)) return false
         if (lower in GENERIC_LINES) return false
         if (lower.startsWith("pickup ") || lower.startsWith("delivery ")) return false
         if (lower.matches(Regex("^[\\d:.,%+\\- ]+$"))) return false

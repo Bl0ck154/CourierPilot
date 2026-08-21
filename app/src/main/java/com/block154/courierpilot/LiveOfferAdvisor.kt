@@ -123,13 +123,19 @@ internal class LiveOfferAdvisor(
             }
             val pedestrian = comparison.pedestrian.getOrNull()
             val cycleway = comparison.cycleway.getOrNull()
-            val scopeLabel = if (outcome.scope == BoltRouteScope.FULL) "Full route" else "To pickup"
+            val pickupCount = outcome.waypoints.count { it.kind == WaypointKind.PICKUP }
+            val dropoffCount = outcome.waypoints.count { it.kind == WaypointKind.DROPOFF }
+            val scopeLabel = if (outcome.scope == BoltRouteScope.FULL) {
+                "Full route · ${pickupCount}P/${dropoffCount}D"
+            } else {
+                "To pickup${if (pickupCount == 1) "" else "s"} · ${pickupCount}P"
+            }
             routeText?.text = buildString {
                 append(scopeLabel)
                 pedestrian?.let { append(" · 🟠 ${formatKm(it.distanceMeters)}") }
                 cycleway?.let { append(" · 🔵 ${formatKm(it.distanceMeters)}") }
                 if (outcome.scope == BoltRouteScope.PICKUP_ONLY) {
-                    append("\nCustomer distance pending Bolt map marker")
+                    append("\nCustomer map incomplete")
                 }
             }
             scheduleHide()
