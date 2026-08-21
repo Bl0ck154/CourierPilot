@@ -1,7 +1,6 @@
 package com.block154.courierpilot
 
 import java.text.Normalizer
-import java.util.Locale
 
 /**
  * Bolt's live map and offer bottom sheet share one rendered screen. Old builds occasionally fell
@@ -30,7 +29,8 @@ internal object BoltOfferTextSanitizer {
 
         // When an older capture accidentally contains the whole Bolt screen, the offer price lives
         // in the lower card and therefore appears after account/earnings amounts. Anchor on the last
-        // currency line, then retain enough lines above it to include venue + address + ETA.
+        // currency line, retain the nearby card text, and discard every earlier € line even when the
+        // textual window is wide enough to include an account total.
         val priceIndices = lines.indices.filter { priceRegex.containsMatchIn(lines[it]) }
         if (priceIndices.isEmpty()) return lines.joinToString("\n")
         val priceIndex = priceIndices.last()
@@ -45,7 +45,13 @@ internal object BoltOfferTextSanitizer {
             (priceIndex - 10).coerceAtLeast(0)
         }
         val end = (priceIndex + 6).coerceAtMost(lines.lastIndex)
-        return lines.subList(start, end + 1).joinToString("\n")
+
+        return (start..end)
+            .mapNotNull { index ->
+                val line = lines[index]
+                line.takeUnless { index != priceIndex && priceRegex.containsMatchIn(it) }
+            }
+            .joinToString("\n")
     }
 
     fun isOrphanBranchFragment(value: String): Boolean =
