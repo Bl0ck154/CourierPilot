@@ -17,7 +17,7 @@ internal object LiveAdvisorHub {
     )
 
     private var serviceRef = WeakReference<AccessibilityService>(null)
-    private var advisor: LiveOfferAdvisor? = null
+    private var advisor: StableLiveOfferAdvisor? = null
     private var currentOffer: CurrentAdvisorOffer? = null
 
     fun attach(context: Context) {
@@ -25,12 +25,12 @@ internal object LiveAdvisorHub {
         if (serviceRef.get() === service && advisor != null) return
         advisor?.destroy()
         serviceRef = WeakReference(service)
-        advisor = LiveOfferAdvisor(service) { platform, enabled ->
-            if (!enabled) return@LiveOfferAdvisor
-            val current = currentOffer ?: return@LiveOfferAdvisor
-            if (!current.record.platform.equals(platform, ignoreCase = true)) return@LiveOfferAdvisor
+        advisor = StableLiveOfferAdvisor(service, routeToggle@ { platform, enabled ->
+            if (!enabled) return@routeToggle
+            val current = currentOffer ?: return@routeToggle
+            if (!current.record.platform.equals(platform, ignoreCase = true)) return@routeToggle
             startRouteForOffer(service, current)
-        }
+        })
     }
 
     /**
@@ -40,7 +40,7 @@ internal object LiveAdvisorHub {
     fun hideForCapture(context: Context) {
         attach(context)
         currentOffer = null
-        advisor?.suppressCurrentOffer()
+        advisor?.suppressCurrentOffer("new offer capture started")
     }
 
     fun onOfferPersisted(offerId: Long, record: OfferRecord) {
@@ -78,6 +78,9 @@ internal object LiveAdvisorHub {
         currentOffer = current
 
         DeliveryLifecycleTracking.onOfferCaptured(service, record.packageName, offerId, record.capturedAt)
+
+        // The card shell is rendered synchronously before any route/geocoder work starts. Valhalla
+        // only updates rows inside this already-visible card; it never controls whether the card exists.
         currentAdvisor.showBase(record.platform, parsed)
         startRouteForOffer(service, current)
     }
