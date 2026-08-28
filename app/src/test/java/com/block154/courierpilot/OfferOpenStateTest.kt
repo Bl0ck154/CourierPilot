@@ -55,4 +55,17 @@ class OfferOpenStateTest {
         assertFalse(OfferOpenState.isCurrent(context, CourierSignals.BOLT_PACKAGE, "old", oldGeneration))
         assertTrue(OfferOpenState.isCurrent(context, CourierSignals.BOLT_PACKAGE, "new", newGeneration))
     }
+    @Test
+    fun woltUsesTheSameWindowAndOfferVerificationStateMachine() {
+        val key = "wolt-offer-1"
+        val generation = OfferOpenState.begin(context, CourierSignals.WOLT_PACKAGE, key)
+
+        assertTrue(OfferOpenState.markWindowVisible(context, CourierSignals.WOLT_PACKAGE))
+        assertTrue(OfferOpenState.wasWindowVisible(context, CourierSignals.WOLT_PACKAGE, key, generation))
+        assertFalse(OfferOpenState.wasOfferVisible(context, CourierSignals.WOLT_PACKAGE, key, generation))
+        assertTrue(OfferOpenState.markOfferVisible(context, CourierSignals.WOLT_PACKAGE))
+        assertTrue(OfferOpenState.wasOfferVisible(context, CourierSignals.WOLT_PACKAGE, key, generation))
+    }
+
+
 }

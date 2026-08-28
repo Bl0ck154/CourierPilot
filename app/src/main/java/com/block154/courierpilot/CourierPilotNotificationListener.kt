@@ -40,13 +40,11 @@ class CourierPilotNotificationListener : NotificationListenerService() {
         val notification = sbn.notification
         val decision = NotificationOfferClassifier.classify(this, sbn)
 
-        // Keep likely/unknown transient courier pushes briefly. If Accessibility subsequently proves
-        // that an offer screen is visible, this candidate becomes a learned structural profile.
-        if (decision.isOffer || decision.score >= CANDIDATE_MEMORY_SCORE) {
-            NotificationOfferProfileStore.rememberCandidate(this, sbn)
-        }
-
+        // Learn only notifications that were already identified as offers. The exact notification
+        // key is confirmed later by the real offer screen, preventing a nearby unrelated push from
+        // poisoning the structural profile.
         if (decision.isOffer) {
+            NotificationOfferProfileStore.rememberCandidate(this, sbn)
             CourierPresence.markOfferOnline(this, sbn.packageName, "offer notification")
             CaptureEventLog.append(
                 this,
@@ -402,7 +400,6 @@ class CourierPilotNotificationListener : NotificationListenerService() {
 
     companion object {
         private const val PRESENCE_REMOVAL_GRACE_MS = 20_000L
-        private const val CANDIDATE_MEMORY_SCORE = 3
         private const val OPEN_VERIFY_DELAY_MS = 1_300L
         private const val OPEN_WINDOW_SETTLE_MS = 1_000L
         private const val OPEN_RETRY_VERIFY_DELAY_MS = 1_400L

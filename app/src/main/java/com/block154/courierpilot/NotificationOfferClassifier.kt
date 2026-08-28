@@ -60,7 +60,6 @@ internal data class OfferNotificationDecision(
  * Future pushes can then be recognised even if Bolt/Wolt completely change the visible wording.
  */
 internal object NotificationOfferClassifier {
-    private const val OFFER_THRESHOLD = 8
     internal const val LEARNED_PROFILE_MATCH_THRESHOLD = 7
 
     fun classify(context: Context, sbn: StatusBarNotification): OfferNotificationDecision {
@@ -142,7 +141,14 @@ internal object NotificationOfferClassifier {
             return OfferNotificationDecision(false, score, reasons + "presence_notification", learnedMatch)
         }
 
-        return OfferNotificationDecision(score >= OFFER_THRESHOLD, score, reasons, learnedMatch)
+        val explicitBootstrap = CourierSignals.hasStrongOfferSignal(text) ||
+            CourierSignals.hasDecisionActionSignal(actionLabels)
+        val learnedOffer = learnedMatch >= LEARNED_PROFILE_MATCH_THRESHOLD
+
+        // Structural shape alone is not enough to auto-open an app. A random courier message can
+        // also have two buttons and an app-owned PendingIntent. Structure becomes an offer identity
+        // only after a real offer screen has confirmed that profile once.
+        return OfferNotificationDecision(explicitBootstrap || learnedOffer, score, reasons, learnedMatch)
     }
 
     internal fun profileMatchScore(current: NotificationStructure, profile: NotificationStructure): Int {
@@ -156,16 +162,21 @@ internal object NotificationOfferClassifier {
             current.sameCreatorActionIntentCount >= 2 &&
             profile.sameCreatorActionIntentCount >= 2
         val sameNamedTag = current.tag.isNotBlank() && current.tag == profile.tag
-        val union = current.extrasKeys union profile.extrasKeys
+        // Android framework keys (android.title/android.text/etc.) exist on almost every push and
+        // must not contribute to notification identity. Only app/custom extras carry structural value.
+        val currentCustomExtras = current.extrasKeys.filterNot { it.startsWith("android.") }.toSet()
+        val profileCustomExtras = profile.extrasKeys.filterNot { it.startsWith("android.") }.toSet()
+        val union = currentCustomExtras union profileCustomExtras
         val extrasOverlap = if (union.isEmpty()) 0.0
-            else (current.extrasKeys intersect profile.extrasKeys).size.toDouble() / union.size
+            else (currentCustomExtras intersect profileCustomExtras).size.toDouble() / union.size
 
-        // A channel by itself is not enough: some apps route every push through one default channel.
-        // Require a second app-controlled anchor (id/category/shape/extras) or a stable named tag.
-        val structurallyAnchored = sameNamedTag ||
-            sameActionShape ||
-            (sameChannel && sameNotificationId) ||
-            (sameChannel && sameCategory)
+        // One reusable field must never teach unrelated pushes. Require a pair of app-controlled
+        // anchors (or the distinctive two-action shape) before scoring a learned profile.
+        val highExtrasOverlap = extrasOverlap >= 0.80
+        val structurallyAnchored = sameActionShape ||
+            (sameChannel && (sameNotificationId || sameNamedTag || sameCategory || highExtrasOverlap)) ||
+            (sameNamedTag && (sameNotificationId || sameCategory || highExtrasOverlap)) ||
+            (sameNotificationId && sameCategory && highExtrasOverlap)
         if (!structurallyAnchored) return 0
 
         var score = 0
@@ -192,18 +203,16 @@ internal object NotificationOfferClassifier {
 }
 
 /**
- * Learns only from offers that CourierPilot subsequently confirms on screen. Unconfirmed courier
- * notifications are kept briefly as candidates, so a manually-opened/foreground offer can teach a
- * new notification shape even when its wording was totally unknown.
+ * Learns only from notifications already identified as offers and subsequently confirmed on screen.
+ * The profile is tied to the exact StatusBarNotification key, so an unrelated push arriving nearby
+ * in time cannot poison the learned offer shape.
  */
 internal object NotificationOfferProfileStore {
     private const val PREFS = "courier_offer_notification_profiles"
     private const val PROFILE_PREFIX = "profiles_"
     private const val CANDIDATE_PREFIX = "candidate_"
-    private const val RECENT_PREFIX = "recent_"
     private const val MAX_PROFILES = 6
     private const val CANDIDATE_TTL_MS = 2L * 60L * 1000L
-    private const val RECENT_CONFIRM_WINDOW_MS = 10_000L
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -212,7 +221,6 @@ internal object NotificationOfferProfileStore {
         val payload = structure.toJson().apply { put("notificationKey", sbn.key) }.toString()
         prefs(context).edit()
             .putString(candidateKey(sbn.packageName, sbn.key), payload)
-            .putString(RECENT_PREFIX + sbn.packageName, payload)
             .apply()
         return structure
     }
@@ -227,20 +235,6 @@ internal object NotificationOfferProfileStore {
         if (structure.packageName != packageName || isExpired(structure)) return false
         storeConfirmedProfile(context, structure)
         p.edit().remove(key).apply()
-        return true
-    }
-
-    fun confirmRecentCandidate(context: Context, packageName: String): Boolean {
-        val raw = prefs(context).getString(RECENT_PREFIX + packageName, null) ?: return false
-        val obj = runCatching { JSONObject(raw) }.getOrNull() ?: return false
-        val notificationKey = obj.optString("notificationKey")
-        val structure = runCatching { structureFromJson(obj) }.getOrNull() ?: return false
-        if (structure.packageName != packageName) return false
-        if (System.currentTimeMillis() - structure.observedAt > RECENT_CONFIRM_WINDOW_MS) return false
-        storeConfirmedProfile(context, structure)
-        if (notificationKey.isNotBlank()) {
-            prefs(context).edit().remove(candidateKey(packageName, notificationKey)).apply()
-        }
         return true
     }
 

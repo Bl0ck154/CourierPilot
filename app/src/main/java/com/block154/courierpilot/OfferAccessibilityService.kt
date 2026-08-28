@@ -245,15 +245,11 @@ class OfferAccessibilityService : AccessibilityService() {
                 )
             }
             val pending = OfferState.pending(this)
-            val learned = if (pending != null &&
+            val learned = pending != null &&
                 pending.packageName == packageName &&
                 pending.notificationKey.isNotBlank() &&
-                !pending.notificationKey.startsWith("screen:")
-            ) {
+                !pending.notificationKey.startsWith("screen:") &&
                 NotificationOfferProfileStore.confirmCandidate(this, packageName, pending.notificationKey)
-            } else {
-                NotificationOfferProfileStore.confirmRecentCandidate(this, packageName)
-            }
             if (learned) {
                 CaptureEventLog.append(
                     this,
@@ -272,7 +268,6 @@ class OfferAccessibilityService : AccessibilityService() {
     private fun armFromVisibleOffer(packageName: String, text: String, parsed: ParsedOffer): Boolean {
         if (!CourierSignals.looksLikeOfferScreen(text, parsed)) return false
         OfferOpenState.markOfferVisible(this, packageName)
-        NotificationOfferProfileStore.confirmRecentCandidate(this, packageName)
         val fingerprint = CourierSignals.offerFingerprint(packageName, text)
         if (!ScreenOfferDeduper.shouldArm(this, packageName, fingerprint)) return false
 
@@ -581,8 +576,6 @@ class OfferAccessibilityService : AccessibilityService() {
         OfferOpenState.markOfferVisible(this, pending.packageName)
         if (pending.notificationKey.isNotBlank() && !pending.notificationKey.startsWith("screen:")) {
             NotificationOfferProfileStore.confirmCandidate(this, pending.packageName, pending.notificationKey)
-        } else {
-            NotificationOfferProfileStore.confirmRecentCandidate(this, pending.packageName)
         }
 
         val database = OfferDatabase.get(this)

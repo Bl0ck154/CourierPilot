@@ -8,7 +8,7 @@ import org.junit.Test
 class NotificationOfferClassifierTest {
 
     @Test
-    fun twoAppOwnedDecisionIntentsCanIdentifyOfferWithoutRecognisableText() {
+    fun unknownTwoActionStructureDoesNotAutoOpenBeforeProfileIsLearned() {
         val structure = NotificationStructure(
             packageName = CourierSignals.BOLT_PACKAGE,
             channelId = "incoming_requests",
@@ -27,7 +27,8 @@ class NotificationOfferClassifierTest {
             actionLabels = listOf("Foo", "Bar"),
         )
 
-        assertTrue(decision.isOffer)
+        assertFalse(decision.isOffer)
+        assertTrue(decision.score >= 8)
     }
 
     @Test
@@ -154,5 +155,84 @@ class NotificationOfferClassifierTest {
         assertFalse(decision.isOffer)
         assertTrue(decision.learnedMatchScore < NotificationOfferClassifier.LEARNED_PROFILE_MATCH_THRESHOLD)
     }
+
+    @Test
+    fun woltStrongOfferTextBootstrapsWithoutBoltSpecificLogic() {
+        val structure = NotificationStructure(
+            packageName = CourierSignals.WOLT_PACKAGE,
+            channelId = "orders",
+            flags = 0,
+            contentIntentPresent = true,
+            contentIntentCreatorPackage = CourierSignals.WOLT_PACKAGE,
+            contentIntentKind = PendingIntentKind.ACTIVITY,
+            notificationId = 10,
+        )
+
+        val decision = NotificationOfferClassifier.classify(
+            structure = structure,
+            text = "You have a new task",
+            actionLabels = emptyList(),
+        )
+
+        assertTrue(decision.isOffer)
+    }
+
+    @Test
+    fun learnedWoltProfileSurvivesWordingChange() {
+        val learned = NotificationStructure(
+            packageName = CourierSignals.WOLT_PACKAGE,
+            channelId = "orders",
+            category = Notification.CATEGORY_SERVICE,
+            flags = 0,
+            contentIntentPresent = true,
+            contentIntentCreatorPackage = CourierSignals.WOLT_PACKAGE,
+            contentIntentKind = PendingIntentKind.ACTIVITY,
+            notificationId = 10,
+            extrasKeys = setOf("android.title", "android.text"),
+        )
+        val changed = learned.copy(
+            extrasKeys = setOf("android.title", "android.text", "android.subText"),
+            observedAt = learned.observedAt + 5_000L,
+        )
+
+        val decision = NotificationOfferClassifier.classify(
+            structure = changed,
+            text = "Visiškai pakeistas Wolt tekstas",
+            actionLabels = emptyList(),
+            learnedProfiles = listOf(learned),
+        )
+
+        assertTrue(decision.learnedMatchScore >= NotificationOfferClassifier.LEARNED_PROFILE_MATCH_THRESHOLD)
+        assertTrue(decision.isOffer)
+    }
+
+    @Test
+    fun boltLearnedProfileNeverCrossMatchesWolt() {
+        val bolt = NotificationStructure(
+            packageName = CourierSignals.BOLT_PACKAGE,
+            channelId = "orders",
+            category = Notification.CATEGORY_SERVICE,
+            contentIntentPresent = true,
+            contentIntentCreatorPackage = CourierSignals.BOLT_PACKAGE,
+            contentIntentKind = PendingIntentKind.ACTIVITY,
+            notificationId = 10,
+            extrasKeys = setOf("android.title", "android.text"),
+        )
+        val wolt = bolt.copy(
+            packageName = CourierSignals.WOLT_PACKAGE,
+            contentIntentCreatorPackage = CourierSignals.WOLT_PACKAGE,
+        )
+
+        val decision = NotificationOfferClassifier.classify(
+            structure = wolt,
+            text = "Unknown wording",
+            actionLabels = emptyList(),
+            learnedProfiles = listOf(bolt),
+        )
+
+        assertFalse(decision.isOffer)
+        assertTrue(decision.learnedMatchScore == 0)
+    }
+
 
 }
