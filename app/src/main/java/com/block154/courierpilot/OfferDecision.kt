@@ -1,107 +1,75 @@
 package com.block154.courierpilot
 
-import kotlin.math.roundToInt
-
-internal enum class OfferDecisionBand(val emoji: String, val label: String) {
-    TAKE("🔥", "БРАТИ"),
-    GOOD("✅", "ДОБРЕ"),
-    OK("🟡", "НОРМ"),
-    WEAK("🟠", "СЛАБКЕ"),
-    SKIP("🔴", "НЕ ВАРТО"),
-    UNKNOWN("⚪", "НЕМАЄ ДАНИХ"),
+/**
+ * Five intentionally simple profitability bands.
+ *
+ * Human-readable verdict labels were removed from the live card: the emoji is the verdict and the
+ * actual €/km number is shown next to it. UNKNOWN is used until Valhalla returns a usable route.
+ */
+internal enum class OfferDecisionBand(val emoji: String, val rating: Int?) {
+    TERRIBLE("💩", 1),
+    BAD("👎", 2),
+    OK("😐", 3),
+    GOOD("👍", 4),
+    FIRE("🔥", 5),
+    UNKNOWN("⚪", null),
 }
 
 internal data class OfferDecision(
-    val score: Int?,
+    val rating: Int?,
     val band: OfferDecisionBand,
     val euroPerKilometer: Double?,
-    val conservativeEuroPerHour: Double?,
+    val routeDistanceMeters: Int?,
     val routeVerifiedKilometerRate: Boolean,
 )
 
 /**
- * Lightweight on-screen recommendation. It never accepts/rejects an order.
+ * Live offer verdict based only on money per real Valhalla route kilometre.
  *
- * The score intentionally uses the conservative (lower) end of the platform €/h estimate and
- * combines it with €/km. When Valhalla has a complete cycleway route, only the €/km component is
- * replaced by the route-derived value; platform ETA remains the time signal because it includes
- * pickup/handoff effects that raw routing duration does not.
+ * The courier app supplied distance and ETA are deliberately ignored for scoring. When both
+ * pedestrian and cycleway Valhalla routes are available, their arithmetic mean is used: this keeps
+ * a single odd routing profile from dominating the verdict. If only one Valhalla route succeeds,
+ * that route is used as a graceful fallback. No Valhalla route means UNKNOWN, never a guessed score.
  */
 internal object OfferDecisionEngine {
     fun evaluate(
         parsed: ParsedOffer,
-        completeCyclewayRoute: RouteResult? = null,
+        pedestrianRoute: RouteResult? = null,
+        cyclewayRoute: RouteResult? = null,
     ): OfferDecision {
         val euros = parsed.priceCents?.takeIf { it > 0 }?.div(100.0)
-        val platformKm = parsed.distanceMeters?.takeIf { it > 0 }?.div(1000.0)
-        val routeKm = completeCyclewayRoute?.distanceMeters?.takeIf { it > 0 }?.div(1000.0)
-        val usedKm = routeKm ?: platformKm
-        val perKm = if (euros != null && usedKm != null) euros / usedKm else null
-
-        val conservativePerHour = parsed.estimatedMinutesMax
-            ?.takeIf { it > 0 }
-            ?.let { maxMinutes -> euros?.times(60.0)?.div(maxMinutes) }
-
-        val kmScore = perKm?.let(::scorePerKm)
-        val hourScore = conservativePerHour?.let(::scorePerHour)
-        val score = when {
-            kmScore != null && hourScore != null -> (kmScore * 0.45 + hourScore * 0.55).roundToInt()
-            kmScore != null -> kmScore.roundToInt()
-            hourScore != null -> hourScore.roundToInt()
-            else -> null
-        }?.coerceIn(0, 100)
-
-        val band = when {
-            score == null -> OfferDecisionBand.UNKNOWN
-            score >= 80 -> OfferDecisionBand.TAKE
-            score >= 65 -> OfferDecisionBand.GOOD
-            score >= 50 -> OfferDecisionBand.OK
-            score >= 35 -> OfferDecisionBand.WEAK
-            else -> OfferDecisionBand.SKIP
-        }
+        val routeMeters = averageValhallaDistanceMeters(pedestrianRoute, cyclewayRoute)
+        val routeKm = routeMeters?.div(1000.0)
+        val perKm = if (euros != null && routeKm != null && routeKm > 0.0) euros / routeKm else null
+        val band = bandFor(perKm)
 
         return OfferDecision(
-            score = score,
+            rating = band.rating,
             band = band,
             euroPerKilometer = perKm,
-            conservativeEuroPerHour = conservativePerHour,
-            routeVerifiedKilometerRate = routeKm != null,
+            routeDistanceMeters = routeMeters,
+            routeVerifiedKilometerRate = routeMeters != null,
         )
     }
 
-    private fun scorePerKm(value: Double): Double = interpolate(
-        value,
-        listOf(
-            0.60 to 0.0,
-            0.80 to 30.0,
-            1.00 to 55.0,
-            1.20 to 75.0,
-            1.50 to 100.0,
-        ),
-    )
+    internal fun averageValhallaDistanceMeters(
+        pedestrianRoute: RouteResult?,
+        cyclewayRoute: RouteResult?,
+    ): Int? {
+        val distances = listOfNotNull(
+            pedestrianRoute?.distanceMeters?.takeIf { it > 0 },
+            cyclewayRoute?.distanceMeters?.takeIf { it > 0 },
+        )
+        if (distances.isEmpty()) return null
+        return (distances.sumOf { it.toLong() } / distances.size).toInt()
+    }
 
-    private fun scorePerHour(value: Double): Double = interpolate(
-        value,
-        listOf(
-            8.0 to 0.0,
-            10.0 to 25.0,
-            12.0 to 50.0,
-            15.0 to 75.0,
-            18.0 to 100.0,
-        ),
-    )
-
-    private fun interpolate(value: Double, anchors: List<Pair<Double, Double>>): Double {
-        if (value <= anchors.first().first) return anchors.first().second
-        if (value >= anchors.last().first) return anchors.last().second
-        for (index in 0 until anchors.lastIndex) {
-            val (x1, y1) = anchors[index]
-            val (x2, y2) = anchors[index + 1]
-            if (value in x1..x2) {
-                val t = (value - x1) / (x2 - x1)
-                return y1 + (y2 - y1) * t
-            }
-        }
-        return 0.0
+    private fun bandFor(perKm: Double?): OfferDecisionBand = when {
+        perKm == null -> OfferDecisionBand.UNKNOWN
+        perKm < 0.70 -> OfferDecisionBand.TERRIBLE
+        perKm < 0.85 -> OfferDecisionBand.BAD
+        perKm <= 1.00 -> OfferDecisionBand.OK
+        perKm < 1.25 -> OfferDecisionBand.GOOD
+        else -> OfferDecisionBand.FIRE
     }
 }

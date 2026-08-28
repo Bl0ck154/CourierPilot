@@ -53,4 +53,70 @@ class PresenceAndStorageV014Test {
         CaptureStorageSettings.setSaveOfferScreenshots(context, false)
         assertFalse(CaptureStorageSettings.saveOfferScreenshots(context))
     }
+    @Test
+    fun staleOnlineSignalStopsInflatingWorkTime() {
+        val context = RuntimeEnvironment.getApplication()
+        val prefs = context.getSharedPreferences("courierpilot_presence", 0)
+        prefs.edit().clear().commit()
+        val database = CourierMetaDatabase.get(context)
+        database.writableDatabase.delete("work_sessions", null, null)
+
+        val start = 1_000_000L
+        CourierPresence.markOfferOnline(context, CourierSignals.BOLT_PACKAGE, now = start)
+        CourierPresence.reconcileStaleOnline(
+            context,
+            now = start + CourierPresence.ONLINE_SIGNAL_TTL_MS + 2L * 60L * 60L * 1000L,
+        )
+
+        val summary = database.workSummarySince(0L, now = start + 3L * 60L * 60L * 1000L)
+        assertFalse(summary.active)
+        assertEquals(CourierPresence.ONLINE_SIGNAL_TTL_MS, summary.totalMillis)
+        assertEquals(PresenceSignal.UNKNOWN, CourierPresence.platformPresence(context, CourierSignals.BOLT_PACKAGE).state)
+    }
+
+    @Test
+    fun freshOnlineSignalKeepsAutomaticSessionActive() {
+        val context = RuntimeEnvironment.getApplication()
+        val prefs = context.getSharedPreferences("courierpilot_presence", 0)
+        prefs.edit().clear().commit()
+        val database = CourierMetaDatabase.get(context)
+        database.writableDatabase.delete("work_sessions", null, null)
+
+        val start = System.currentTimeMillis()
+        CourierPresence.markOfferOnline(context, CourierSignals.WOLT_PACKAGE, now = start)
+        val afterTwentyMinutes = start + 20L * 60L * 1000L
+        CourierPresence.reconcileStaleOnline(context, now = afterTwentyMinutes)
+
+        val summary = database.workSummarySince(start, now = afterTwentyMinutes)
+        assertTrue(summary.active)
+        assertEquals(20L * 60L * 1000L, summary.totalMillis)
+    }
+
+
+    @Test
+    fun nextOfferAfterLongGapStartsNewSessionInsteadOfBridgingIdleHours() {
+        val context = RuntimeEnvironment.getApplication()
+        val prefs = context.getSharedPreferences("courierpilot_presence", 0)
+        prefs.edit().clear().commit()
+        val database = CourierMetaDatabase.get(context)
+        database.writableDatabase.delete("work_sessions", null, null)
+
+        val start = 10_000_000L
+        CourierPresence.markOfferOnline(context, CourierSignals.BOLT_PACKAGE, now = start)
+
+        val secondOfferAt = start + 2L * 60L * 60L * 1000L
+        CourierPresence.markOfferOnline(context, CourierSignals.BOLT_PACKAGE, now = secondOfferAt)
+
+        val tenMinutesLater = secondOfferAt + 10L * 60L * 1000L
+        val summary = database.workSummarySince(0L, now = tenMinutesLater)
+
+        assertTrue(summary.active)
+        assertEquals(2, summary.sessionCount)
+        assertEquals(
+            CourierPresence.ONLINE_SIGNAL_TTL_MS + 10L * 60L * 1000L,
+            summary.totalMillis,
+        )
+    }
+
+
 }

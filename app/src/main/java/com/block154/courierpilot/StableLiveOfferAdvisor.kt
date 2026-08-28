@@ -85,7 +85,7 @@ internal class StableLiveOfferAdvisor(
             ensureView()
             if (root == null) return@post
             refreshControls()
-            renderProfitability(parsed, completeCyclewayRoute = null)
+            renderProfitability(parsed, pedestrianRoute = null, cyclewayRoute = null)
             renderRouteLoadingState()
             CaptureEventLog.append(
                 service,
@@ -104,7 +104,7 @@ internal class StableLiveOfferAdvisor(
             if (dismissed || root == null) return@post
             val walking = comparison.pedestrian.getOrNull()
             val cycling = comparison.cycleway.getOrNull()
-            currentParsed?.let { parsed -> renderProfitability(parsed, cycling) }
+            currentParsed?.let { parsed -> renderProfitability(parsed, walking, cycling) }
             routeText?.apply {
                 visibility = View.VISIBLE
                 text = formatRoutes(walking, cycling)
@@ -124,7 +124,7 @@ internal class StableLiveOfferAdvisor(
             if (dismissed || root == null) return@post
             val comparison = outcome.comparison
             if (comparison == null) {
-                routeText?.text = "⚠️ Valhalla · маршрут недоступний"
+                routeText?.text = "⚠️ Valhalla · unavailable"
                 CaptureEventLog.append(
                     service,
                     stage = "bolt_route_failed",
@@ -138,11 +138,11 @@ internal class StableLiveOfferAdvisor(
             val cycling = comparison.cycleway.getOrNull()
             // Pickup-only Bolt routing is incomplete, so it must not distort whole-order €/km/score.
             if (outcome.scope == BoltRouteScope.FULL) {
-                currentParsed?.let { parsed -> renderProfitability(parsed, cycling) }
+                currentParsed?.let { parsed -> renderProfitability(parsed, walking, cycling) }
             }
             val routes = formatRoutes(walking, cycling)
             routeText?.text = if (outcome.scope == BoltRouteScope.PICKUP_ONLY) {
-                "До pickup лише · $routes"
+                "Pickup only · $routes"
             } else {
                 routes
             }
@@ -159,7 +159,7 @@ internal class StableLiveOfferAdvisor(
         if (dismissed || !LiveAdvisorSettings.enabled(service)) return
         handler.post {
             if (dismissed || root == null) return@post
-            routeText?.text = "⚠️ Valhalla · маршрут недоступний"
+            routeText?.text = "⚠️ Valhalla · unavailable"
             CaptureEventLog.append(service, "route_failed", reason, currentPlatform)
         }
     }
@@ -188,23 +188,22 @@ internal class StableLiveOfferAdvisor(
         pendingSpeech = null
     }
 
-    private fun renderProfitability(parsed: ParsedOffer, completeCyclewayRoute: RouteResult?) {
-        val decision = OfferDecisionEngine.evaluate(parsed, completeCyclewayRoute)
+    private fun renderProfitability(
+        parsed: ParsedOffer,
+        pedestrianRoute: RouteResult?,
+        cyclewayRoute: RouteResult?,
+    ) {
+        val decision = OfferDecisionEngine.evaluate(parsed, pedestrianRoute, cyclewayRoute)
         decisionText?.apply {
-            val scorePart = decision.score?.let { "$it/100" } ?: "—/100"
-            val source = when {
-                decision.routeVerifiedKilometerRate -> " · 🚲 маршрут"
-                decision.score != null -> " · попередньо"
-                else -> " · чекаю дані"
-            }
-            text = "${decision.band.emoji} $scorePart · ${decision.band.label}$source"
+            val km = decision.euroPerKilometer?.let { "€${"%.2f".format(Locale.US, it)}/km" }
+            text = listOfNotNull(decision.band.emoji, km).joinToString("  ")
             setTextColor(decisionColor(decision.band))
         }
 
         val platformEconomics = PlatformOfferEconomicsCalculator.calculate(parsed)
         val kmText = decision.euroPerKilometer?.let {
-            "€${"%.2f".format(Locale.US, it)}/km${if (decision.routeVerifiedKilometerRate) " 🚲" else ""}"
-        } ?: "€/km —"
+            "€${"%.2f".format(Locale.US, it)}/km · avg Valhalla ${formatKm(decision.routeDistanceMeters ?: 0)}"
+        } ?: "€/km — · waiting for Valhalla"
         val lo = platformEconomics.euroPerHourMin
         val hi = platformEconomics.euroPerHourMax
         val hourText = when {
@@ -219,7 +218,7 @@ internal class StableLiveOfferAdvisor(
         val enabled = LiveAdvisorSettings.routeEnabled(service, currentPlatform)
         routeText?.apply {
             visibility = View.VISIBLE
-            text = if (enabled) "⏳ Valhalla · рахую маршрут…" else "Маршрут вимкнено"
+            text = if (enabled) "⏳ Valhalla · calculating…" else "Route off"
         }
     }
 
@@ -374,11 +373,11 @@ internal class StableLiveOfferAdvisor(
     }
 
     private fun decisionColor(band: OfferDecisionBand): Int = when (band) {
-        OfferDecisionBand.TAKE -> Color.rgb(134, 239, 172)
+        OfferDecisionBand.FIRE -> Color.rgb(134, 239, 172)
         OfferDecisionBand.GOOD -> Color.rgb(167, 243, 208)
         OfferDecisionBand.OK -> Color.rgb(253, 224, 71)
-        OfferDecisionBand.WEAK -> Color.rgb(253, 186, 116)
-        OfferDecisionBand.SKIP -> Color.rgb(252, 165, 165)
+        OfferDecisionBand.BAD -> Color.rgb(253, 186, 116)
+        OfferDecisionBand.TERRIBLE -> Color.rgb(252, 165, 165)
         OfferDecisionBand.UNKNOWN -> Color.rgb(203, 213, 225)
     }
 
@@ -548,10 +547,8 @@ internal class StableLiveOfferAdvisor(
     }
 
     private fun baseSpeech(platform: String, parsed: ParsedOffer): String {
-        val decision = OfferDecisionEngine.evaluate(parsed)
-        val score = decision.score?.let { "$it out of 100" }
         val price = parsed.priceCents?.let { "${it / 100} euro ${it % 100}" }
-        return listOfNotNull(platform, price, score).joinToString(". ") + "."
+        return listOfNotNull(platform, price).joinToString(". ") + "."
     }
 
     private fun speak(text: String) {
