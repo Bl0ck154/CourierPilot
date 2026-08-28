@@ -73,23 +73,6 @@ internal object CourierSignals {
         "відхилити",
     )
 
-    private val weakOfferNouns = listOf(
-        "task",
-        "order",
-        "delivery",
-        "offer",
-        "užduot",
-        "uzduot",
-        "užsak",
-        "uzsak",
-        "pristat",
-        "заказ",
-        "задан",
-        "достав",
-        "замов",
-        "завдан",
-    )
-
     private val onlinePhrases = listOf(
         "you're online",
         "you are online",
@@ -150,6 +133,12 @@ internal object CourierSignals {
             append(' ')
             append(e.getCharSequence(Notification.EXTRA_SUB_TEXT).orEmpty())
             append(' ')
+            append(e.getCharSequence(Notification.EXTRA_SUMMARY_TEXT).orEmpty())
+            append(' ')
+            e.getCharSequenceArray(Notification.EXTRA_TEXT_LINES).orEmpty().forEach { line ->
+                append(line.orEmpty())
+                append(' ')
+            }
             append(notification.tickerText.orEmpty())
         }.trim()
     }
@@ -162,14 +151,17 @@ internal object CourierSignals {
 
     fun isOfferNotificationText(text: String, actionLabels: List<String> = emptyList()): Boolean {
         val lower = text.lowercase(Locale.ROOT)
-        if (lower.isBlank()) return false
+        val actions = actionLabels.joinToString(" ").lowercase(Locale.ROOT)
+        val hasDecisionAction = decisionPhrases.any(actions::contains)
+
         if (negativeNotificationPhrases.any(lower::contains)) return false
         if (strongOfferPhrases.any(lower::contains)) return true
 
-        val actions = actionLabels.joinToString(" ").lowercase(Locale.ROOT)
-        val hasDecisionAction = decisionPhrases.any(actions::contains)
-        val hasOfferNoun = weakOfferNouns.any(lower::contains)
-        return hasDecisionAction && hasOfferNoun
+        // Accept/decline-style actions from a courier package are stronger evidence than the
+        // notification wording itself. Bolt/Wolt can change or localise body text without notice,
+        // while an actionable decision notification is exactly what CourierPilot must open.
+        if (hasDecisionAction) return true
+        return false
     }
 
     fun isOngoingPresenceNotification(notification: Notification): Boolean =

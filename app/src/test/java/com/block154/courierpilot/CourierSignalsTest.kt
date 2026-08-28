@@ -16,6 +16,14 @@ class CourierSignalsTest {
     }
 
     @Test
+    fun decisionActionsRemainOfferSignalWhenCourierNotificationWordingChanges() {
+        assertTrue(CourierSignals.isOfferNotificationText("Incoming request", listOf("Accept", "Decline")))
+        assertTrue(CourierSignals.isOfferNotificationText("", listOf("Priimti", "Atmesti")))
+        assertFalse(CourierSignals.isOfferNotificationText("Order completed", listOf("Accept", "Decline")))
+        assertFalse(CourierSignals.isOfferNotificationText("Go online to start accepting orders"))
+    }
+
+    @Test
     fun presenceSignalsPreferExplicitScreenLanguage() {
         assertEquals(PresenceSignal.OFFLINE, CourierSignals.detectPresence("Go online to start accepting orders"))
         assertEquals(PresenceSignal.ONLINE, CourierSignals.detectPresence("You're online · waiting for orders"))

@@ -30,6 +30,8 @@ class OfferAccessibilityService : AccessibilityService() {
     private var lastCourierEventAtElapsed = 0L
     private var lastCourierEventPackage = ""
     private var lastDiscoveryOcrAtElapsed = 0L
+    private var screenshotFailureKey = ""
+    private var screenshotFailureCount = 0
 
     private val attemptRunnable = Runnable { attemptCapture() }
 
@@ -54,7 +56,8 @@ class OfferAccessibilityService : AccessibilityService() {
                         platform = platform,
                         message = if (pending == null) "Device unlocked; observing courier screens" else "Device unlocked; resuming pending capture",
                     )
-                    if (pending != null && OfferState.autoOpen(this@OfferAccessibilityService)) reopenCourierAfterUnlock(pending)
+                    // NotificationListenerService retries the exact active offer PendingIntent on
+                    // unlock. Do not race it by launching the courier home activity from here.
                     scheduleAttempt(50L)
                 }
             }
@@ -72,6 +75,14 @@ class OfferAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val eventPackage = event?.packageName?.toString().orEmpty()
         if (CourierSignals.isCourierPackage(eventPackage)) {
+            if (OfferOpenState.markVisible(this, eventPackage)) {
+                CaptureEventLog.append(
+                    this,
+                    stage = "open_window_seen",
+                    platform = OfferState.platformLabel(eventPackage),
+                    message = "Accessibility observed the courier window after an open request",
+                )
+            }
             lastCourierEventAtElapsed = SystemClock.elapsedRealtime()
             lastCourierEventPackage = eventPackage
             scheduleAttempt(80L)
@@ -110,19 +121,6 @@ class OfferAccessibilityService : AccessibilityService() {
             registerReceiver(unlockReceiver, filter)
         }
         unlockReceiverRegistered = true
-    }
-
-    private fun reopenCourierAfterUnlock(pending: PendingOffer) {
-        val platform = OfferState.platformLabel(pending.packageName)
-        runCatching {
-            val launch = packageManager.getLaunchIntentForPackage(pending.packageName) ?: error("No launcher activity")
-            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            startActivity(launch)
-        }.onSuccess {
-            CaptureEventLog.append(this, "unlock_open", "Requested courier app after unlock", platform)
-        }.onFailure {
-            CaptureEventLog.append(this, "unlock_open_failed", it.javaClass.simpleName, platform)
-        }
     }
 
     private fun attemptCapture() {
@@ -226,6 +224,14 @@ class OfferAccessibilityService : AccessibilityService() {
         text: String,
         source: ScreenTextSource = ScreenTextSource.ACCESSIBILITY,
     ) {
+        if (OfferOpenState.markVisible(this, packageName)) {
+            CaptureEventLog.append(
+                this,
+                stage = "open_window_seen",
+                platform = OfferState.platformLabel(packageName),
+                message = "Accessibility observed the courier window after an open request",
+            )
+        }
         if (text.isBlank()) return
         CourierPresence.markScreen(this, packageName, CourierSignals.detectPresence(text))
         DeliveryMemory.observeScreen(this, packageName, text, source)
@@ -267,7 +273,14 @@ class OfferAccessibilityService : AccessibilityService() {
                     val bitmap = screenshotToBitmap(screenshot)
                     if (bitmap == null) {
                         captureInFlight = false
-                        scheduleAttempt(IDLE_WATCHDOG_MS)
+                        CaptureEventLog.append(
+                            this@OfferAccessibilityService,
+                            "bitmap_failed",
+                            "Discovery screenshot buffer could not be converted; retrying soon",
+                            OfferState.platformLabel(window.packageName),
+                            3_000L,
+                        )
+                        scheduleAttempt(DISCOVERY_SCREENSHOT_RETRY_MS)
                         return
                     }
                     recognizer.process(InputImage.fromBitmap(bitmap, 0))
@@ -295,7 +308,14 @@ class OfferAccessibilityService : AccessibilityService() {
 
                 override fun onFailure(errorCode: Int) {
                     captureInFlight = false
-                    scheduleAttempt(IDLE_WATCHDOG_MS)
+                    CaptureEventLog.append(
+                        this@OfferAccessibilityService,
+                        "discovery_screenshot_failed",
+                        "Screenshot failed during screen discovery: Android error $errorCode; retrying soon",
+                        OfferState.platformLabel(window.packageName),
+                        3_000L,
+                    )
+                    scheduleAttempt(DISCOVERY_SCREENSHOT_RETRY_MS)
                 }
             },
         )
@@ -309,11 +329,13 @@ class OfferAccessibilityService : AccessibilityService() {
                 override fun onSuccess(screenshot: ScreenshotResult) {
                     val bitmap = screenshotToBitmap(screenshot)
                     if (bitmap == null) {
+                        val failures = recordScreenshotFailure(pending)
                         captureInFlight = false
-                        CaptureEventLog.append(this@OfferAccessibilityService, "bitmap_failed", "Android screenshot buffer could not be converted", OfferState.platformLabel(pending.packageName), 5_000L)
+                        CaptureEventLog.append(this@OfferAccessibilityService, "bitmap_failed", "Android screenshot buffer could not be converted (attempt $failures)", OfferState.platformLabel(pending.packageName), 5_000L)
                         scheduleAttempt(adaptiveOcrDelay(pending))
                         return
                     }
+                    resetScreenshotFailures(pending)
 
                     recognizer.process(InputImage.fromBitmap(bitmap, 0))
                         .addOnSuccessListener { result ->
@@ -355,25 +377,148 @@ class OfferAccessibilityService : AccessibilityService() {
                 override fun onSuccess(screenshot: ScreenshotResult) {
                     val bitmap = screenshotToBitmap(screenshot)
                     if (bitmap == null) {
+                        val failures = recordScreenshotFailure(pending)
                         captureInFlight = false
-                        CaptureEventLog.append(this@OfferAccessibilityService, "bitmap_failed", "Final screenshot buffer could not be converted", OfferState.platformLabel(pending.packageName), 5_000L)
-                        scheduleAttempt(500L)
+                        CaptureEventLog.append(
+                            this@OfferAccessibilityService,
+                            "bitmap_failed",
+                            "Final screenshot buffer could not be converted (attempt $failures)",
+                            OfferState.platformLabel(pending.packageName),
+                            3_000L,
+                        )
+                        if (failures >= OPTIONAL_SCREENSHOT_FAILURE_LIMIT) {
+                            CaptureEventLog.append(
+                                this@OfferAccessibilityService,
+                                "saved_without_screenshot",
+                                "Price is already known; saving offer metadata after repeated optional screenshot failures",
+                                OfferState.platformLabel(pending.packageName),
+                            )
+                            persistOffer(null, pending, text, parsed)
+                        } else {
+                            scheduleAttempt(500L)
+                        }
                         return
                     }
+                    resetScreenshotFailures(pending)
                     persistOffer(bitmap, pending, text, parsed)
                 }
 
                 override fun onFailure(errorCode: Int) {
                     captureInFlight = false
-                    handleScreenshotFailure(errorCode, retry = true, pending = pending)
+                    val failures = recordScreenshotFailure(pending)
+                    if (failures >= OPTIONAL_SCREENSHOT_FAILURE_LIMIT) {
+                        CaptureEventLog.append(
+                            this@OfferAccessibilityService,
+                            "saved_without_screenshot",
+                            "Price is already known; saving offer metadata after $failures screenshot failures",
+                            OfferState.platformLabel(pending.packageName),
+                        )
+                        persistOffer(null, pending, text, parsed)
+                    } else {
+                        handleScreenshotFailure(errorCode, retry = true, pending = pending, failureCount = failures)
+                    }
                 }
             },
         )
     }
 
     private fun takeTargetScreenshot(windowId: Int, callback: TakeScreenshotCallback) {
-        if (Build.VERSION.SDK_INT >= 34) takeScreenshotOfWindow(windowId, mainExecutor, callback)
-        else takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, callback)
+        if (Build.VERSION.SDK_INT < 34) {
+            runCatching { takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, callback) }
+                .onFailure {
+                    CaptureEventLog.append(
+                        this,
+                        "screenshot_request_exception",
+                        "Display screenshot request threw ${it.javaClass.simpleName}",
+                        dedupeWindowMs = 3_000L,
+                    )
+                    callback.onFailure(ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR)
+                }
+            return
+        }
+
+        // Window-scoped capture is ideal, but courier activities transition quickly and Android can
+        // reject a perfectly valid request because the window id went stale between discovery and
+        // capture. Fall back to a display screenshot instead of losing the offer.
+        val windowCallback = object : TakeScreenshotCallback {
+            override fun onSuccess(screenshot: ScreenshotResult) {
+                callback.onSuccess(screenshot)
+            }
+
+            override fun onFailure(errorCode: Int) {
+                if (!shouldFallbackToDisplayScreenshot(errorCode)) {
+                    callback.onFailure(errorCode)
+                    return
+                }
+
+                val delay = if (errorCode == ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT) {
+                    DISPLAY_SCREENSHOT_RATE_LIMIT_RETRY_MS
+                } else {
+                    DISPLAY_SCREENSHOT_FALLBACK_DELAY_MS
+                }
+                CaptureEventLog.append(
+                    this@OfferAccessibilityService,
+                    "screenshot_window_fallback",
+                    "Window screenshot failed with Android error $errorCode; retrying as display capture",
+                    dedupeWindowMs = 2_000L,
+                )
+                handler.postDelayed({ requestDisplayScreenshotFallback(callback) }, delay)
+            }
+        }
+
+        runCatching { takeScreenshotOfWindow(windowId, mainExecutor, windowCallback) }
+            .onFailure {
+                CaptureEventLog.append(
+                    this,
+                    "screenshot_window_exception",
+                    "Window screenshot request threw ${it.javaClass.simpleName}; trying display capture",
+                    dedupeWindowMs = 3_000L,
+                )
+                handler.postDelayed(
+                    { requestDisplayScreenshotFallback(callback) },
+                    DISPLAY_SCREENSHOT_FALLBACK_DELAY_MS,
+                )
+            }
+    }
+
+    private fun requestDisplayScreenshotFallback(callback: TakeScreenshotCallback) {
+        val displayCallback = object : TakeScreenshotCallback {
+            override fun onSuccess(screenshot: ScreenshotResult) {
+                CaptureEventLog.append(
+                    this@OfferAccessibilityService,
+                    "screenshot_display_fallback_ok",
+                    "Display screenshot fallback succeeded",
+                    dedupeWindowMs = 3_000L,
+                )
+                callback.onSuccess(screenshot)
+            }
+
+            override fun onFailure(displayErrorCode: Int) {
+                CaptureEventLog.append(
+                    this@OfferAccessibilityService,
+                    "screenshot_display_fallback_failed",
+                    "Display screenshot fallback failed with Android error $displayErrorCode",
+                    dedupeWindowMs = 3_000L,
+                )
+                callback.onFailure(displayErrorCode)
+            }
+        }
+        runCatching { takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, displayCallback) }
+            .onFailure {
+                CaptureEventLog.append(
+                    this,
+                    "screenshot_display_exception",
+                    "Display screenshot request threw ${it.javaClass.simpleName}",
+                    dedupeWindowMs = 3_000L,
+                )
+                callback.onFailure(ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR)
+            }
+    }
+
+    private fun shouldFallbackToDisplayScreenshot(errorCode: Int): Boolean {
+        if (errorCode == ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS) return false
+        if (Build.VERSION.SDK_INT >= 34 && errorCode == ERROR_TAKE_SCREENSHOT_SECURE_WINDOW) return false
+        return true
     }
 
     private fun persistOffer(bitmap: Bitmap?, pending: PendingOffer, rawText: String, parsed: ParsedOffer) {
@@ -439,7 +584,19 @@ class OfferAccessibilityService : AccessibilityService() {
         var saved: SavedScreenshot? = null
         try {
             if (bitmap != null && CaptureStorageSettings.saveOfferScreenshots(this)) {
-                saved = ScreenshotStore.save(this, bitmap, pending.sourceName)
+                saved = runCatching { ScreenshotStore.save(this, bitmap, pending.sourceName) }
+                    .onFailure { error ->
+                        // Gallery/MediaStore failure must not discard an otherwise valid offer.
+                        // Keep the metadata and make the missing screenshot explicit in diagnostics.
+                        CaptureEventLog.append(
+                            this,
+                            "screenshot_save_failed",
+                            "Could not persist screenshot: ${error.javaClass.simpleName}; saving offer metadata without image",
+                            platform,
+                            3_000L,
+                        )
+                    }
+                    .getOrNull()
             }
             val stored = if (saved != null) {
                 candidate.copy(
@@ -460,14 +617,24 @@ class OfferAccessibilityService : AccessibilityService() {
                     platform,
                 )
             } else {
+                val screenshotsEnabled = CaptureStorageSettings.saveOfferScreenshots(this)
                 OfferState.markCapture(
                     this,
-                    saved?.filename ?: "Offer saved · gallery screenshots disabled",
+                    when {
+                        saved != null -> saved.filename
+                        screenshotsEnabled -> "Offer saved · screenshot unavailable"
+                        else -> "Offer saved · gallery screenshots disabled"
+                    },
                 )
+                val screenshotStatus = when {
+                    saved != null -> "saved"
+                    screenshotsEnabled -> "unavailable"
+                    else -> "off"
+                }
                 CaptureEventLog.append(
                     this,
                     "saved",
-                    "Offer saved successfully as record #${insertResult.rowId} (${parsed.deliveryCount ?: 1} deliveries; screenshot ${if (saved != null) "saved" else "off"})",
+                    "Offer saved successfully as record #${insertResult.rowId} (${parsed.deliveryCount ?: 1} deliveries; screenshot $screenshotStatus)",
                     platform,
                 )
             }
@@ -503,21 +670,51 @@ class OfferAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun handleScreenshotFailure(errorCode: Int, retry: Boolean, pending: PendingOffer) {
+    private fun handleScreenshotFailure(
+        errorCode: Int,
+        retry: Boolean,
+        pending: PendingOffer,
+        failureCount: Int? = null,
+    ) {
+        val failures = failureCount ?: recordScreenshotFailure(pending)
         if (errorCode == ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT) {
-            if (retry) scheduleAttempt(700L)
+            CaptureEventLog.append(
+                this,
+                "screenshot_rate_limited",
+                "Android screenshot rate limit hit (attempt $failures); retrying",
+                OfferState.platformLabel(pending.packageName),
+                2_000L,
+            )
+            if (retry) scheduleAttempt(DISPLAY_SCREENSHOT_RATE_LIMIT_RETRY_MS)
             return
         }
         val reason = when (errorCode) {
             ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS -> "no accessibility access"
             ERROR_TAKE_SCREENSHOT_INVALID_DISPLAY -> "invalid display"
+            ERROR_TAKE_SCREENSHOT_INVALID_WINDOW -> "stale/invalid courier window"
             ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR -> "internal Android error"
             else -> if (Build.VERSION.SDK_INT >= 34 && errorCode == ERROR_TAKE_SCREENSHOT_SECURE_WINDOW) "secure courier window"
             else "Android error $errorCode"
         }
-        OfferState.markError(this, "Screenshot failed: $reason")
-        CaptureEventLog.append(this, "screenshot_failed", reason, OfferState.platformLabel(pending.packageName), 5_000L)
+        OfferState.markError(this, "Screenshot failed: $reason (attempt $failures)")
+        CaptureEventLog.append(this, "screenshot_failed", "$reason (attempt $failures)", OfferState.platformLabel(pending.packageName), 5_000L)
         if (retry) scheduleAttempt(adaptiveOcrDelay(pending).coerceAtLeast(1_200L))
+    }
+
+    private fun recordScreenshotFailure(pending: PendingOffer): Int {
+        val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
+        if (screenshotFailureKey != key) {
+            screenshotFailureKey = key
+            screenshotFailureCount = 0
+        }
+        screenshotFailureCount += 1
+        return screenshotFailureCount
+    }
+
+    private fun resetScreenshotFailures(pending: PendingOffer) {
+        val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
+        screenshotFailureKey = key
+        screenshotFailureCount = 0
     }
 
     private fun adaptiveOcrDelay(pending: PendingOffer): Long {
@@ -582,5 +779,9 @@ class OfferAccessibilityService : AccessibilityService() {
         private const val IDLE_WATCHDOG_MS = 8_000L
         private const val DISCOVERY_EVENT_WINDOW_MS = 1_500L
         private const val DISCOVERY_OCR_MIN_INTERVAL_MS = 1_800L
+        private const val DISCOVERY_SCREENSHOT_RETRY_MS = 1_200L
+        private const val DISPLAY_SCREENSHOT_FALLBACK_DELAY_MS = 120L
+        private const val DISPLAY_SCREENSHOT_RATE_LIMIT_RETRY_MS = 750L
+        private const val OPTIONAL_SCREENSHOT_FAILURE_LIMIT = 3
     }
 }
