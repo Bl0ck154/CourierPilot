@@ -149,19 +149,28 @@ internal object CourierSignals {
     fun isOfferNotification(notification: Notification): Boolean =
         isOfferNotificationText(notificationText(notification), notificationActionLabels(notification))
 
-    fun isOfferNotificationText(text: String, actionLabels: List<String> = emptyList()): Boolean {
+    fun hasStrongOfferSignal(text: String): Boolean {
         val lower = text.lowercase(Locale.ROOT)
+        return strongOfferPhrases.any(lower::contains)
+    }
+
+    fun hasNegativeNotificationSignal(text: String): Boolean {
+        val lower = text.lowercase(Locale.ROOT)
+        return negativeNotificationPhrases.any(lower::contains)
+    }
+
+    fun hasDecisionActionSignal(actionLabels: List<String>): Boolean {
         val actions = actionLabels.joinToString(" ").lowercase(Locale.ROOT)
-        val hasDecisionAction = decisionPhrases.any(actions::contains)
+        return decisionPhrases.any(actions::contains)
+    }
 
-        if (negativeNotificationPhrases.any(lower::contains)) return false
-        if (strongOfferPhrases.any(lower::contains)) return true
+    fun isOfferNotificationText(text: String, actionLabels: List<String> = emptyList()): Boolean {
+        if (hasNegativeNotificationSignal(text)) return false
+        if (hasStrongOfferSignal(text)) return true
 
-        // Accept/decline-style actions from a courier package are stronger evidence than the
-        // notification wording itself. Bolt/Wolt can change or localise body text without notice,
-        // while an actionable decision notification is exactly what CourierPilot must open.
-        if (hasDecisionAction) return true
-        return false
+        // Text-only helper retained for tests/legacy callers. The notification listener itself uses
+        // NotificationOfferClassifier, which also evaluates PendingIntent/channel/action structure.
+        return hasDecisionActionSignal(actionLabels)
     }
 
     fun isOngoingPresenceNotification(notification: Notification): Boolean =

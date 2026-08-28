@@ -23,16 +23,28 @@ class OfferOpenStateTest {
     }
 
     @Test
-    fun accessibilityVisibilityAcknowledgesOnlyCurrentOpenAttempt() {
+    fun windowVisibilityIsNotEnoughToVerifyOfferOpen() {
         val key = "bolt-offer-1"
         val generation = OfferOpenState.begin(context, CourierSignals.BOLT_PACKAGE, key)
 
         assertTrue(OfferOpenState.isCurrent(context, CourierSignals.BOLT_PACKAGE, key, generation))
-        assertFalse(OfferOpenState.wasVisible(context, CourierSignals.BOLT_PACKAGE, key, generation))
-        assertFalse(OfferOpenState.markVisible(context, CourierSignals.WOLT_PACKAGE))
-        assertTrue(OfferOpenState.markVisible(context, CourierSignals.BOLT_PACKAGE))
-        assertTrue(OfferOpenState.wasVisible(context, CourierSignals.BOLT_PACKAGE, key, generation))
-        assertFalse(OfferOpenState.markVisible(context, CourierSignals.BOLT_PACKAGE))
+        assertFalse(OfferOpenState.wasWindowVisible(context, CourierSignals.BOLT_PACKAGE, key, generation))
+        assertFalse(OfferOpenState.wasOfferVisible(context, CourierSignals.BOLT_PACKAGE, key, generation))
+        assertFalse(OfferOpenState.markWindowVisible(context, CourierSignals.WOLT_PACKAGE))
+        assertTrue(OfferOpenState.markWindowVisible(context, CourierSignals.BOLT_PACKAGE))
+        assertTrue(OfferOpenState.wasWindowVisible(context, CourierSignals.BOLT_PACKAGE, key, generation))
+        assertFalse(OfferOpenState.wasOfferVisible(context, CourierSignals.BOLT_PACKAGE, key, generation))
+    }
+
+    @Test
+    fun actualOfferVisibilityUpgradesWindowToVerifiedOffer() {
+        val key = "bolt-offer-2"
+        val generation = OfferOpenState.begin(context, CourierSignals.BOLT_PACKAGE, key)
+
+        assertTrue(OfferOpenState.markOfferVisible(context, CourierSignals.BOLT_PACKAGE))
+        assertTrue(OfferOpenState.wasWindowVisible(context, CourierSignals.BOLT_PACKAGE, key, generation))
+        assertTrue(OfferOpenState.wasOfferVisible(context, CourierSignals.BOLT_PACKAGE, key, generation))
+        assertFalse(OfferOpenState.markOfferVisible(context, CourierSignals.BOLT_PACKAGE))
     }
 
     @Test

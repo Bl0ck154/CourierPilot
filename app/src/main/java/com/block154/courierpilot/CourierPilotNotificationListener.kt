@@ -38,11 +38,22 @@ class CourierPilotNotificationListener : NotificationListenerService() {
         if (!CourierSignals.isCourierPackage(sbn.packageName)) return
         val platform = OfferState.platformLabel(sbn.packageName)
         val notification = sbn.notification
+        val decision = NotificationOfferClassifier.classify(this, sbn)
 
-        if (CourierSignals.isOfferNotification(notification)) {
-            // Receiving a real offer is strong proof that the account can receive work right now.
+        // Keep likely/unknown transient courier pushes briefly. If Accessibility subsequently proves
+        // that an offer screen is visible, this candidate becomes a learned structural profile.
+        if (decision.isOffer || decision.score >= CANDIDATE_MEMORY_SCORE) {
+            NotificationOfferProfileStore.rememberCandidate(this, sbn)
+        }
+
+        if (decision.isOffer) {
             CourierPresence.markOfferOnline(this, sbn.packageName, "offer notification")
-            CaptureEventLog.append(this, "notification", "Offer notification matched", platform)
+            CaptureEventLog.append(
+                this,
+                "notification",
+                "Offer notification matched structurally (score=${decision.score}; ${decision.reasons.joinToString(",")})",
+                platform,
+            )
             val sourceName = resolveAppName(sbn.packageName)
             lastOfferContentIntent = notification.contentIntent
             lastOfferPackage = sbn.packageName
@@ -79,10 +90,7 @@ class CourierPilotNotificationListener : NotificationListenerService() {
         when (val signal = CourierSignals.detectPresence(notificationText)) {
             PresenceSignal.ONLINE, PresenceSignal.OFFLINE ->
                 CourierPresence.markExplicitNotification(this, sbn.packageName, signal)
-            PresenceSignal.UNKNOWN -> if (CourierSignals.isOngoingPresenceNotification(notification)) {
-                // "App is running" / a sticky foreground-service notification is not proof that
-                // the courier account is online. Fail closed until text, screen state or an offer
-                // explicitly proves ONLINE/OFFLINE.
+            PresenceSignal.UNKNOWN -> if (notification.flags and android.app.Notification.FLAG_ONGOING_EVENT != 0) {
                 CourierPresence.markNotificationUnknown(this, sbn.packageName)
             }
         }
@@ -92,7 +100,8 @@ class CourierPilotNotificationListener : NotificationListenerService() {
             stage = "notification_ignored",
             platform = platform,
             message = buildString {
-                append("Courier notification was not classified as an offer")
+                append("Courier notification not classified as offer; score=${decision.score}")
+                if (decision.reasons.isNotEmpty()) append("; evidence=${decision.reasons.joinToString(",")}")
                 val labels = CourierSignals.notificationActionLabels(notification)
                 if (labels.isNotEmpty()) append("; actions=${labels.joinToString("/").take(120)}")
                 val preview = notificationText.replace(Regex("\\s+"), " ").take(180)
@@ -104,16 +113,12 @@ class CourierPilotNotificationListener : NotificationListenerService() {
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         if (!CourierSignals.isCourierPackage(sbn.packageName)) return
-        if (CourierSignals.isOfferNotification(sbn.notification)) {
-            // A captured notification key is only a tombstone for this notification lifetime.
-            // Once Android removes it, allow the courier app to reuse the same id/tag for a new offer.
+        if (NotificationOfferClassifier.classify(this, sbn).isOffer) {
             OfferState.releaseCapturedNotification(this, sbn.packageName, sbn.key)
             return
         }
-        if (!CourierSignals.isOngoingPresenceNotification(sbn.notification)) return
+        if (sbn.notification.flags and android.app.Notification.FLAG_ONGOING_EVENT == 0) return
 
-        // Swiping/removing a persistent notification is not proof that the courier went offline.
-        // Give the app time to repost it, then degrade to UNKNOWN if it stays absent.
         val packageName = sbn.packageName
         handler.postDelayed({ reconcilePackagePresence(packageName) }, PRESENCE_REMOVAL_GRACE_MS)
     }
@@ -139,11 +144,6 @@ class CourierPilotNotificationListener : NotificationListenerService() {
         unlockReceiverRegistered = true
     }
 
-    /**
-     * A PendingIntent sent while the keyguard is up can be accepted by Android without actually
-     * showing the courier activity. When the user unlocks, retry the exact still-active offer
-     * notification instead of launching the generic courier home screen.
-     */
     private fun retryPendingOfferAfterUnlock() {
         if (!OfferState.autoOpen(this)) return
         val pending = OfferState.pending(this) ?: return
@@ -162,8 +162,8 @@ class CourierPilotNotificationListener : NotificationListenerService() {
         CaptureEventLog.append(
             this,
             "unlock_retry",
-            if (sbn != null) "Device unlocked; retrying the original active offer notification"
-            else "Device unlocked; retrying the remembered offer PendingIntent",
+            if (sbn != null) "Device unlocked; retrying the exact active offer PendingIntent"
+            else "Device unlocked; retrying the remembered exact offer PendingIntent",
             platform,
         )
         openOriginalNotification(
@@ -183,7 +183,7 @@ class CourierPilotNotificationListener : NotificationListenerService() {
     private fun reconcilePackagePresence(packageName: String) {
         val active = runCatching { activeNotifications?.filter { it.packageName == packageName }.orEmpty() }
             .getOrDefault(emptyList())
-        val nonOffer = active.filterNot { CourierSignals.isOfferNotification(it.notification) }
+        val nonOffer = active.filterNot { NotificationOfferClassifier.classify(this, it).isOffer }
 
         val explicit = nonOffer.asSequence()
             .map { CourierSignals.detectPresence(CourierSignals.notificationText(it.notification)) }
@@ -193,8 +193,6 @@ class CourierPilotNotificationListener : NotificationListenerService() {
             return
         }
 
-        // The mere existence of an ongoing notification only proves that Android keeps some part
-        // of the courier app alive. It does not prove the courier is accepting orders.
         CourierPresence.markNotificationUnknown(this, packageName)
     }
 
@@ -237,7 +235,7 @@ class CourierPilotNotificationListener : NotificationListenerService() {
         }
 
         handler.postDelayed({
-            verifyThenRetryContentIntent(
+            verifyInitialOpen(
                 contentIntent,
                 packageName,
                 notificationKey,
@@ -248,7 +246,7 @@ class CourierPilotNotificationListener : NotificationListenerService() {
         }, OPEN_VERIFY_DELAY_MS)
     }
 
-    private fun verifyThenRetryContentIntent(
+    private fun verifyInitialOpen(
         contentIntent: PendingIntent,
         packageName: String,
         notificationKey: String,
@@ -257,12 +255,44 @@ class CourierPilotNotificationListener : NotificationListenerService() {
         platform: String,
     ) {
         if (!OfferOpenState.isCurrent(this, packageName, notificationKey, requestedAt)) return
-        if (OfferOpenState.wasVisible(this, packageName, notificationKey, requestedAt)) {
-            CaptureEventLog.append(this, "open_verified", "Courier window became visible after notification open", platform)
+        if (OfferOpenState.wasOfferVisible(this, packageName, notificationKey, requestedAt)) {
+            CaptureEventLog.append(this, "open_verified_offer", "Offer screen verified after notification open", platform)
             return
         }
 
-        CaptureEventLog.append(this, "open_unverified", "Android accepted the notification action but courier window was not observed; retrying once", platform)
+        if (OfferOpenState.wasWindowVisible(this, packageName, notificationKey, requestedAt)) {
+            // The courier activity is alive, so give React Native/Compose + OCR a little more time to
+            // render the actual offer before firing the PendingIntent a second time.
+            CaptureEventLog.append(this, "open_window_only", "Courier window is visible but offer screen is not verified yet", platform)
+            handler.postDelayed({
+                if (!OfferOpenState.isCurrent(this, packageName, notificationKey, requestedAt)) return@postDelayed
+                if (OfferOpenState.wasOfferVisible(this, packageName, notificationKey, requestedAt)) {
+                    CaptureEventLog.append(this, "open_verified_offer", "Offer screen verified after render settle", platform)
+                } else {
+                    retryOriginalPendingIntent(contentIntent, packageName, notificationKey, requestedAt, sourceName, platform)
+                }
+            }, OPEN_WINDOW_SETTLE_MS)
+            return
+        }
+
+        retryOriginalPendingIntent(contentIntent, packageName, notificationKey, requestedAt, sourceName, platform)
+    }
+
+    private fun retryOriginalPendingIntent(
+        contentIntent: PendingIntent,
+        packageName: String,
+        notificationKey: String,
+        requestedAt: Long,
+        sourceName: String,
+        platform: String,
+    ) {
+        if (!OfferOpenState.isCurrent(this, packageName, notificationKey, requestedAt)) return
+        CaptureEventLog.append(
+            this,
+            "open_unverified",
+            "Offer screen not verified; retrying the exact notification PendingIntent once",
+            platform,
+        )
         if (!sendPendingIntent(contentIntent, platform, "open_retry_requested")) {
             requestLauncherFallback(packageName, notificationKey, requestedAt, sourceName, platform)
             return
@@ -270,10 +300,19 @@ class CourierPilotNotificationListener : NotificationListenerService() {
 
         handler.postDelayed({
             if (!OfferOpenState.isCurrent(this, packageName, notificationKey, requestedAt)) return@postDelayed
-            if (OfferOpenState.wasVisible(this, packageName, notificationKey, requestedAt)) {
-                CaptureEventLog.append(this, "open_retry_verified", "Courier window became visible after notification retry", platform)
-            } else {
-                requestLauncherFallback(packageName, notificationKey, requestedAt, sourceName, platform)
+            when {
+                OfferOpenState.wasOfferVisible(this, packageName, notificationKey, requestedAt) ->
+                    CaptureEventLog.append(this, "open_retry_verified_offer", "Offer screen verified after PendingIntent retry", platform)
+
+                OfferOpenState.wasWindowVisible(this, packageName, notificationKey, requestedAt) -> {
+                    val message = "$sourceName opened, but the offer screen was not verified"
+                    OfferState.markError(this, message)
+                    CaptureEventLog.append(this, "open_wrong_screen", message, platform)
+                    // Do not launch the generic home activity here: it would only make a wrong-screen
+                    // result more certain. Accessibility/OCR keeps watching the pending offer.
+                }
+
+                else -> requestLauncherFallback(packageName, notificationKey, requestedAt, sourceName, platform)
             }
         }, OPEN_RETRY_VERIFY_DELAY_MS)
     }
@@ -288,10 +327,10 @@ class CourierPilotNotificationListener : NotificationListenerService() {
             } else {
                 contentIntent.send()
             }
-            CaptureEventLog.append(this, stage, "Sent original offer notification action", platform)
+            CaptureEventLog.append(this, stage, "Sent exact offer notification PendingIntent", platform)
             true
         } catch (_: PendingIntent.CanceledException) {
-            CaptureEventLog.append(this, "open_failed", "Offer notification action was cancelled", platform)
+            CaptureEventLog.append(this, "open_failed", "Offer notification PendingIntent was cancelled", platform)
             false
         } catch (t: Throwable) {
             CaptureEventLog.append(this, "open_failed", t.javaClass.simpleName, platform)
@@ -299,10 +338,6 @@ class CourierPilotNotificationListener : NotificationListenerService() {
         }
     }
 
-    /**
-     * Android 16 split the old BAL opt-in into ALLOW_IF_VISIBLE and ALLOW_ALWAYS. CompileSdk 35
-     * cannot reference the new constant directly, so resolve it reflectively when running on API 36.
-     */
     private fun backgroundActivityStartMode(): Int {
         if (Build.VERSION.SDK_INT >= 36) {
             val allowAlways = runCatching {
@@ -323,8 +358,8 @@ class CourierPilotNotificationListener : NotificationListenerService() {
         platform: String,
     ) {
         if (!OfferOpenState.isCurrent(this, packageName, notificationKey, requestedAt)) return
-        if (OfferOpenState.wasVisible(this, packageName, notificationKey, requestedAt)) {
-            CaptureEventLog.append(this, "open_verified", "Courier window became visible before launcher fallback", platform)
+        if (OfferOpenState.wasOfferVisible(this, packageName, notificationKey, requestedAt)) {
+            CaptureEventLog.append(this, "open_verified_offer", "Offer screen became visible before launcher fallback", platform)
             return
         }
 
@@ -333,15 +368,22 @@ class CourierPilotNotificationListener : NotificationListenerService() {
             launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             startActivity(launch)
         }.onSuccess {
-            CaptureEventLog.append(this, "open_launcher_fallback", "Requested courier launcher because notification open was not verified", platform)
+            CaptureEventLog.append(this, "open_launcher_fallback", "Exact PendingIntent never produced a courier window; requested launcher as last fallback", platform)
             handler.postDelayed({
                 if (!OfferOpenState.isCurrent(this, packageName, notificationKey, requestedAt)) return@postDelayed
-                if (OfferOpenState.wasVisible(this, packageName, notificationKey, requestedAt)) {
-                    CaptureEventLog.append(this, "open_launcher_verified", "Courier window became visible after launcher fallback", platform)
-                } else {
-                    val message = "Could not verify that $sourceName opened from its offer notification"
-                    OfferState.markError(this, message)
-                    CaptureEventLog.append(this, "open_verify_failed", message, platform)
+                when {
+                    OfferOpenState.wasOfferVisible(this, packageName, notificationKey, requestedAt) ->
+                        CaptureEventLog.append(this, "open_launcher_verified_offer", "Offer screen verified after launcher fallback", platform)
+                    OfferOpenState.wasWindowVisible(this, packageName, notificationKey, requestedAt) -> {
+                        val message = "$sourceName opened via launcher, but offer screen was not verified"
+                        OfferState.markError(this, message)
+                        CaptureEventLog.append(this, "open_launcher_window_only", message, platform)
+                    }
+                    else -> {
+                        val message = "Could not verify that $sourceName opened from its offer notification"
+                        OfferState.markError(this, message)
+                        CaptureEventLog.append(this, "open_verify_failed", message, platform)
+                    }
                 }
             }, LAUNCHER_VERIFY_DELAY_MS)
         }.onFailure {
@@ -360,8 +402,10 @@ class CourierPilotNotificationListener : NotificationListenerService() {
 
     companion object {
         private const val PRESENCE_REMOVAL_GRACE_MS = 20_000L
-        private const val OPEN_VERIFY_DELAY_MS = 1_100L
-        private const val OPEN_RETRY_VERIFY_DELAY_MS = 900L
-        private const val LAUNCHER_VERIFY_DELAY_MS = 1_100L
+        private const val CANDIDATE_MEMORY_SCORE = 3
+        private const val OPEN_VERIFY_DELAY_MS = 1_300L
+        private const val OPEN_WINDOW_SETTLE_MS = 1_000L
+        private const val OPEN_RETRY_VERIFY_DELAY_MS = 1_400L
+        private const val LAUNCHER_VERIFY_DELAY_MS = 1_400L
     }
 }

@@ -3,18 +3,19 @@ package com.block154.courierpilot
 import android.content.Context
 
 /**
- * Tiny cross-service handshake between NotificationListenerService and AccessibilityService.
+ * Cross-service handshake between NotificationListenerService and AccessibilityService.
  *
- * Sending a notification PendingIntent only proves that Android accepted the request; it does not
- * prove that the courier activity actually became visible. The notification listener records an
- * attempt here, and the accessibility service acknowledges it when it observes the target package.
+ * Window visibility and offer visibility are deliberately separate. Opening the generic Bolt/Wolt
+ * home activity is not success: the notification listener only considers the open fully verified
+ * when Accessibility/OCR recognises an actual offer screen.
  */
 internal object OfferOpenState {
     private const val PREFS = "courier_offer_open_state"
     private const val KEY_PACKAGE = "package"
     private const val KEY_NOTIFICATION = "notification"
     private const val KEY_REQUESTED_AT = "requested_at"
-    private const val KEY_VISIBLE_AT = "visible_at"
+    private const val KEY_WINDOW_VISIBLE_AT = "window_visible_at"
+    private const val KEY_OFFER_VISIBLE_AT = "offer_visible_at"
     private const val MAX_ATTEMPT_AGE_MS = 30_000L
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -28,7 +29,8 @@ internal object OfferOpenState {
             .putString(KEY_PACKAGE, packageName)
             .putString(KEY_NOTIFICATION, notificationKey)
             .putLong(KEY_REQUESTED_AT, requestedAt)
-            .remove(KEY_VISIBLE_AT)
+            .remove(KEY_WINDOW_VISIBLE_AT)
+            .remove(KEY_OFFER_VISIBLE_AT)
             .apply()
         return requestedAt
     }
@@ -46,24 +48,54 @@ internal object OfferOpenState {
         return System.currentTimeMillis() - requestedAt <= MAX_ATTEMPT_AGE_MS
     }
 
-    fun wasVisible(
+    fun wasWindowVisible(
         context: Context,
         packageName: String,
         notificationKey: String,
         requestedAt: Long,
     ): Boolean {
         if (!isCurrent(context, packageName, notificationKey, requestedAt)) return false
-        return prefs(context).getLong(KEY_VISIBLE_AT, 0L) >= requestedAt
+        return prefs(context).getLong(KEY_WINDOW_VISIBLE_AT, 0L) >= requestedAt
     }
 
-    /** Returns true only for the first visibility acknowledgement of the current attempt. */
-    fun markVisible(context: Context, packageName: String): Boolean {
+    fun wasOfferVisible(
+        context: Context,
+        packageName: String,
+        notificationKey: String,
+        requestedAt: Long,
+    ): Boolean {
+        if (!isCurrent(context, packageName, notificationKey, requestedAt)) return false
+        return prefs(context).getLong(KEY_OFFER_VISIBLE_AT, 0L) >= requestedAt
+    }
+
+    /** Returns true only for the first window acknowledgement of the current attempt. */
+    fun markWindowVisible(context: Context, packageName: String): Boolean {
         val p = prefs(context)
-        if (p.getString(KEY_PACKAGE, "") != packageName) return false
+        if (!matchesCurrentPackage(p, packageName)) return false
         val requestedAt = p.getLong(KEY_REQUESTED_AT, 0L)
         if (requestedAt == 0L || System.currentTimeMillis() - requestedAt > MAX_ATTEMPT_AGE_MS) return false
-        if (p.getLong(KEY_VISIBLE_AT, 0L) >= requestedAt) return false
-        p.edit().putLong(KEY_VISIBLE_AT, System.currentTimeMillis()).apply()
+        if (p.getLong(KEY_WINDOW_VISIBLE_AT, 0L) >= requestedAt) return false
+        p.edit().putLong(KEY_WINDOW_VISIBLE_AT, System.currentTimeMillis()).apply()
         return true
     }
+
+    /** Marks a real offer screen; also implies that the courier window is visible. */
+    fun markOfferVisible(context: Context, packageName: String): Boolean {
+        val p = prefs(context)
+        if (!matchesCurrentPackage(p, packageName)) return false
+        val requestedAt = p.getLong(KEY_REQUESTED_AT, 0L)
+        if (requestedAt == 0L || System.currentTimeMillis() - requestedAt > MAX_ATTEMPT_AGE_MS) return false
+        if (p.getLong(KEY_OFFER_VISIBLE_AT, 0L) >= requestedAt) return false
+        val now = System.currentTimeMillis()
+        p.edit()
+            .putLong(KEY_WINDOW_VISIBLE_AT, now)
+            .putLong(KEY_OFFER_VISIBLE_AT, now)
+            .apply()
+        return true
+    }
+
+    private fun matchesCurrentPackage(
+        prefs: android.content.SharedPreferences,
+        packageName: String,
+    ): Boolean = prefs.getString(KEY_PACKAGE, "") == packageName
 }

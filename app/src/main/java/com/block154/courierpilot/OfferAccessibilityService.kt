@@ -75,7 +75,7 @@ class OfferAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val eventPackage = event?.packageName?.toString().orEmpty()
         if (CourierSignals.isCourierPackage(eventPackage)) {
-            if (OfferOpenState.markVisible(this, eventPackage)) {
+            if (OfferOpenState.markWindowVisible(this, eventPackage)) {
                 CaptureEventLog.append(
                     this,
                     stage = "open_window_seen",
@@ -224,7 +224,7 @@ class OfferAccessibilityService : AccessibilityService() {
         text: String,
         source: ScreenTextSource = ScreenTextSource.ACCESSIBILITY,
     ) {
-        if (OfferOpenState.markVisible(this, packageName)) {
+        if (OfferOpenState.markWindowVisible(this, packageName)) {
             CaptureEventLog.append(
                 this,
                 stage = "open_window_seen",
@@ -233,12 +233,46 @@ class OfferAccessibilityService : AccessibilityService() {
             )
         }
         if (text.isBlank()) return
+
+        val parsed = OfferParser.parse(text)
+        if (CourierSignals.looksLikeOfferScreen(text, parsed)) {
+            if (OfferOpenState.markOfferVisible(this, packageName)) {
+                CaptureEventLog.append(
+                    this,
+                    stage = "open_offer_seen",
+                    platform = OfferState.platformLabel(packageName),
+                    message = "Accessibility/OCR verified an actual offer screen",
+                )
+            }
+            val pending = OfferState.pending(this)
+            val learned = if (pending != null &&
+                pending.packageName == packageName &&
+                pending.notificationKey.isNotBlank() &&
+                !pending.notificationKey.startsWith("screen:")
+            ) {
+                NotificationOfferProfileStore.confirmCandidate(this, packageName, pending.notificationKey)
+            } else {
+                NotificationOfferProfileStore.confirmRecentCandidate(this, packageName)
+            }
+            if (learned) {
+                CaptureEventLog.append(
+                    this,
+                    stage = "notification_profile_learned",
+                    platform = OfferState.platformLabel(packageName),
+                    message = "Confirmed offer screen taught CourierPilot a structural notification profile",
+                    dedupeWindowMs = 10_000L,
+                )
+            }
+        }
+
         CourierPresence.markScreen(this, packageName, CourierSignals.detectPresence(text))
         DeliveryMemory.observeScreen(this, packageName, text, source)
     }
 
     private fun armFromVisibleOffer(packageName: String, text: String, parsed: ParsedOffer): Boolean {
         if (!CourierSignals.looksLikeOfferScreen(text, parsed)) return false
+        OfferOpenState.markOfferVisible(this, packageName)
+        NotificationOfferProfileStore.confirmRecentCandidate(this, packageName)
         val fingerprint = CourierSignals.offerFingerprint(packageName, text)
         if (!ScreenOfferDeduper.shouldArm(this, packageName, fingerprint)) return false
 
@@ -542,6 +576,13 @@ class OfferAccessibilityService : AccessibilityService() {
             captureInFlight = false
             scheduleAttempt(adaptiveOcrDelay(pending))
             return
+        }
+
+        OfferOpenState.markOfferVisible(this, pending.packageName)
+        if (pending.notificationKey.isNotBlank() && !pending.notificationKey.startsWith("screen:")) {
+            NotificationOfferProfileStore.confirmCandidate(this, pending.packageName, pending.notificationKey)
+        } else {
+            NotificationOfferProfileStore.confirmRecentCandidate(this, pending.packageName)
         }
 
         val database = OfferDatabase.get(this)
