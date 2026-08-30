@@ -91,4 +91,54 @@ class BoltHistoryRegressionTest {
         estimatedMinutesMin = etaMin,
         estimatedMinutesMax = etaMax,
     )
+    @Test
+    fun recurringBoltMapMarkerPrefixIsRemovedFromAddressRows() {
+        val samples = mapOf(
+            "4 Seiny gatvė 3, Vilnius" to "Seiny gatvė 3, Vilnius",
+            "Y4 BASANAVIČIAUS 19, VILNIUS" to "BASANAVIČIAUS 19, VILNIUS",
+            "У4 Kalvarijų g. 88, Vilnius" to "Kalvarijų g. 88, Vilnius",
+        )
+
+        samples.forEach { (rawAddress, expected) ->
+            assertEquals(expected, BoltOfferTextSanitizer.stripLeadingMapMarkerFromAddress(rawAddress))
+            val raw = """
+                Example Shop
+                $rawAddress
+                9 min
+                €3.10
+                Accept
+                Decline
+            """.trimIndent()
+            val parsed = OfferParser.parse(BoltOfferTextSanitizer.sanitizeStoredRawText(raw))
+            assertTrue(parsed.pickupAddresses.any { it == expected })
+        }
+    }
+
+    @Test
+    fun markerPrefixIsNotRemovedFromLegitimateLeadingHouseNumberWithoutAnotherHouseNumber() {
+        assertEquals(
+            "4 Gedimino pr., Vilnius",
+            BoltOfferTextSanitizer.stripLeadingMapMarkerFromAddress("4 Gedimino pr., Vilnius"),
+        )
+    }
+
+    @Test
+    fun storedBoltFallbackAddressIsCleanedEvenWhenRawTextIsUnavailable() {
+        val repaired = OfferRecord(
+            capturedAt = 1_000L,
+            platform = "Bolt",
+            packageName = CourierSignals.BOLT_PACKAGE,
+            priceCents = 238,
+            distanceMeters = null,
+            restaurant = "McDonald's",
+            screenshotUri = "",
+            screenshotFilename = "",
+            rawText = "",
+            merchantNames = listOf("McDonald's"),
+            pickupAddresses = listOf("4 Seiny gatvė 3, Vilnius"),
+        ).withCurrentParsedStructure()
+
+        assertEquals(listOf("Seiny gatvė 3, Vilnius"), repaired.pickupAddresses)
+    }
+
 }

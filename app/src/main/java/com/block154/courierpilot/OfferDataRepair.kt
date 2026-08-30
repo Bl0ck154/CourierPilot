@@ -12,11 +12,11 @@ import android.net.Uri
 internal object OfferDataRepair {
     private const val PREFS = "courier_offer_repairs"
     private const val KEY_REVISION = "parser_repair_revision"
-    // Revision 9 also backfills a visual fingerprint from already-saved Bolt screenshots. This lets
-    // the repair remove historical double-captures even when OCR parsed different distances/text.
-    private const val CURRENT_REVISION = 9
+    // Revision 10 also strips the recurring Bolt map-marker OCR prefix (4/Y4/У4) from stored addresses while retaining revision 9 visual duplicate repair.
+    private const val CURRENT_REVISION = 10
     private const val LIST_SEPARATOR = "\u001F"
 
+    @Synchronized
     fun runIfNeeded(context: Context) {
         val appContext = context.applicationContext
         val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -26,6 +26,12 @@ internal object OfferDataRepair {
         val sqlite = database.writableDatabase
         val records = database.recordsSince(0L, 5000).sortedBy { it.capturedAt }
         val visualBackfillIds = suspiciousBoltVisualCandidates(records)
+        // Decode old PNGs before opening the SQLite write transaction. Image I/O can take seconds on
+        // a large history and must never hold the database lock while the dashboard is drawing.
+        val visualBackfills = records.asSequence()
+            .filter { it.id in visualBackfillIds && it.visualFingerprint.isBlank() && it.screenshotUri.isNotBlank() }
+            .mapNotNull { record -> readVisualFingerprint(appContext, record.screenshotUri)?.let { record.id to it } }
+            .toMap()
         val recentSurvivors = ArrayDeque<OfferRecord>()
         val duplicateScreenshotUris = mutableListOf<String>()
 
@@ -33,12 +39,7 @@ internal object OfferDataRepair {
         try {
             records.forEach { original ->
                 val reparsed = original.withCurrentParsedStructure()
-                val visualFingerprint = when {
-                    original.visualFingerprint.isNotBlank() -> original.visualFingerprint
-                    original.id in visualBackfillIds && original.screenshotUri.isNotBlank() ->
-                        readVisualFingerprint(appContext, original.screenshotUri).orEmpty()
-                    else -> ""
-                }
+                val visualFingerprint = original.visualFingerprint.ifBlank { visualBackfills[original.id].orEmpty() }
                 val repaired = reparsed.copy(visualFingerprint = visualFingerprint)
                 val values = ContentValues().apply {
                     put("price_cents", repaired.priceCents)

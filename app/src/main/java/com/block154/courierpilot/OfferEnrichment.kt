@@ -26,8 +26,8 @@ internal fun OfferRecord.withCurrentParsedStructure(): OfferRecord {
     val sourceCustomers = parsed?.customerNames?.takeIf { it.isNotEmpty() } ?: customerNames
     val sourceDropoffs = parsed?.dropoffAddresses?.takeIf { it.isNotEmpty() } ?: dropoffAddresses
 
-    val normalizedPickups = canonicalDistinctAddresses(sourcePickups)
-    val normalizedDropoffs = canonicalDistinctAddresses(sourceDropoffs)
+    val normalizedPickups = canonicalDistinctAddresses(sourcePickups, bolt = packageName == CourierSignals.BOLT_PACKAGE)
+    val normalizedDropoffs = canonicalDistinctAddresses(sourceDropoffs, bolt = packageName == CourierSignals.BOLT_PACKAGE)
     val normalizedMerchants = normalizedNames(sourceMerchants)
         .filterNot { packageName == CourierSignals.BOLT_PACKAGE && BoltOfferTextSanitizer.isOrphanBranchFragment(it) }
         .let { names ->
@@ -73,10 +73,11 @@ internal fun OfferRecord.withCurrentParsedStructure(): OfferRecord {
     )
 }
 
-private fun canonicalDistinctAddresses(values: List<String>): List<String> {
+private fun canonicalDistinctAddresses(values: List<String>, bolt: Boolean = false): List<String> {
     val seen = mutableSetOf<String>()
     return values.mapNotNull { raw ->
-        val cleaned = raw
+        val source = if (bolt) BoltOfferTextSanitizer.stripLeadingMapMarkerFromAddress(raw) else raw
+        val cleaned = source
             .replace('\u00A0', ' ')
             .replace('\u2007', ' ')
             .replace('\u202F', ' ')

@@ -75,7 +75,7 @@ internal object OfferOcrText {
 
         val cardLines = allLines
             .filter { it.centerY in cardTop..cardBottom }
-            .map { it.text }
+            .map { BoltOfferTextSanitizer.sanitizeCardLine(it.text) }
             .filterNot(BoltOfferTextSanitizer::isOrphanBranchFragment)
             .distinct()
 

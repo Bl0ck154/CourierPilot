@@ -19,6 +19,7 @@ internal object AddressDataRepair {
     private const val OBSERVATION_BURST_MS = 2L * 60L * 1000L
     private const val MAX_RAW_SAMPLES_PER_ADDRESS = 20
 
+    @Synchronized
     fun runIfNeeded(context: Context) {
         val appContext = context.applicationContext
         val prefs = appContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

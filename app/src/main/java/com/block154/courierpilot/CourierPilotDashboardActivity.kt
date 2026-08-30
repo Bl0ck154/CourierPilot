@@ -2,6 +2,7 @@ package com.block154.courierpilot
 
 import android.content.ComponentName
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -110,6 +111,32 @@ class CourierPilotDashboardActivity : ComponentActivity() {
                 )
             }
         }
+        scheduleStartupMaintenanceAfterFirstFrame()
+    }
+
+
+    private fun scheduleStartupMaintenanceAfterFirstFrame() {
+        if (Build.FINGERPRINT.equals("robolectric", ignoreCase = true)) return
+        val appContext = applicationContext
+        // Give Compose a real first frame before touching hundreds of historical rows. This also
+        // means a cold process started only by a courier notification never pays the repair cost.
+        window.decorView.postDelayed({
+            Thread({
+                runCatching {
+                    AddressDataRepair.runIfNeeded(appContext)
+                    OfferDataRepair.runIfNeeded(appContext)
+                    AddressBackfill.schedule(appContext)
+                }.onFailure { error ->
+                    CaptureEventLog.append(
+                        appContext,
+                        stage = "startup_maintenance_failed",
+                        message = error.javaClass.simpleName,
+                        dedupeWindowMs = 60_000L,
+                    )
+                }
+                runOnUiThread { refreshVersion.intValue++ }
+            }, "CourierPilot-startup-maintenance").start()
+        }, 700L)
     }
 
     override fun onResume() {

@@ -18,10 +18,13 @@ internal object BoltOfferTextSanitizer {
     private val orphanBranchFragmentRegex = Regex(
         "(?i)^\\s*\\(?[^()]{0,70}(?:\\bstr\\.?|\\bstreet|\\bg\\.?|\\bgatv(?:ė|e)?|\\bpr\\.?|\\bprospektas|\\bave\\.?|\\bavenue|\\brd\\.?|\\broad)[^()]{0,30}\\)\\s*$"
     )
+    private val leadingMapMarkerRegex = Regex(
+        "(?iu)^\\s*(?:(?:Y|У|V|¥)\\s*)?4(?:\\s+|[,.:]\\s*)(.+)$"
+    )
 
     fun sanitizeStoredRawText(rawText: String): String {
         val lines = rawText.lineSequence()
-            .map(::cleanLine)
+            .map(::sanitizeCardLine)
             .filter(String::isNotBlank)
             .filterNot(::isOrphanBranchFragment)
             .toList()
@@ -54,11 +57,24 @@ internal object BoltOfferTextSanitizer {
             .joinToString("\n")
     }
 
+    fun sanitizeCardLine(value: String): String = stripLeadingMapMarkerFromAddress(cleanLine(value))
+
+    fun stripLeadingMapMarkerFromAddress(value: String): String {
+        val line = cleanLine(value)
+        val match = leadingMapMarkerRegex.matchEntire(line) ?: return line
+        val candidate = cleanLine(match.groupValues[1])
+        // Do not remove a legitimate leading house number. The prefix is treated as a Bolt map
+        // marker only when the remainder is already a complete address with its own house number.
+        return candidate.takeIf(::looksLikeAddressCore) ?: line
+    }
+
     fun isOrphanBranchFragment(value: String): Boolean =
         orphanBranchFragmentRegex.matches(cleanLine(value))
 
-    fun looksLikeAddress(value: String): Boolean {
-        val line = cleanLine(value)
+    fun looksLikeAddress(value: String): Boolean =
+        looksLikeAddressCore(stripLeadingMapMarkerFromAddress(value))
+
+    private fun looksLikeAddressCore(line: String): Boolean {
         if (!Regex("\\d").containsMatchIn(line)) return false
         return addressRegex.matches(line)
     }
