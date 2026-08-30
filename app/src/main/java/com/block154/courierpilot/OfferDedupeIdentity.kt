@@ -11,6 +11,7 @@ internal object OfferDedupeIdentity {
     private const val NORMAL_FUZZY_WINDOW_MS = 3L * 60L * 1000L
     private const val SPARSE_FRAME_WINDOW_MS = 45L * 1000L
     private const val BOLT_CARD_BURST_WINDOW_MS = 120L * 1000L
+    private const val BOLT_VISUAL_BURST_WINDOW_MS = 120L * 1000L
     private const val BOLT_ETA_TOLERANCE_MINUTES = 2
     private const val DISTANCE_TOLERANCE_METERS = 150
 
@@ -60,6 +61,16 @@ internal object OfferDedupeIdentity {
         if (first.priceCents != second.priceCents) return false
         val elapsed = abs(first.capturedAt - second.capturedAt)
         if (elapsed > PERSIST_DEDUPE_WINDOW_MS) return false
+
+        if (
+            first.packageName == CourierSignals.BOLT_PACKAGE &&
+            elapsed <= BOLT_VISUAL_BURST_WINDOW_MS &&
+            first.visualFingerprint.isNotBlank() &&
+            second.visualFingerprint.isNotBlank() &&
+            OfferVisualFingerprint.isNear(first.visualFingerprint, second.visualFingerprint)
+        ) {
+            return true
+        }
 
         // Bolt's bottom card can be captured more than once while OCR enriches the same screen. The
         // venue spelling and ETA may change frame-to-frame, so for a short live-card burst an exact

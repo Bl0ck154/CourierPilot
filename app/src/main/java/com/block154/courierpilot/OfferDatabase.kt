@@ -25,6 +25,7 @@ data class OfferRecord(
     val estimatedMinutesMin: Int? = null,
     val estimatedMinutesMax: Int? = null,
     val captureKey: String = "",
+    val visualFingerprint: String = "",
 )
 
 data class OfferInsertResult(
@@ -84,7 +85,8 @@ class OfferDatabase private constructor(context: Context) :
                 delivery_count INTEGER,
                 estimated_min INTEGER,
                 estimated_max INTEGER,
-                capture_key TEXT
+                capture_key TEXT,
+                visual_fingerprint TEXT
             )
             """.trimIndent()
         )
@@ -108,6 +110,9 @@ class OfferDatabase private constructor(context: Context) :
         }
         if (oldVersion < 4) {
             db.execSQL("ALTER TABLE offers ADD COLUMN capture_key TEXT")
+        }
+        if (oldVersion < 5) {
+            db.execSQL("ALTER TABLE offers ADD COLUMN visual_fingerprint TEXT")
         }
     }
 
@@ -148,6 +153,7 @@ class OfferDatabase private constructor(context: Context) :
             record.estimatedMinutesMin?.let { put("estimated_min", it) }
             record.estimatedMinutesMax?.let { put("estimated_max", it) }
             record.captureKey.takeIf(String::isNotBlank)?.let { put("capture_key", it) }
+            record.visualFingerprint.takeIf(String::isNotBlank)?.let { put("visual_fingerprint", it) }
         }
         val rowId = writableDatabase.insertOrThrow("offers", null, values)
         // Post-capture work is deliberately best-effort. A broken advisor/router cannot roll back a
@@ -278,6 +284,7 @@ class OfferDatabase private constructor(context: Context) :
             estimatedMinutesMin = nullableInt("estimated_min"),
             estimatedMinutesMax = nullableInt("estimated_max"),
             captureKey = nullableString("capture_key").orEmpty(),
+            visualFingerprint = nullableString("visual_fingerprint").orEmpty(),
         )
     }
 
@@ -406,7 +413,7 @@ class OfferDatabase private constructor(context: Context) :
 
     companion object {
         private const val DB_NAME = "courier_offers.db"
-        private const val DB_VERSION = 4
+        private const val DB_VERSION = 5
         private const val LIST_SEPARATOR = "\u001F"
 
         @Volatile private var instance: OfferDatabase? = null

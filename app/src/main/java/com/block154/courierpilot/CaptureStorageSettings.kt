@@ -8,12 +8,12 @@ internal object CaptureStorageSettings {
     private const val KEY_SAVE_SCREENSHOTS = "save_offer_screenshots"
 
     /**
-     * Persisting offer screenshots to Pictures/CourierOffers is optional and disabled by default.
+     * Persisting offer screenshots to Pictures/CourierOffers is optional but enabled by default because offer history is expected to retain the captured frame.
      * Accessibility/OCR capture may still use an in-memory bitmap and recycle it immediately.
      */
     fun saveOfferScreenshots(context: Context): Boolean =
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getBoolean(KEY_SAVE_SCREENSHOTS, false)
+            .getBoolean(KEY_SAVE_SCREENSHOTS, true)
 
     fun setSaveOfferScreenshots(context: Context, enabled: Boolean) {
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)

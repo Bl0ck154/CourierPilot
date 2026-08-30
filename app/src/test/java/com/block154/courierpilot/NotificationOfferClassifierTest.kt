@@ -235,4 +235,24 @@ class NotificationOfferClassifierTest {
     }
 
 
+    @Test
+    fun boltReadyNotificationHardRejectsEvenMatchingLearnedOfferProfile() {
+        val learned = NotificationStructure(
+            packageName = CourierSignals.BOLT_PACKAGE,
+            channelId = "orders",
+            category = Notification.CATEGORY_SERVICE,
+            contentIntentPresent = true,
+            contentIntentCreatorPackage = CourierSignals.BOLT_PACKAGE,
+            contentIntentKind = PendingIntentKind.ACTIVITY,
+            notificationId = 71,
+        )
+        val decision = NotificationOfferClassifier.classify(
+            structure = learned.copy(),
+            text = "Order is ready for pickup",
+            actionLabels = emptyList(),
+            learnedProfiles = listOf(learned),
+        )
+        assertFalse(decision.isOffer)
+    }
+
 }

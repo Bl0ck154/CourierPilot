@@ -2,6 +2,7 @@ package com.block154.courierpilot
 
 import android.content.ContentValues
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.net.Uri
 
 /**
@@ -11,10 +12,9 @@ import android.net.Uri
 internal object OfferDataRepair {
     private const val PREFS = "courier_offer_repairs"
     private const val KEY_REVISION = "parser_repair_revision"
-    // Revision 8 re-runs Bolt history through the bottom-card sanitizer and the longer stable-address
-    // dedupe window. This repairs old full-screen OCR pollution, drops clipped branch fragments and
-    // removes duplicate rows from the same live card.
-    private const val CURRENT_REVISION = 8
+    // Revision 9 also backfills a visual fingerprint from already-saved Bolt screenshots. This lets
+    // the repair remove historical double-captures even when OCR parsed different distances/text.
+    private const val CURRENT_REVISION = 9
     private const val LIST_SEPARATOR = "\u001F"
 
     fun runIfNeeded(context: Context) {
@@ -25,13 +25,21 @@ internal object OfferDataRepair {
         val database = OfferDatabase.get(appContext)
         val sqlite = database.writableDatabase
         val records = database.recordsSince(0L, 5000).sortedBy { it.capturedAt }
+        val visualBackfillIds = suspiciousBoltVisualCandidates(records)
         val recentSurvivors = ArrayDeque<OfferRecord>()
         val duplicateScreenshotUris = mutableListOf<String>()
 
         sqlite.beginTransaction()
         try {
             records.forEach { original ->
-                val repaired = original.withCurrentParsedStructure()
+                val reparsed = original.withCurrentParsedStructure()
+                val visualFingerprint = when {
+                    original.visualFingerprint.isNotBlank() -> original.visualFingerprint
+                    original.id in visualBackfillIds && original.screenshotUri.isNotBlank() ->
+                        readVisualFingerprint(appContext, original.screenshotUri).orEmpty()
+                    else -> ""
+                }
+                val repaired = reparsed.copy(visualFingerprint = visualFingerprint)
                 val values = ContentValues().apply {
                     put("price_cents", repaired.priceCents)
                     repaired.distanceMeters?.let { put("distance_meters", it) } ?: putNull("distance_meters")
@@ -43,6 +51,7 @@ internal object OfferDataRepair {
                     repaired.deliveryCount?.let { put("delivery_count", it) } ?: putNull("delivery_count")
                     repaired.estimatedMinutesMin?.let { put("estimated_min", it) } ?: putNull("estimated_min")
                     repaired.estimatedMinutesMax?.let { put("estimated_max", it) } ?: putNull("estimated_max")
+                    repaired.visualFingerprint.takeIf(String::isNotBlank)?.let { put("visual_fingerprint", it) } ?: putNull("visual_fingerprint")
                 }
                 sqlite.update("offers", values, "id = ?", arrayOf(original.id.toString()))
 
@@ -57,7 +66,7 @@ internal object OfferDataRepair {
                 }
                 if (duplicate) {
                     sqlite.delete("offers", "id = ?", arrayOf(original.id.toString()))
-                    duplicateScreenshotUris += original.screenshotUri
+                    if (original.screenshotUri.isNotBlank()) duplicateScreenshotUris += original.screenshotUri
                 } else {
                     recentSurvivors.addLast(repaired)
                 }
@@ -72,6 +81,35 @@ internal object OfferDataRepair {
         // are already repaired even if the OEM refuses deletion of an old screenshot URI.
         duplicateScreenshotUris.distinct().forEach { uri ->
             runCatching { appContext.contentResolver.delete(Uri.parse(uri), null, null) }
+        }
+    }
+
+
+    private fun suspiciousBoltVisualCandidates(records: List<OfferRecord>): Set<Long> {
+        val ids = mutableSetOf<Long>()
+        val lastByPrice = mutableMapOf<Int, OfferRecord>()
+        records.forEach { record ->
+            if (record.packageName != CourierSignals.BOLT_PACKAGE || record.screenshotUri.isBlank()) return@forEach
+            val previous = lastByPrice[record.priceCents]
+            if (previous != null &&
+                record.capturedAt - previous.capturedAt in 0L..OfferDedupeIdentity.BURST_WINDOW_MS
+            ) {
+                ids += previous.id
+                ids += record.id
+            }
+            lastByPrice[record.priceCents] = record
+        }
+        return ids
+    }
+
+    private fun readVisualFingerprint(context: Context, screenshotUri: String): String? {
+        val bitmap = runCatching {
+            context.contentResolver.openInputStream(Uri.parse(screenshotUri))?.use(BitmapFactory::decodeStream)
+        }.getOrNull() ?: return null
+        return try {
+            OfferVisualFingerprint.fromBottomCard(bitmap)
+        } finally {
+            bitmap.recycle()
         }
     }
 

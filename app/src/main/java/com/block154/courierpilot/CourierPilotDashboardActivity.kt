@@ -739,7 +739,7 @@ private fun DashboardSettings(
                 Column(Modifier.padding(16.dp)) {
                     SettingsSwitchRow(
                         "Save offer screenshots",
-                        "Off by default. When off, OCR uses an in-memory frame and discards it immediately; no PNG is added to Pictures/CourierOffers.",
+                        "On by default. Turn it off only if you do not want PNG copies in Pictures/CourierOffers; OCR still works in memory.",
                         saveScreenshots,
                     ) {
                         saveScreenshots = it

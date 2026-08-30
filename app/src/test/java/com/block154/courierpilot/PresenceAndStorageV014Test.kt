@@ -43,15 +43,15 @@ class PresenceAndStorageV014Test {
     }
 
     @Test
-    fun galleryScreenshotSavingIsOffByDefaultAndUserControlled() {
+    fun galleryScreenshotSavingIsOnByDefaultAndUserControlled() {
         val context = RuntimeEnvironment.getApplication()
         context.getSharedPreferences("courierpilot_capture_storage", 0).edit().clear().commit()
 
-        assertFalse(CaptureStorageSettings.saveOfferScreenshots(context))
-        CaptureStorageSettings.setSaveOfferScreenshots(context, true)
         assertTrue(CaptureStorageSettings.saveOfferScreenshots(context))
         CaptureStorageSettings.setSaveOfferScreenshots(context, false)
         assertFalse(CaptureStorageSettings.saveOfferScreenshots(context))
+        CaptureStorageSettings.setSaveOfferScreenshots(context, true)
+        assertTrue(CaptureStorageSettings.saveOfferScreenshots(context))
     }
     @Test
     fun staleOnlineSignalStopsInflatingWorkTime() {

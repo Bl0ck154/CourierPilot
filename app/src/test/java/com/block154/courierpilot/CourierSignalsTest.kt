@@ -16,6 +16,14 @@ class CourierSignalsTest {
     }
 
     @Test
+    fun readyForPickupStatusIsNeverANewOfferEvenWithDecisionLikeActions() {
+        assertFalse(CourierSignals.isOfferNotificationText("Order is ready for pickup", listOf("Accept", "Decline")))
+        assertFalse(CourierSignals.isOfferNotificationText("Užsakymas paruoštas", listOf("Priimti", "Atmesti")))
+        assertFalse(CourierSignals.isOfferNotificationText("Заказ готов к выдаче", listOf("Accept")))
+        assertFalse(CourierSignals.isOfferNotificationText("Замовлення готове до видачі", listOf("Accept")))
+    }
+
+    @Test
     fun decisionActionsRemainOfferSignalWhenCourierNotificationWordingChanges() {
         assertTrue(CourierSignals.isOfferNotificationText("Incoming request", listOf("Accept", "Decline")))
         assertTrue(CourierSignals.isOfferNotificationText("", listOf("Priimti", "Atmesti")))

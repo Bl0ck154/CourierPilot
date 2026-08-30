@@ -579,6 +579,11 @@ class OfferAccessibilityService : AccessibilityService() {
         }
 
         val database = OfferDatabase.get(this)
+        val visualFingerprint = if (pending.packageName == CourierSignals.BOLT_PACKAGE && bitmap != null) {
+            OfferVisualFingerprint.fromBottomCard(bitmap).orEmpty()
+        } else {
+            ""
+        }
         val candidate = OfferRecord(
             capturedAt = pending.armedAt,
             platform = OfferParser.platformName(pending.packageName, pending.sourceName),
@@ -597,6 +602,7 @@ class OfferAccessibilityService : AccessibilityService() {
             estimatedMinutesMin = parsed.estimatedMinutesMin,
             estimatedMinutesMax = parsed.estimatedMinutesMax,
             captureKey = pending.notificationKey,
+            visualFingerprint = visualFingerprint,
         )
 
         val duplicate = database.findRecentDuplicate(candidate)

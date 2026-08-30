@@ -59,6 +59,21 @@ internal object CourierSignals {
         "schedule",
         "customer message",
         "message from customer",
+        // Lifecycle/status pushes are not new offers, even when Bolt reuses the same channel/id.
+        "order is ready",
+        "order ready",
+        "ready for pickup",
+        "ready to pick up",
+        "pickup is ready",
+        "marked the order as ready",
+        "užsakymas paruoštas",
+        "uzsakymas paruostas",
+        "paruošta atsiimti",
+        "paruosta atsiimti",
+        "заказ готов",
+        "готов к выдаче",
+        "замовлення готове",
+        "готове до видачі",
     )
 
     private val decisionPhrases = listOf(
