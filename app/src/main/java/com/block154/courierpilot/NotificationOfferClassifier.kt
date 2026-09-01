@@ -60,6 +60,7 @@ internal data class OfferNotificationDecision(
  * Future pushes can then be recognised even if Bolt/Wolt completely change the visible wording.
  */
 internal object NotificationOfferClassifier {
+    private const val WOLT_STRUCTURAL_FALLBACK_THRESHOLD = 8
     internal const val LEARNED_PROFILE_MATCH_THRESHOLD = 7
 
     fun classify(context: Context, sbn: StatusBarNotification): OfferNotificationDecision {
@@ -112,11 +113,11 @@ internal object NotificationOfferClassifier {
             score += 1
             reasons += "activity_intent"
         }
-        if (
+        val hasTwoAppActions =
             structure.actionCount >= 2 &&
-            structure.actionIntentCount >= 2 &&
-            structure.sameCreatorActionIntentCount >= 2
-        ) {
+                structure.actionIntentCount >= 2 &&
+                structure.sameCreatorActionIntentCount >= 2
+        if (hasTwoAppActions) {
             score += 4
             reasons += "two_app_actions"
         }
@@ -145,10 +146,27 @@ internal object NotificationOfferClassifier {
             CourierSignals.hasDecisionActionSignal(actionLabels)
         val learnedOffer = learnedMatch >= LEARNED_PROFILE_MATCH_THRESHOLD
 
-        // Structural shape alone is not enough to auto-open an app. A random courier message can
-        // also have two buttons and an app-owned PendingIntent. Structure becomes an offer identity
-        // only after a real offer screen has confirmed that profile once.
-        return OfferNotificationDecision(explicitBootstrap || learnedOffer, score, reasons, learnedMatch)
+        // 0.15.2 intentionally removed generic score-based auto-open because Bolt reuses notification
+        // channels/ids for lifecycle pushes. That was too strict for Wolt: a wording/localisation/A-B
+        // change can leave a real offer with no known text even though its notification has the same
+        // high-confidence interactive shape. Restore only the narrow Wolt fallback that existed before
+        // 0.15.2: transient app-owned Activity intent + two app-owned actions, score >= 8. Bolt remains
+        // explicit/learned-only so status notifications cannot bootstrap an offer from structure alone.
+        val structuralWoltOffer =
+            structure.packageName == CourierSignals.WOLT_PACKAGE &&
+                score >= WOLT_STRUCTURAL_FALLBACK_THRESHOLD &&
+                !structure.ongoing &&
+                structure.contentCreatorMatchesApp &&
+                structure.contentIntentKind == PendingIntentKind.ACTIVITY &&
+                hasTwoAppActions
+        if (structuralWoltOffer) reasons += "wolt_structural_fallback"
+
+        return OfferNotificationDecision(
+            explicitBootstrap || learnedOffer || structuralWoltOffer,
+            score,
+            reasons,
+            learnedMatch,
+        )
     }
 
     internal fun profileMatchScore(current: NotificationStructure, profile: NotificationStructure): Int {
