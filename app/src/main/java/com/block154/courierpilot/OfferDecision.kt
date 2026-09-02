@@ -58,13 +58,13 @@ internal object OfferDecisionEngine {
         parsed: ParsedOffer,
         pedestrianRoute: RouteResult? = null,
         cyclewayRoute: RouteResult? = null,
-        thresholds: OfferDecisionThresholds = OfferDecisionThresholds.DEFAULT,
+        thresholds: OfferDecisionThresholds? = OfferDecisionThresholds.DEFAULT,
     ): OfferDecision {
         val euros = parsed.priceCents?.takeIf { it > 0 }?.div(100.0)
         val routeMeters = averageValhallaDistanceMeters(pedestrianRoute, cyclewayRoute)
         val routeKm = routeMeters?.div(1000.0)
         val perKm = if (euros != null && routeKm != null && routeKm > 0.0) euros / routeKm else null
-        val band = bandFor(perKm, thresholds)
+        val band = if (thresholds == null) OfferDecisionBand.UNKNOWN else bandFor(perKm, thresholds)
 
         return OfferDecision(
             rating = band.rating,

@@ -27,7 +27,7 @@ internal data class MarketProfile(
     val uniqueInstallations: Int,
     val medianEurPerKm: Double?,
     val confidence: String,
-    val thresholds: OfferDecisionThresholds,
+    val thresholds: OfferDecisionThresholds?,
     val trend: MarketTrend?,
     val fetchedAt: Long,
 )
@@ -55,8 +55,8 @@ internal data class MarketIntelligenceStatus(
  * bands and use the old fixed thresholds whenever the server has too little data or is unavailable.
  */
 internal object MarketIntelligence {
-    private const val OFFERS_ENDPOINT = "https://wolt-api.zivkr.pp.ua/courierpilot/v1/market/offers"
-    private const val PROFILE_ENDPOINT = "https://wolt-api.zivkr.pp.ua/courierpilot/v1/market/profile"
+    private const val OFFERS_ENDPOINT = "https://wolt-api.zivkr.pp.ua/courierpilot/v2/market/observations"
+    private const val PROFILE_ENDPOINT = "https://wolt-api.zivkr.pp.ua/courierpilot/v2/market/profile"
     private const val PREFS = "courierpilot_market_intelligence"
     private const val KEY_SHARING = "sharing_enabled"
     private const val KEY_QUEUE = "queue"
@@ -69,7 +69,7 @@ internal object MarketIntelligence {
     private const val INITIAL_FLUSH_DELAY_MS = 2_000L
     private const val PROFILE_REFRESH_MS = 30L * 60L * 1000L
     private const val PROFILE_MAX_AGE_MS = 6L * 60L * 60L * 1000L
-    private const val LOCAL_PROFILE_DAYS = 21L
+    private const val LOCAL_PROFILE_DAYS = 30L
     private const val MAX_RETRY_DELAY_MS = 15L * 60L * 1000L
 
     private val executor = Executors.newSingleThreadScheduledExecutor { runnable ->
@@ -133,10 +133,24 @@ internal object MarketIntelligence {
         }
     }
 
-    fun thresholdsFor(context: Context, platform: String): OfferDecisionThresholds {
-        val local = localProfileFor(context, platform)
+    fun thresholdsFor(context: Context, platform: String): OfferDecisionThresholds? {
         val city = profileFor(context, platform)?.takeIf { it.ready }?.thresholds
-        return LocalMarketScoring.combine(local, city)
+        if (city != null) return city
+        val cityInfo = MarketCityResolver.cached(context) ?: return null
+        val samples = OfferDatabase.get(context).marketObservations(
+            System.currentTimeMillis() - LOCAL_PROFILE_DAYS * 86_400_000L,
+            cityInfo.key,
+            localCurrencyCode(),
+            normalizePlatform(platform) ?: return null,
+        )
+        val normalized = samples.mapNotNull { sample ->
+            sample.money.major().toDouble().takeIf { it > 0.0 }?.let { it * 1000.0 / sample.fullRouteDistanceMeters }
+        }
+        val profile = AdaptiveMarketScoring.profile(
+            normalized.mapIndexed { index, rate -> AdaptiveMarketSample(rate, samples[index].capturedAt, cityInfo.key, localCurrencyCode(), platform) },
+            System.currentTimeMillis(),
+        )?.takeIf { it.sampleCount >= AdaptiveMarketScoring.PERSONAL_MIN_SAMPLES }
+        return profile?.let { OfferDecisionThresholds(it.p15, it.p35, it.p65, it.p85) }
     }
 
     fun profileFor(context: Context, platform: String): MarketProfile? {
@@ -195,6 +209,23 @@ internal object MarketIntelligence {
                 // The local order database is always the primary source for personalization.
                 // Server sharing is optional and does not control whether the route economics are kept locally.
                 OfferDatabase.get(app).updateMarketRoute(offerId, routeMeters, routeSource, city)
+                val capturedCalendar = Calendar.getInstance().apply { timeInMillis = record.capturedAt }
+                OfferDatabase.get(app).saveMarketObservation(
+                    MarketObservation(
+                        offerId = offerId,
+                        capturedAt = record.capturedAt,
+                        cityKey = city.key,
+                        cityName = city.name,
+                        countryCode = city.countryCode,
+                        platform = normalizePlatform(record.platform) ?: record.platform,
+                        money = MoneyAmount(record.priceCents.toLong(), "EUR", 2),
+                        fullRouteDistanceMeters = routeMeters,
+                        routeSource = "FULL_${routeSource}",
+                        deliveryCount = record.deliveryCount,
+                        localHour = capturedCalendar.get(Calendar.HOUR_OF_DAY),
+                        localWeekday = ((capturedCalendar.get(Calendar.DAY_OF_WEEK) + 5) % 7) + 1,
+                    ),
+                )
                 val sample = marketSample(offerId, record, routeMeters, routeSource, city)
                 refreshProfileIfNeeded(app, city, record.platform)
                 if (sharingEnabled(app)) {
@@ -220,9 +251,11 @@ internal object MarketIntelligence {
             .put("city_name", city.name)
             .put("country_code", city.countryCode)
             .put("platform", normalizePlatform(record.platform) ?: record.platform.take(24))
-            .put("price_cents", record.priceCents)
+            .put("currency_code", localCurrencyCode())
+            .put("currency_fraction_digits", 2)
+            .put("price_minor", record.priceCents)
             .put("route_distance_m", routeMeters)
-            .put("route_source", routeSource)
+            .put("route_source", "FULL_${routeSource}")
             .put("delivery_count", (record.deliveryCount ?: 1).coerceIn(1, 20))
             .put("local_hour", calendar.get(Calendar.HOUR_OF_DAY))
             .put("local_weekday", ((calendar.get(Calendar.DAY_OF_WEEK) + 5) % 7) + 1)
@@ -303,7 +336,7 @@ internal object MarketIntelligence {
 
     private fun uploadBatch(context: Context, batch: PendingBatch): UploadOutcome {
         val payload = JSONObject()
-            .put("schema", 1)
+            .put("schema", 2)
             .put("install_id", RemoteDiagnostics.installationId(context))
             .put("app_version", BuildConfig.VERSION_NAME)
             .put("version_code", BuildConfig.VERSION_CODE)
@@ -368,9 +401,7 @@ internal object MarketIntelligence {
 
     private fun fetchProfile(context: Context, city: MarketCity, platform: String): String? {
         val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-        val url = URL(
-            "$PROFILE_ENDPOINT?city=${encode(city.key)}&platform=${encode(platform)}&hour=$hour"
-        )
+        val url = URL("$PROFILE_ENDPOINT?city=${encode(city.key)}&currency=${encode(localCurrencyCode())}&platform=${encode(platform)}&hour=$hour")
         var connection: HttpURLConnection? = null
         return try {
             connection = (url.openConnection() as HttpURLConnection).apply {
@@ -387,7 +418,7 @@ internal object MarketIntelligence {
             }
             val raw = connection.inputStream.bufferedReader().use { it.readText() }
             val json = JSONObject(raw)
-            if (json.optInt("schema") != 1) return null
+            if (json.optInt("schema") != 2) return null
             if (json.optJSONObject("city")?.optString("key") != city.key) return null
             json.put("_fetched_at", System.currentTimeMillis())
             json.toString()
@@ -400,9 +431,9 @@ internal object MarketIntelligence {
 
     private fun parseProfile(raw: String, platform: String): MarketProfile? = runCatching {
         val json = JSONObject(raw)
-        if (json.optInt("schema") != 1) return@runCatching null
+        if (json.optInt("schema") != 2) return@runCatching null
         val city = json.optJSONObject("city") ?: return@runCatching null
-        val edges = json.optJSONArray("bandEdges") ?: return@runCatching null
+        val edges = json.optJSONArray("bandEdges") ?: json.optJSONArray("percentileEdges") ?: return@runCatching null
         if (edges.length() != 4) return@runCatching null
         val values = List(4) { edges.optDouble(it, Double.NaN) }
         if (values.any { !it.isFinite() || it <= 0.0 }) return@runCatching null
@@ -431,6 +462,8 @@ internal object MarketIntelligence {
             fetchedAt = json.optLong("_fetched_at", 0L),
         )
     }.getOrNull()
+
+    private fun localCurrencyCode(): String = runCatching { java.util.Currency.getInstance(Locale.getDefault()).currencyCode }.getOrDefault("EUR")
 
     private fun removeSamples(context: Context, ids: Set<String>) {
         if (ids.isEmpty()) return

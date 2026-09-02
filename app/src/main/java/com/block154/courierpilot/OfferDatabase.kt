@@ -160,7 +160,43 @@ class OfferDatabase private constructor(context: Context) :
         val out = mutableListOf<MarketObservation>(); readableDatabase.query("market_observations", null, "captured_at >= ? AND city_key = ? AND currency_code = ? AND platform = ?", arrayOf(since.toString(), cityKey, currencyCode, platform), null, null, "captured_at DESC", limit.coerceIn(1, 5000).toString()).use { c -> while (c.moveToNext()) out += c.toMarketObservation() }; return out
     }
 
-    private fun Cursor.toMarketObservation() = MarketObservation(getLong(getColumnIndexOrThrow("offer_id")), getLong(getColumnIndexOrThrow("captured_at")), getString(getColumnIndexOrThrow("city_key")), getString(getColumnIndexOrThrow("city_name")), getString(getColumnIndexOrThrow("country_code")), getString(getColumnIndexOrThrow("platform")), MoneyAmount(getLong(getColumnIndexOrThrow("price_minor")), getString(getColumnIndexOrThrow("currency_code")), getInt(getColumnIndexOrThrow("currency_fraction_digits"))), getInt(getColumnIndexOrThrow("full_route_distance_m")), getString(getColumnIndexOrThrow("route_source")), null, null, null)
+    private fun Cursor.toMarketObservation(): MarketObservation {
+        fun nullableString(name: String): String? = getString(getColumnIndexOrThrow(name))
+        fun nullableInt(name: String): Int? = if (isNull(getColumnIndexOrThrow(name))) null else getInt(getColumnIndexOrThrow(name))
+        return MarketObservation(
+            offerId = getLong(getColumnIndexOrThrow("offer_id")),
+            capturedAt = getLong(getColumnIndexOrThrow("captured_at")),
+            cityKey = getString(getColumnIndexOrThrow("city_key")),
+            cityName = nullableString("city_name"),
+            countryCode = nullableString("country_code"),
+            platform = getString(getColumnIndexOrThrow("platform")),
+            money = MoneyAmount(getLong(getColumnIndexOrThrow("price_minor")), getString(getColumnIndexOrThrow("currency_code")), getInt(getColumnIndexOrThrow("currency_fraction_digits"))),
+            fullRouteDistanceMeters = getInt(getColumnIndexOrThrow("full_route_distance_m")),
+            routeSource = getString(getColumnIndexOrThrow("route_source")),
+            deliveryCount = nullableInt("delivery_count"),
+            localHour = nullableInt("local_hour"),
+            localWeekday = nullableInt("local_weekday"),
+            uploadedAt = if (isNull(getColumnIndexOrThrow("uploaded_at"))) null else getLong(getColumnIndexOrThrow("uploaded_at")),
+            syncState = getString(getColumnIndexOrThrow("sync_state")),
+        )
+    }
+
+    /** Historical buckets are retained independently of the 30-day live scoring query. */
+    fun marketObservationBuckets(
+        since: Long,
+        cityKey: String,
+        currencyCode: String,
+        platform: String,
+        bucket: MarketHistoryBucket,
+    ): Map<String, List<MarketObservation>> = marketObservations(since, cityKey, currencyCode, platform)
+        .groupBy { observation ->
+            val calendar = java.util.Calendar.getInstance().apply { timeInMillis = observation.capturedAt }
+            when (bucket) {
+                MarketHistoryBucket.DAY -> "%tF".format(java.util.Date(observation.capturedAt))
+                MarketHistoryBucket.WEEK -> "${calendar.get(java.util.Calendar.WEEK_YEAR)}-W${calendar.get(java.util.Calendar.WEEK_OF_YEAR).toString().padStart(2, '0')}"
+                MarketHistoryBucket.MONTH -> "%tY-%<tm".format(java.util.Date(observation.capturedAt))
+            }
+        }
 
     private fun createShiftsTable(db: SQLiteDatabase) {
         db.execSQL(

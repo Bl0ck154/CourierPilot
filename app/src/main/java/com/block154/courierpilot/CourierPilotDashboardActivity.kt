@@ -176,7 +176,7 @@ class CourierPilotDashboardActivity : ComponentActivity() {
     }
 }
 
-private enum class DashboardScreen { HOME, HISTORY, ADDRESSES, STATS, SETTINGS }
+private enum class DashboardScreen { HOME, HISTORY, ADDRESSES, STATS, MARKET, SETTINGS }
 
 @Composable
 private fun DashboardRoot(
@@ -201,6 +201,7 @@ private fun DashboardRoot(
                         Triple(DashboardScreen.HISTORY, "History", Icons.Rounded.History),
                         Triple(DashboardScreen.ADDRESSES, "Addresses", Icons.Rounded.Place),
                         Triple(DashboardScreen.STATS, "Stats", Icons.Rounded.BarChart),
+                        Triple(DashboardScreen.MARKET, "Market", Icons.Rounded.Storefront),
                     ).forEach { (target, label, icon) ->
                         NavigationBarItem(
                             selected = screen == target,
@@ -249,11 +250,37 @@ private fun DashboardRoot(
                 onHistory = { screen = DashboardScreen.HISTORY },
                 onAddresses = { screen = DashboardScreen.ADDRESSES },
             )
+            DashboardScreen.MARKET -> DashboardMarket(padding)
             DashboardScreen.SETTINGS -> DashboardSettings(notificationOk, accessibilityOk, padding) {
                 screen = DashboardScreen.HOME
             }
         }
     }
+}
+
+@Composable
+private fun DashboardMarket(padding: PaddingValues) {
+    val context = LocalContext.current
+    var platform by remember { mutableStateOf(MarketPlatform.WOLT) }
+    var period by remember { mutableStateOf(MarketHistoryPeriod.WEEK) }
+    val status = MarketIntelligence.status(context)
+    val profile = if (platform == MarketPlatform.WOLT) status.woltProfile else status.boltProfile
+    val local = if (platform == MarketPlatform.WOLT) status.localWoltProfile else status.localBoltProfile
+    val state = MarketScreenState(
+        platform = platform,
+        currencyCode = "EUR",
+        personalMedian = local?.medianEurPerKm?.let { MarketMedian("%.2f".format(Locale.getDefault(), it), "EUR") },
+        cityMedian = profile?.medianEurPerKm?.let { MarketMedian("%.2f".format(Locale.getDefault(), it), "EUR") },
+        source = when { local != null && profile != null -> MarketSource.PERSONAL_AND_CITY; local != null -> MarketSource.PERSONAL; profile?.ready == true -> MarketSource.CITY; else -> MarketSource.LEARNING },
+        confidence = when (profile?.confidence?.lowercase()) { "high" -> MarketUiConfidence.HIGH; "medium" -> MarketUiConfidence.MEDIUM; "low" -> MarketUiConfidence.LOW; else -> MarketUiConfidence.NOT_READY },
+        sampleCount = local?.sampleCount ?: profile?.sampleCount ?: 0,
+        period = period,
+    )
+    MarketScreen(
+        state = state,
+        onPlatformSelected = { platform = it },
+        onPeriodSelected = { period = it },
+    )
 }
 
 @Composable
