@@ -97,6 +97,9 @@ internal object CourierSignals {
         "looking for orders",
         "looking for tasks",
         "on duty",
+        // Current Bolt Courier persistent notification while the courier is active.
+        "bolt courier app is running",
+        "we keep you active while app is in background",
         "laukiame užsakymų",
         "laukiame uzsakymu",
         "ieškome užsakymų",
