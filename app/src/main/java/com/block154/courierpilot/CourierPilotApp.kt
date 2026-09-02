@@ -10,6 +10,9 @@ class CourierPilotApp : Application() {
         CaptureServiceRecovery.install(this)
         DayRolloverUiRefresh.install(this)
         HeartbeatScheduler.ensureScheduled(this)
+        // Scheduling only registers Android-owned periodic background work. Network access happens
+        // later inside AppUpdateJobService, never on a live-offer process cold start.
+        BackgroundAppUpdateScheduler.ensureScheduled(this)
         // This is a no-op unless the user explicitly enabled remote diagnostics. The actual queue
         // read/network work is scheduled on RemoteDiagnostics' dedicated background thread.
         RemoteDiagnostics.resume(this)
