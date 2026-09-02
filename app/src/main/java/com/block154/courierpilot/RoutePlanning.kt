@@ -1,5 +1,8 @@
 package com.block154.courierpilot
 
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Executors
+
 internal enum class WaypointKind {
     CURRENT_LOCATION,
     PICKUP,
@@ -116,9 +119,25 @@ internal class RouteComparisonEngine(private val provider: RouteProvider) {
     fun compare(points: List<RoutePoint>): RouteComparison {
         val pedestrianRequest = RouteRequest(points, RouteProfile.PEDESTRIAN_SHORTCUT)
         val cycleRequest = RouteRequest(points, RouteProfile.CYCLEWAY_BIASED)
-        return RouteComparison(
-            pedestrian = provider.route(pedestrianRequest),
-            cycleway = provider.route(cycleRequest),
+        // The profiles are independent HTTP requests. Running them serially made the live card pay
+        // two network round trips; parallel execution makes the slower profile the total cost.
+        val pedestrian = CompletableFuture.supplyAsync(
+            { runCatching { provider.route(pedestrianRequest) }.getOrElse { Result.failure(it) } },
+            routeExecutor,
         )
+        val cycleway = CompletableFuture.supplyAsync(
+            { runCatching { provider.route(cycleRequest) }.getOrElse { Result.failure(it) } },
+            routeExecutor,
+        )
+        return RouteComparison(
+            pedestrian = pedestrian.join(),
+            cycleway = cycleway.join(),
+        )
+    }
+
+    companion object {
+        private val routeExecutor = Executors.newFixedThreadPool(2) { runnable ->
+            Thread(runnable, "CourierPilot-Valhalla").apply { isDaemon = true }
+        }
     }
 }

@@ -190,6 +190,7 @@ class OfferAccessibilityService : AccessibilityService() {
             if (CaptureStorageSettings.saveOfferScreenshots(this)) {
                 captureCurrentFrameAndPersist(pending, target.windowId, uiText, parsed)
             } else {
+                LiveAdvisorHub.showPendingOffer(this, pending, parsed)
                 persistOffer(null, pending, uiText, parsed)
             }
         } else {
@@ -406,6 +407,10 @@ class OfferAccessibilityService : AccessibilityService() {
                         return
                     }
                     resetScreenshotFailures(pending)
+                    val earlyParsed = OfferParser.parse(accessibilityText)
+                    if (CourierSignals.looksLikeOfferScreen(accessibilityText, earlyParsed)) {
+                        LiveAdvisorHub.showPendingOffer(this@OfferAccessibilityService, pending, earlyParsed)
+                    }
 
                     recognizer.process(InputImage.fromBitmap(bitmap, 0))
                         .addOnSuccessListener { result ->
@@ -417,6 +422,9 @@ class OfferAccessibilityService : AccessibilityService() {
                             observeCourierScreen(pending.packageName, combined, ScreenTextSource.OCR_AUGMENTED)
                             if (combined.isNotBlank()) OfferState.saveUiText(this@OfferAccessibilityService, combined)
                             val parsed = OfferParser.parse(combined)
+                            if (CourierSignals.looksLikeOfferScreen(combined, parsed)) {
+                                LiveAdvisorHub.showPendingOffer(this@OfferAccessibilityService, pending, parsed)
+                            }
                             finishCapture(captureToken)
                             if (parsed.priceCents != null) {
                                 CaptureEventLog.append(this@OfferAccessibilityService, "price_ocr", "Price detected by OCR fallback", platform)
@@ -473,6 +481,7 @@ class OfferAccessibilityService : AccessibilityService() {
                                 "Price is already known; saving offer metadata after repeated optional screenshot failures",
                                 platform,
                             )
+                            LiveAdvisorHub.showPendingOffer(this@OfferAccessibilityService, pending, parsed)
                             persistOffer(null, pending, text, parsed)
                         } else {
                             scheduleAttempt(500L)
@@ -480,6 +489,7 @@ class OfferAccessibilityService : AccessibilityService() {
                         return
                     }
                     resetScreenshotFailures(pending)
+                    LiveAdvisorHub.showPendingOffer(this@OfferAccessibilityService, pending, parsed)
                     finishCapture(captureToken)
                     persistOffer(bitmap, pending, text, parsed)
                 }
@@ -494,6 +504,7 @@ class OfferAccessibilityService : AccessibilityService() {
                             "Price is already known; saving offer metadata after $failures screenshot failures",
                             platform,
                         )
+                        LiveAdvisorHub.showPendingOffer(this@OfferAccessibilityService, pending, parsed)
                         persistOffer(null, pending, text, parsed)
                     } else {
                         handleScreenshotFailure(errorCode, retry = true, pending = pending, failureCount = failures)
@@ -542,8 +553,21 @@ class OfferAccessibilityService : AccessibilityService() {
 
     private fun takeTargetScreenshot(windowId: Int, callback: TakeScreenshotCallback) {
         if (Build.VERSION.SDK_INT < 34) {
-            runCatching { takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, callback) }
+            LiveAdvisorHub.setCaptureSuppressed(this, true)
+            val cleanCallback = object : TakeScreenshotCallback {
+                override fun onSuccess(screenshot: ScreenshotResult) {
+                    LiveAdvisorHub.setCaptureSuppressed(this@OfferAccessibilityService, false)
+                    callback.onSuccess(screenshot)
+                }
+
+                override fun onFailure(errorCode: Int) {
+                    LiveAdvisorHub.setCaptureSuppressed(this@OfferAccessibilityService, false)
+                    callback.onFailure(errorCode)
+                }
+            }
+            runCatching { takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, cleanCallback) }
                 .onFailure {
+                    LiveAdvisorHub.setCaptureSuppressed(this, false)
                     CaptureEventLog.append(
                         this,
                         "screenshot_request_exception",
@@ -600,8 +624,10 @@ class OfferAccessibilityService : AccessibilityService() {
     }
 
     private fun requestDisplayScreenshotFallback(callback: TakeScreenshotCallback) {
+        LiveAdvisorHub.setCaptureSuppressed(this, true)
         val displayCallback = object : TakeScreenshotCallback {
             override fun onSuccess(screenshot: ScreenshotResult) {
+                LiveAdvisorHub.setCaptureSuppressed(this@OfferAccessibilityService, false)
                 CaptureEventLog.append(
                     this@OfferAccessibilityService,
                     "screenshot_display_fallback_ok",
@@ -612,6 +638,7 @@ class OfferAccessibilityService : AccessibilityService() {
             }
 
             override fun onFailure(displayErrorCode: Int) {
+                LiveAdvisorHub.setCaptureSuppressed(this@OfferAccessibilityService, false)
                 CaptureEventLog.append(
                     this@OfferAccessibilityService,
                     "screenshot_display_fallback_failed",
@@ -623,6 +650,7 @@ class OfferAccessibilityService : AccessibilityService() {
         }
         runCatching { takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, displayCallback) }
             .onFailure {
+                LiveAdvisorHub.setCaptureSuppressed(this, false)
                 CaptureEventLog.append(
                     this,
                     "screenshot_display_exception",

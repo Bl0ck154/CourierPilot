@@ -16,9 +16,17 @@ internal object LiveAdvisorHub {
         val supplementalBoltPickupAddresses: List<String> = emptyList(),
     )
 
+    private data class PendingAdvisorOffer(
+        val packageName: String,
+        val armedAt: Long,
+        val parsed: ParsedOffer,
+    )
+
     private var serviceRef = WeakReference<AccessibilityService>(null)
     private var advisor: StableLiveOfferAdvisor? = null
     private var currentOffer: CurrentAdvisorOffer? = null
+    private var pendingPreview: PendingAdvisorOffer? = null
+    private var captureOfferKey: String? = null
 
     fun attach(context: Context) {
         val service = context as? AccessibilityService ?: return
@@ -34,13 +42,40 @@ internal object LiveAdvisorHub {
     }
 
     /**
-     * Hide an older card while CourierPilot is collecting the clean screenshot for a new offer.
-     * Clearing currentOffer also invalidates any old asynchronous route callback.
+     * Hide the previous offer exactly once when a genuinely new capture transaction starts. Repeated
+     * observations for the same pending offer must not kill the progressive preview we show later.
      */
-    fun hideForCapture(context: Context) {
+    fun hideForCapture(context: Context, pending: PendingOffer) {
         attach(context)
+        val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
+        if (captureOfferKey == key) return
+        captureOfferKey = key
+        pendingPreview = null
         currentOffer = null
-        advisor?.suppressCurrentOffer("new offer capture started")
+        advisor?.suppressCurrentOffer("new offer capture started", animate = false)
+    }
+
+    fun showPendingOffer(context: Context, pending: PendingOffer, parsed: ParsedOffer) {
+        attach(context)
+        val service = serviceRef.get() ?: return
+        val platform = OfferState.platformLabel(pending.packageName)
+        val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
+        pendingPreview = PendingAdvisorOffer(pending.packageName, pending.armedAt, parsed)
+        advisor?.showPending(platform, parsed)
+        if (pending.packageName == CourierSignals.WOLT_PACKAGE && AutomaticWoltRouteCoordinator.prewarm(service, parsed)) {
+            CaptureEventLog.append(
+                service,
+                stage = "route_prewarm",
+                platform = platform,
+                message = "Started/continued Wolt geocode prewarm before price persistence",
+                dedupeWindowMs = 2_000L,
+            )
+        }
+    }
+
+    fun setCaptureSuppressed(context: Context, suppressed: Boolean) {
+        attach(context)
+        advisor?.setCaptureSuppressed(suppressed)
     }
 
     fun onOfferPersisted(offerId: Long, record: OfferRecord) {
@@ -76,6 +111,8 @@ internal object LiveAdvisorHub {
 
         val current = CurrentAdvisorOffer(offerId, record, parsed, supplementalBoltPickups)
         currentOffer = current
+        pendingPreview = null
+        captureOfferKey = null
 
         DeliveryLifecycleTracking.onOfferCaptured(service, record.packageName, offerId, record.capturedAt)
 
@@ -156,11 +193,15 @@ internal object LiveAdvisorHub {
      * conflicting identity. Real new notifications still bypass this gate and arm normally.
      */
     fun isCurrentTrackedOfferScreen(packageName: String, parsed: ParsedOffer): Boolean {
-        val current = currentOffer ?: return false
         val currentAdvisor = advisor ?: return false
-        if (current.record.packageName != packageName) return false
         if (!currentAdvisor.isTrackingOffer(packageName)) return false
-        return !LiveOfferResumePolicy.definitelyDifferent(current.parsed, parsed)
+        currentOffer?.takeIf { it.record.packageName == packageName }?.let { current ->
+            return !LiveOfferResumePolicy.definitelyDifferent(current.parsed, parsed)
+        }
+        pendingPreview?.takeIf { it.packageName == packageName }?.let { preview ->
+            return !LiveOfferResumePolicy.definitelyDifferent(preview.parsed, parsed)
+        }
+        return false
     }
 
     fun onForegroundWindowChanged(context: Context, packageName: String) {
