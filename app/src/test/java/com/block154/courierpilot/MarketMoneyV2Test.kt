@@ -10,4 +10,16 @@ class MarketMoneyV2Test {
         assertEquals(MoneyAmount(1250, "KWD", 3), MarketCurrencyParser.parse("KWD 1.250"))
     }
     @Test fun unknownCurrencyIsIneligible() { assertNull(MarketCurrencyParser.parse("12.50 ???")) }
+
+    @Test fun offerParserCarriesNativeCurrencyIntoParsedOffer() {
+        val parsed = OfferParser.parse("16 min, 19,50 PLN\nAccept")
+        assertEquals(1950, parsed.priceCents)
+        assertEquals(MoneyAmount(1950, "PLN", 2), parsed.money)
+    }
+
+    @Test fun ambiguousCurrencyIsNotGuessed() {
+        val parsed = OfferParser.parse("16 min, $19.50\nAccept")
+        assertNull(parsed.money)
+        assertNull(parsed.priceCents)
+    }
 }

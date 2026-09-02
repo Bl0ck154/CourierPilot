@@ -12,6 +12,8 @@ data class OfferRecord(
     val platform: String,
     val packageName: String,
     val priceCents: Int,
+    val currencyCode: String = "EUR",
+    val currencyFractionDigits: Int = 2,
     val distanceMeters: Int?,
     val restaurant: String?,
     val screenshotUri: String,
@@ -82,6 +84,8 @@ class OfferDatabase private constructor(context: Context) :
                 platform TEXT NOT NULL,
                 package_name TEXT NOT NULL,
                 price_cents INTEGER NOT NULL,
+                currency_code TEXT NOT NULL DEFAULT 'EUR',
+                currency_fraction_digits INTEGER NOT NULL DEFAULT 2,
                 distance_meters INTEGER,
                 restaurant TEXT,
                 screenshot_uri TEXT NOT NULL,
@@ -140,6 +144,10 @@ class OfferDatabase private constructor(context: Context) :
             createMarketObservationsTable(db)
             db.execSQL("INSERT OR IGNORE INTO market_observations (offer_id,captured_at,city_key,city_name,country_code,platform,currency_code,price_minor,currency_fraction_digits,full_route_distance_m,route_source,delivery_count) SELECT id,captured_at,market_city_key,market_city_name,market_country_code,platform,'EUR',price_cents,2,market_route_distance_meters,market_route_source,delivery_count FROM offers WHERE market_route_distance_meters > 0 AND market_route_source LIKE 'FULL%' AND market_city_key IS NOT NULL")
         }
+        if (oldVersion < 8) {
+            db.execSQL("ALTER TABLE offers ADD COLUMN currency_code TEXT NOT NULL DEFAULT 'EUR'")
+            db.execSQL("ALTER TABLE offers ADD COLUMN currency_fraction_digits INTEGER NOT NULL DEFAULT 2")
+        }
     }
 
     private fun createMarketObservationsTable(db: SQLiteDatabase) {
@@ -157,7 +165,22 @@ class OfferDatabase private constructor(context: Context) :
     }
 
     fun marketObservations(since: Long, cityKey: String, currencyCode: String, platform: String, limit: Int = 5000): List<MarketObservation> {
-        val out = mutableListOf<MarketObservation>(); readableDatabase.query("market_observations", null, "captured_at >= ? AND city_key = ? AND currency_code = ? AND platform = ?", arrayOf(since.toString(), cityKey, currencyCode, platform), null, null, "captured_at DESC", limit.coerceIn(1, 5000).toString()).use { c -> while (c.moveToNext()) out += c.toMarketObservation() }; return out
+        val out = mutableListOf<MarketObservation>(); readableDatabase.query("market_observations", null, "captured_at >= ? AND city_key = ? AND currency_code = ? AND platform = ?", arrayOf(since.toString(), cityKey, currencyCode, platform), null, null, "captured_at DESC", limit.coerceIn(1, 50_000).toString()).use { c -> while (c.moveToNext()) out += c.toMarketObservation() }; return out
+    }
+
+    fun latestMarketCurrency(cityKey: String, platform: String): String? {
+        readableDatabase.query(
+            "market_observations",
+            arrayOf("currency_code"),
+            "city_key = ? AND platform = ?",
+            arrayOf(cityKey, platform),
+            null,
+            null,
+            "captured_at DESC",
+            "1",
+        ).use { cursor ->
+            return if (cursor.moveToFirst()) cursor.getString(0)?.takeIf { it.matches(Regex("[A-Z]{3}")) } else null
+        }
     }
 
     private fun Cursor.toMarketObservation(): MarketObservation {
@@ -188,12 +211,12 @@ class OfferDatabase private constructor(context: Context) :
         currencyCode: String,
         platform: String,
         bucket: MarketObservationBucket,
-    ): Map<String, List<MarketObservation>> = marketObservations(since, cityKey, currencyCode, platform)
+    ): Map<String, List<MarketObservation>> = marketObservations(since, cityKey, currencyCode, platform, limit = 50_000)
         .groupBy { observation ->
             val calendar = java.util.Calendar.getInstance().apply { timeInMillis = observation.capturedAt }
             when (bucket) {
                 MarketObservationBucket.DAY -> "%tF".format(java.util.Date(observation.capturedAt))
-                MarketObservationBucket.WEEK -> "${calendar.get(java.util.Calendar.WEEK_YEAR)}-W${calendar.get(java.util.Calendar.WEEK_OF_YEAR).toString().padStart(2, '0')}"
+                MarketObservationBucket.WEEK -> "${calendar.weekYear}-W${calendar.get(java.util.Calendar.WEEK_OF_YEAR).toString().padStart(2, '0')}"
                 MarketObservationBucket.MONTH -> "%tY-%<tm".format(java.util.Date(observation.capturedAt))
             }
         }
@@ -353,6 +376,8 @@ class OfferDatabase private constructor(context: Context) :
             platform = getString(getColumnIndexOrThrow("platform")),
             packageName = getString(getColumnIndexOrThrow("package_name")),
             priceCents = getInt(getColumnIndexOrThrow("price_cents")),
+            currencyCode = nullableString("currency_code") ?: "EUR",
+            currencyFractionDigits = nullableInt("currency_fraction_digits") ?: 2,
             distanceMeters = nullableInt("distance_meters"),
             restaurant = nullableString("restaurant"),
             screenshotUri = getString(getColumnIndexOrThrow("screenshot_uri")),
@@ -467,7 +492,7 @@ class OfferDatabase private constructor(context: Context) :
             null,
             null,
             "captured_at DESC",
-            limit.coerceIn(1, 5000).toString(),
+            limit.coerceIn(1, 50_000).toString(),
         ).use { cursor ->
             while (cursor.moveToNext()) {
                 out += LocalMarketSample(
@@ -557,7 +582,7 @@ class OfferDatabase private constructor(context: Context) :
 
     companion object {
         private const val DB_NAME = "courier_offers.db"
-        private const val DB_VERSION = 7
+        private const val DB_VERSION = 8
         private const val LIST_SEPARATOR = "\u001F"
 
         @Volatile private var instance: OfferDatabase? = null

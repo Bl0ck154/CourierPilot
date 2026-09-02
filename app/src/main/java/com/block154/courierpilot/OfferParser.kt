@@ -18,6 +18,7 @@ internal data class ParsedRouteStop(
 
 internal data class ParsedOffer(
     val priceCents: Int?,
+    val money: MoneyAmount? = null,
     val distanceMeters: Int?,
     val restaurant: String?,
     val merchantNames: List<String> = emptyList(),
@@ -32,7 +33,7 @@ internal data class ParsedOffer(
 
 internal object OfferParser {
     private val priceRegex = Regex(
-        "(?i)(?:€\\s*|EUR\\s*)(\\d+(?:[.,]\\d{1,2})?)|(\\d+(?:[.,]\\d{1,2})?)\\s*(?:€|EUR)"
+        "(?i)(?:(?:€|£|zł|₴|Kč|Ft|[A-Z]{3})\\s*\\d|\\d[^\\n]{0,20}(?:€|£|zł|₴|Kč|Ft|[A-Z]{3}))"
     )
     private val distanceRegex = Regex("(?i)\\b(\\d+(?:[.,]\\d+)?)\\s*(km|m)\\b")
     private val estimateRegex = Regex("(?i)\\b(\\d{1,3})\\s*-\\s*(\\d{1,3})\\s*min\\b")
@@ -83,8 +84,10 @@ internal object OfferParser {
         val deliveryCount = maxOf(headerDeliveryCount, boltDropoffCount, customerStopCount, baselineCount)
             .takeIf { it > 0 }
 
+        val money = parseMoney(lines.joinToString("\n"), lines)
         return ParsedOffer(
-            priceCents = parsePriceCents(lines.joinToString("\n"), lines),
+            priceCents = money?.amountMinor?.takeIf { it in Int.MIN_VALUE..Int.MAX_VALUE }?.toInt(),
+            money = money,
             distanceMeters = parseDistanceMeters(lines.joinToString("\n")),
             restaurant = merchantNames.takeIf { it.isNotEmpty() }?.joinToString(", "),
             merchantNames = merchantNames,
@@ -116,7 +119,7 @@ internal object OfferParser {
             }
         }
 
-        lines.firstOrNull { priceRegex.containsMatchIn(it) }?.let { priceLine ->
+        lines.firstOrNull { MarketCurrencyParser.containsMoney(it) }?.let { priceLine ->
             singleMinuteRegex.find(priceLine)?.groupValues?.getOrNull(1)?.toIntOrNull()
                 ?.takeIf { it in 1..240 }
                 ?.let { return it to it }
@@ -217,7 +220,7 @@ internal object OfferParser {
             score += BOLT_CARD_ETA_BONUS
         }
         if ((1..7).any { offset ->
-                lines.getOrNull(addressIndex + offset)?.let(priceRegex::containsMatchIn) == true
+                lines.getOrNull(addressIndex + offset)?.let(MarketCurrencyParser::containsMoney) == true
             }) {
             score += BOLT_CARD_PRICE_BONUS
         }
@@ -324,7 +327,7 @@ internal object OfferParser {
     private fun isStopNameCandidate(line: String): Boolean {
         val lower = line.lowercase(Locale.ROOT)
         if (line.length !in 2..140) return false
-        if (priceRegex.containsMatchIn(line) || distanceRegex.matches(line) || estimateRegex.containsMatchIn(line)) return false
+        if (MarketCurrencyParser.containsMoney(line) || distanceRegex.matches(line) || estimateRegex.containsMatchIn(line)) return false
         if (minuteOnlyRegex.matches(line) || looksLikeAddress(line)) return false
         if (boltDropoffCountRegex.matches(line)) return false
         if (lower in GENERIC_LINES) return false
@@ -344,30 +347,18 @@ internal object OfferParser {
             Regex("(?i)\\bstr\\.?\\s*\\d").containsMatchIn(line)
     }
 
-    private fun parsePriceCents(text: String, lines: List<String>): Int? {
-        // Accessibility/OCR can expose more than one euro amount on a stacked Wolt screen.
-        // The total offer amount is the one semantically attached to this label, so prefer the
-        // closest amount around it instead of blindly taking the first currency token in raw text.
+    private fun parseMoney(text: String, lines: List<String>): MoneyAmount? {
         val earningsIndex = lines.indexOfFirst {
             it.contains("expected earnings for the full delivery", ignoreCase = true)
         }
         if (earningsIndex >= 0) {
             for (offset in listOf(-1, 0, 1, -2, 2)) {
                 val candidate = lines.getOrNull(earningsIndex + offset) ?: continue
-                firstValidPrice(candidate)?.let { return it }
+                MarketCurrencyParser.parse(candidate)?.let { return it }
             }
         }
-        return firstValidPrice(text)
+        return MarketCurrencyParser.parse(text)
     }
-
-    private fun firstValidPrice(value: String): Int? = priceRegex.findAll(value)
-        .mapNotNull { match ->
-            val raw = match.groupValues[1].ifBlank { match.groupValues[2] }.replace(',', '.')
-            runCatching {
-                BigDecimal(raw).multiply(BigDecimal(100)).setScale(0, RoundingMode.HALF_UP).intValueExact()
-            }.getOrNull()
-        }
-        .firstOrNull { it in MIN_PRICE_CENTS..MAX_PRICE_CENTS }
 
     private fun parseDistanceMeters(text: String): Int? {
         return distanceRegex.findAll(text).mapNotNull { match ->

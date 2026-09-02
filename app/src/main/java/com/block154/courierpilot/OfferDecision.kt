@@ -4,7 +4,7 @@ package com.block154.courierpilot
  * Five intentionally simple profitability bands.
  *
  * Human-readable verdict labels were removed from the live card: the emoji is the verdict and the
- * actual €/km number is shown next to it. UNKNOWN is used until Valhalla returns a usable route.
+ * actual native-money/km number is shown next to it. UNKNOWN is used until Valhalla returns a usable route.
  */
 internal enum class OfferDecisionBand(val emoji: String, val rating: Int?) {
     TERRIBLE("💩", 1),
@@ -21,11 +21,15 @@ internal data class OfferDecision(
     val euroPerKilometer: Double?,
     val routeDistanceMeters: Int?,
     val routeVerifiedKilometerRate: Boolean,
-)
+    val currencyCode: String? = null,
+) {
+    /** Native-money/km. Kept as an alias while legacy callers still use the old field name. */
+    val moneyPerKilometer: Double? get() = euroPerKilometer
+}
 
 /**
- * Sorted native-money/km percentile edges for the five live bands. A legacy DEFAULT value is kept
- * only for migration/unit compatibility; the live advisor passes null until a v2 profile is ready.
+ * Sorted native-money/km percentile edges for the five live bands. Equal percentile boundaries are
+ * valid for small/flat samples; the live advisor passes null until market evidence is ready.
  */
 internal data class OfferDecisionThresholds(
     val terribleBelow: Double,
@@ -35,15 +39,11 @@ internal data class OfferDecisionThresholds(
 ) {
     init {
         require(terribleBelow > 0.0)
-        require(badBelow > terribleBelow)
-        require(okAtMost > badBelow)
-        require(goodBelow > okAtMost)
+        require(badBelow >= terribleBelow)
+        require(okAtMost >= badBelow)
+        require(goodBelow >= okAtMost)
     }
 
-    companion object {
-        @Deprecated("v1 compatibility only; never use for live market scoring")
-        val DEFAULT = OfferDecisionThresholds(0.70, 0.85, 1.00, 1.25)
-    }
 }
 
 /**
@@ -61,10 +61,11 @@ internal object OfferDecisionEngine {
         cyclewayRoute: RouteResult? = null,
         thresholds: OfferDecisionThresholds? = null,
     ): OfferDecision {
-        val euros = parsed.priceCents?.takeIf { it > 0 }?.div(100.0)
+        val money = parsed.money ?: parsed.priceCents?.takeIf { it > 0 }?.let { MoneyAmount(it.toLong(), "EUR", 2) }
+        val major = money?.major()?.toDouble()?.takeIf { it > 0.0 }
         val routeMeters = averageValhallaDistanceMeters(pedestrianRoute, cyclewayRoute)
         val routeKm = routeMeters?.div(1000.0)
-        val perKm = if (euros != null && routeKm != null && routeKm > 0.0) euros / routeKm else null
+        val perKm = if (major != null && routeKm != null && routeKm > 0.0) major / routeKm else null
         val band = if (thresholds == null) OfferDecisionBand.UNKNOWN else bandFor(perKm, thresholds)
 
         return OfferDecision(
@@ -73,6 +74,7 @@ internal object OfferDecisionEngine {
             euroPerKilometer = perKm,
             routeDistanceMeters = routeMeters,
             routeVerifiedKilometerRate = routeMeters != null,
+            currencyCode = money?.currencyCode,
         )
     }
 

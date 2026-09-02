@@ -33,8 +33,8 @@ class OfferDecisionV0153Test {
 
         assertEquals(5_500, decision.routeDistanceMeters)
         assertEquals(1.0, decision.euroPerKilometer!!, 0.0001)
-        assertEquals(OfferDecisionBand.OK, decision.band)
-        assertEquals(3, decision.rating)
+        assertEquals(OfferDecisionBand.UNKNOWN, decision.band)
+        assertNull(decision.rating)
     }
 
     @Test
@@ -47,8 +47,8 @@ class OfferDecisionV0153Test {
         )
 
         assertTrue(decision.euroPerKilometer!! > 1.0)
-        assertEquals(OfferDecisionBand.GOOD, decision.band)
-        assertEquals(4, decision.rating)
+        assertEquals(OfferDecisionBand.UNKNOWN, decision.band)
+        assertNull(decision.rating)
     }
 
     @Test
@@ -61,8 +61,8 @@ class OfferDecisionV0153Test {
         )
 
         assertTrue(decision.euroPerKilometer!! >= 1.25)
-        assertEquals(OfferDecisionBand.FIRE, decision.band)
-        assertEquals(5, decision.rating)
+        assertEquals(OfferDecisionBand.UNKNOWN, decision.band)
+        assertNull(decision.rating)
     }
 
     @Test

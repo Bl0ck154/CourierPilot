@@ -5,7 +5,7 @@ import kotlin.math.floor
 
 internal data class LocalMarketProfile(
     val sampleCount: Int,
-    val medianEurPerKm: Double,
+    val medianNativeMoneyPerKm: Double,
     val thresholds: OfferDecisionThresholds,
     val source: String,
 )
@@ -19,10 +19,10 @@ internal data class LocalMarketProfile(
  * the server city profile remains a stabilizer/fallback rather than the primary source.
  */
 internal object LocalMarketScoring {
-    const val MIN_LOCAL_SAMPLES = 6
+    const val MIN_LOCAL_SAMPLES = 5
 
     fun profile(rates: List<Double>, source: String = "local_platform"): LocalMarketProfile? {
-        val clean = rates.filter { it.isFinite() && it in 0.15..10.0 }.sorted()
+        val clean = rates.filter { it.isFinite() && it > 0.0 }.sorted()
         if (clean.size < MIN_LOCAL_SAMPLES) return null
         val robust = trimTails(clean)
         if (robust.size < 4) return null
@@ -34,7 +34,7 @@ internal object LocalMarketScoring {
         )
         return LocalMarketProfile(
             sampleCount = clean.size,
-            medianEurPerKm = quantile(robust, 0.50),
+            medianNativeMoneyPerKm = quantile(robust, 0.50),
             thresholds = edges,
             source = source,
         )
@@ -43,21 +43,16 @@ internal object LocalMarketScoring {
     fun combine(
         local: LocalMarketProfile?,
         city: OfferDecisionThresholds?,
-    ): OfferDecisionThresholds {
-        if (local == null) return city ?: OfferDecisionThresholds.DEFAULT
-        val stabilizer = city ?: OfferDecisionThresholds.DEFAULT
+    ): OfferDecisionThresholds? {
+        if (local == null) return city
+        if (city == null) return local.thresholds
         val localWeight = localWeight(local.sampleCount)
-        return blend(local.thresholds, stabilizer, localWeight).normalized()
+        return blend(local.thresholds, city, localWeight).normalized()
     }
 
-    internal fun localWeight(sampleCount: Int): Double = when {
-        sampleCount < MIN_LOCAL_SAMPLES -> 0.0
-        sampleCount < 10 -> 0.55
-        sampleCount < 20 -> 0.65
-        sampleCount < 40 -> 0.75
-        sampleCount < 80 -> 0.85
-        else -> 0.90
-    }
+    internal fun localWeight(sampleCount: Int): Double =
+        if (sampleCount < MIN_LOCAL_SAMPLES) 0.0 else sampleCount.toDouble() / (sampleCount + 8.0)
+
 
     private fun trimTails(sorted: List<Double>): List<Double> {
         if (sorted.size < MIN_LOCAL_SAMPLES) return sorted
@@ -96,10 +91,13 @@ internal object LocalMarketScoring {
         okAtMost: Double,
         goodBelow: Double,
     ): OfferDecisionThresholds {
-        val first = terribleBelow.coerceAtLeast(0.20)
-        val second = badBelow.coerceAtLeast(first + 0.03)
-        val third = okAtMost.coerceAtLeast(second + 0.03)
-        val fourth = goodBelow.coerceAtLeast(third + 0.03)
+        val values = listOf(terribleBelow, badBelow, okAtMost, goodBelow)
+        if (values.any { !it.isFinite() || it <= 0.0 }) error("Invalid market percentiles")
+        val epsilon = (values.maxOrNull() ?: 1.0) * 1e-9
+        val first = values[0]
+        val second = maxOf(values[1], first + epsilon)
+        val third = maxOf(values[2], second + epsilon)
+        val fourth = maxOf(values[3], third + epsilon)
         return OfferDecisionThresholds(first, second, third, fourth)
     }
 

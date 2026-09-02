@@ -706,6 +706,8 @@ class OfferAccessibilityService : AccessibilityService() {
             platform = OfferParser.platformName(pending.packageName, pending.sourceName),
             packageName = pending.packageName,
             priceCents = priceCents,
+            currencyCode = parsed.money?.currencyCode ?: "EUR",
+            currencyFractionDigits = parsed.money?.fractionDigits ?: 2,
             distanceMeters = parsed.distanceMeters,
             restaurant = parsed.restaurant,
             screenshotUri = "",

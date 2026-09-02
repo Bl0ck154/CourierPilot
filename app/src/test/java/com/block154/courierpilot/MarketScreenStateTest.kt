@@ -8,7 +8,7 @@ class MarketScreenStateTest {
     @Test fun defaultsToLearningWithNoInventedMedian() {
         val state = MarketScreenState()
         assertEquals(MarketSource.LEARNING, state.source)
-        assertEquals(MarketConfidence.NOT_READY, state.confidence)
+        assertEquals(MarketUiConfidence.NOT_READY, state.confidence)
         assertEquals(null, state.personalMedian)
         assertEquals(null, state.cityMedian)
     }
@@ -25,7 +25,7 @@ class MarketScreenStateTest {
     }
 
     @Test fun trendUsesDirectionAndPercent() {
-        assertTrue(MarketTrend(12.5, true).label.startsWith("↑"))
-        assertTrue(MarketTrend(4.0, false).label.startsWith("↓"))
+        assertTrue(MarketUiTrend(12.5, true).label.startsWith("↑"))
+        assertTrue(MarketUiTrend(4.0, false).label.startsWith("↓"))
     }
 }

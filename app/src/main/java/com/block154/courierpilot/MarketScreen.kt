@@ -50,7 +50,8 @@ data class MarketScreenState(
     val learningTarget: Int = 5,
     val trend: MarketUiTrend? = null,
     val period: MarketHistoryPeriod = MarketHistoryPeriod.WEEK,
-    val history: List<MarketHistoryBucket> = emptyList(),
+    val personalHistory: List<MarketHistoryBucket> = emptyList(),
+    val cityHistory: List<MarketHistoryBucket> = emptyList(),
     val loading: Boolean = false,
     val offline: Boolean = false,
 )
@@ -70,8 +71,12 @@ fun MarketScreen(
             item { PlatformSelector(state.platform, onPlatformSelected) }
             item { OverviewCard(state) }
             item { HistorySelector(state.period, onPeriodSelected) }
-            if (state.history.isEmpty()) item { Text("No market history yet", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            else items(state.history) { HistoryRow(it, state.currencyCode) }
+            item { Text("Your history", style = MaterialTheme.typography.titleMedium) }
+            if (state.personalHistory.isEmpty()) item { Text("No personal history yet", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            else items(state.personalHistory) { HistoryRow(it, state.currencyCode) }
+            item { Text("City history", style = MaterialTheme.typography.titleMedium) }
+            if (state.cityHistory.isEmpty()) item { Text("No collective city history yet", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            else items(state.cityHistory) { HistoryRow(it, state.currencyCode) }
         }
     }
 }
@@ -88,7 +93,7 @@ fun MarketScreen(
         MedianLine("Personal median", state.personalMedian)
         MedianLine("City median", state.cityMedian)
         Text("Source: ${state.source.displayName()} · Confidence: ${state.confidence.displayName()}")
-        Text("${state.sampleCount} eligible offers${state.percentile?.let { " · $itth percentile" } ?: ""}")
+        Text("${state.sampleCount} eligible offers${state.percentile?.let { " · ${it}th percentile" } ?: ""}")
         if (state.source == MarketSource.LEARNING) Text("Learning ${state.sampleCount.coerceAtMost(state.learningTarget)} / ${state.learningTarget}")
         state.trend?.let { Text("7d trend ${it.label}", color = if (it.improving) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) }
     } }
@@ -112,4 +117,4 @@ private fun MarketSource.displayName() = when (this) { MarketSource.PERSONAL_AND
 private fun MarketUiConfidence.displayName() = name.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() }
 
 @Preview(showBackground = true)
-@Composable private fun MarketScreenPreview() { MarketScreen(MarketScreenState(personalMedian = MarketMedian("1.24", "EUR"), cityMedian = MarketMedian("1.31", "EUR"), percentile = 68, rating = "GOOD", source = MarketSource.PERSONAL_AND_CITY, confidence = MarketUiConfidence.MEDIUM, sampleCount = 14, trend = MarketUiTrend(8.4, true), history = listOf(MarketHistoryBucket("Mon", "1.30", "1.05", "1.56", 8)))) }
+@Composable private fun MarketScreenPreview() { MarketScreen(MarketScreenState(personalMedian = MarketMedian("1.24", "EUR"), cityMedian = MarketMedian("1.31", "EUR"), percentile = 68, rating = "GOOD", source = MarketSource.PERSONAL_AND_CITY, confidence = MarketUiConfidence.MEDIUM, sampleCount = 14, trend = MarketUiTrend(8.4, true), personalHistory = listOf(MarketHistoryBucket("Mon", "1.30", "1.05", "1.56", 8)), cityHistory = listOf(MarketHistoryBucket("Mon", "1.34", "1.10", "1.61", 42)))) }

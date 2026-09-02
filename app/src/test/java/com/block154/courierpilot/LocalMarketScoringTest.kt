@@ -11,7 +11,7 @@ class LocalMarketScoringTest {
         val profile = LocalMarketScoring.profile(normal + 3.00)!!
 
         assertEquals(12, profile.sampleCount)
-        assertTrue(profile.medianEurPerKm < 1.10)
+        assertTrue(profile.medianNativeMoneyPerKm < 1.10)
         assertTrue(profile.thresholds.goodBelow < 1.20)
     }
 
@@ -23,7 +23,7 @@ class LocalMarketScoringTest {
         val old = LocalMarketScoring.profile(oldMarket)!!
         val stronger = LocalMarketScoring.profile(strongerMarket)!!
 
-        assertTrue(stronger.medianEurPerKm > old.medianEurPerKm)
+        assertTrue(stronger.medianNativeMoneyPerKm > old.medianNativeMoneyPerKm)
         assertTrue(stronger.thresholds.goodBelow > old.thresholds.goodBelow)
     }
 
@@ -31,14 +31,14 @@ class LocalMarketScoringTest {
     fun localHistoryDominatesCityProfileAsSampleCountGrows() {
         val local = LocalMarketProfile(
             sampleCount = 45,
-            medianEurPerKm = 1.35,
+            medianNativeMoneyPerKm = 1.35,
             thresholds = OfferDecisionThresholds(0.95, 1.10, 1.30, 1.55),
             source = "local_platform",
         )
         val city = OfferDecisionThresholds(0.65, 0.80, 0.95, 1.15)
-        val combined = LocalMarketScoring.combine(local, city)
+        val combined = requireNotNull(LocalMarketScoring.combine(local, city))
 
-        assertEquals(0.85, LocalMarketScoring.localWeight(45), 0.0001)
+        assertEquals(45.0 / 53.0, LocalMarketScoring.localWeight(45), 0.0001)
         assertTrue(combined.okAtMost > 1.20)
         assertTrue(combined.okAtMost < local.thresholds.okAtMost)
     }

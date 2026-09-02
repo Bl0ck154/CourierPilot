@@ -330,7 +330,7 @@ internal class StableLiveOfferAdvisor(
             parsed,
             pedestrianRoute,
             cyclewayRoute,
-            thresholds = MarketIntelligence.thresholdsFor(service, currentPlatform),
+            thresholds = MarketIntelligence.thresholdsFor(service, currentPlatform, parsed.money?.currencyCode ?: "EUR"),
         )
         val platformEconomics = PlatformOfferEconomicsCalculator.calculate(parsed)
         cachedDecisionLine = LiveAdvisorPresentation.profitabilityLine(decision, platformEconomics)
