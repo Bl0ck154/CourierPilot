@@ -131,6 +131,19 @@ internal object LiveAdvisorHub {
     private fun isCurrentOffer(expected: CurrentAdvisorOffer): Boolean =
         currentOffer?.offerId == expected.offerId
 
+    /**
+     * Screen discovery is a fallback, not a reason to recapture the offer already owned by the
+     * live advisor. Treat sparse/recomposed views as the current offer unless they contain a clear
+     * conflicting identity. Real new notifications still bypass this gate and arm normally.
+     */
+    fun isCurrentTrackedOfferScreen(packageName: String, parsed: ParsedOffer): Boolean {
+        val current = currentOffer ?: return false
+        val currentAdvisor = advisor ?: return false
+        if (current.record.packageName != packageName) return false
+        if (!currentAdvisor.isTrackingOffer(packageName)) return false
+        return !LiveOfferResumePolicy.definitelyDifferent(current.parsed, parsed)
+    }
+
     fun onForegroundWindowChanged(context: Context, packageName: String) {
         attach(context)
         advisor?.onForegroundWindowChanged(packageName)

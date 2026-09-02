@@ -277,6 +277,21 @@ class OfferAccessibilityService : AccessibilityService() {
     private fun armFromVisibleOffer(packageName: String, text: String, parsed: ParsedOffer): Boolean {
         if (!CourierSignals.looksLikeOfferScreen(text, parsed)) return false
         OfferOpenState.markOfferVisible(this, packageName)
+
+        // Direct screen discovery is only a fallback for missed notifications. Once the live advisor
+        // already owns this same offer, re-arming it causes a second capture transaction which hides
+        // the card before the later DB duplicate guard can run. Suppress that self-recapture here.
+        if (LiveAdvisorHub.isCurrentTrackedOfferScreen(packageName, parsed)) {
+            CaptureEventLog.append(
+                this,
+                stage = "screen_live_duplicate",
+                platform = OfferState.platformLabel(packageName),
+                message = "Visible offer already belongs to the active advisor; skipped screen re-arm",
+                dedupeWindowMs = 10_000L,
+            )
+            return false
+        }
+
         val fingerprint = CourierSignals.offerFingerprint(packageName, text)
         if (!ScreenOfferDeduper.shouldArm(this, packageName, fingerprint)) return false
 
