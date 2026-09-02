@@ -25,6 +25,7 @@ class OfferAccessibilityService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
     private var captureInFlight = false
+    private val captureGuard = CaptureFlightGuard(CAPTURE_OPERATION_TIMEOUT_MS)
     private var lastHandledArmedAt = 0L
     private var unlockReceiverRegistered = false
     private var lastCourierEventAtElapsed = 0L
@@ -34,6 +35,9 @@ class OfferAccessibilityService : AccessibilityService() {
     private var screenshotFailureCount = 0
 
     private val attemptRunnable = Runnable { attemptCapture() }
+    private val captureWatchdogRunnable = Runnable {
+        if (recoverTimedOutCaptureIfNeeded()) scheduleAttempt(100L)
+    }
 
     private val unlockReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -98,6 +102,7 @@ class OfferAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        captureInFlight = false
         handler.removeCallbacksAndMessages(null)
         if (unlockReceiverRegistered) {
             runCatching { unregisterReceiver(unlockReceiver) }
@@ -124,7 +129,7 @@ class OfferAccessibilityService : AccessibilityService() {
     }
 
     private fun attemptCapture() {
-        if (captureInFlight) return
+        if (captureInFlight && !recoverTimedOutCaptureIfNeeded()) return
         var pending = OfferState.pending(this)
 
         if (pending == null) {
@@ -294,19 +299,24 @@ class OfferAccessibilityService : AccessibilityService() {
     }
 
     private fun discoverCurrentFrame(window: CourierWindow, accessibilityText: String) {
-        captureInFlight = true
+        val platform = OfferState.platformLabel(window.packageName)
+        val captureToken = beginCapture("discovery screenshot/OCR", platform)
         takeTargetScreenshot(
             window.windowId,
             object : TakeScreenshotCallback {
                 override fun onSuccess(screenshot: ScreenshotResult) {
+                    if (!isCaptureCurrent(captureToken)) {
+                        discardScreenshot(screenshot)
+                        return
+                    }
                     val bitmap = screenshotToBitmap(screenshot)
                     if (bitmap == null) {
-                        captureInFlight = false
+                        finishCapture(captureToken)
                         CaptureEventLog.append(
                             this@OfferAccessibilityService,
                             "bitmap_failed",
                             "Discovery screenshot buffer could not be converted; retrying soon",
-                            OfferState.platformLabel(window.packageName),
+                            platform,
                             3_000L,
                         )
                         scheduleAttempt(DISCOVERY_SCREENSHOT_RETRY_MS)
@@ -314,34 +324,41 @@ class OfferAccessibilityService : AccessibilityService() {
                     }
                     recognizer.process(InputImage.fromBitmap(bitmap, 0))
                         .addOnSuccessListener { result ->
+                            if (!isCaptureCurrent(captureToken)) {
+                                bitmap.recycle()
+                                return@addOnSuccessListener
+                            }
                             val combined = OfferOcrText.combine(window.packageName, accessibilityText, result, bitmap.height)
                             observeCourierScreen(window.packageName, combined, ScreenTextSource.OCR_AUGMENTED)
                             if (combined.isNotBlank()) OfferState.saveUiText(this@OfferAccessibilityService, combined)
                             val parsed = OfferParser.parse(combined)
                             val armed = armFromVisibleOffer(window.packageName, combined, parsed)
                             val pending = if (armed) OfferState.pending(this@OfferAccessibilityService) else null
+                            finishCapture(captureToken)
                             if (pending != null && parsed.priceCents != null) {
                                 persistOffer(bitmap, pending, combined, parsed)
                             } else {
                                 bitmap.recycle()
-                                captureInFlight = false
                                 scheduleAttempt(if (pending != null) 250L else IDLE_WATCHDOG_MS)
                             }
                         }
                         .addOnFailureListener {
-                            bitmap.recycle()
-                            captureInFlight = false
-                            scheduleAttempt(IDLE_WATCHDOG_MS)
+                            if (finishCapture(captureToken)) {
+                                bitmap.recycle()
+                                scheduleAttempt(IDLE_WATCHDOG_MS)
+                            } else if (!bitmap.isRecycled) {
+                                bitmap.recycle()
+                            }
                         }
                 }
 
                 override fun onFailure(errorCode: Int) {
-                    captureInFlight = false
+                    if (!finishCapture(captureToken)) return
                     CaptureEventLog.append(
                         this@OfferAccessibilityService,
                         "discovery_screenshot_failed",
                         "Screenshot failed during screen discovery: Android error $errorCode; retrying soon",
-                        OfferState.platformLabel(window.packageName),
+                        platform,
                         3_000L,
                     )
                     scheduleAttempt(DISCOVERY_SCREENSHOT_RETRY_MS)
@@ -351,16 +368,21 @@ class OfferAccessibilityService : AccessibilityService() {
     }
 
     private fun captureCurrentFrameForOcr(pending: PendingOffer, windowId: Int, accessibilityText: String) {
-        captureInFlight = true
+        val platform = OfferState.platformLabel(pending.packageName)
+        val captureToken = beginCapture("offer screenshot/OCR", platform)
         takeTargetScreenshot(
             windowId,
             object : TakeScreenshotCallback {
                 override fun onSuccess(screenshot: ScreenshotResult) {
+                    if (!isCaptureCurrent(captureToken)) {
+                        discardScreenshot(screenshot)
+                        return
+                    }
                     val bitmap = screenshotToBitmap(screenshot)
                     if (bitmap == null) {
                         val failures = recordScreenshotFailure(pending)
-                        captureInFlight = false
-                        CaptureEventLog.append(this@OfferAccessibilityService, "bitmap_failed", "Android screenshot buffer could not be converted (attempt $failures)", OfferState.platformLabel(pending.packageName), 5_000L)
+                        finishCapture(captureToken)
+                        CaptureEventLog.append(this@OfferAccessibilityService, "bitmap_failed", "Android screenshot buffer could not be converted (attempt $failures)", platform, 5_000L)
                         scheduleAttempt(adaptiveOcrDelay(pending))
                         return
                     }
@@ -368,30 +390,35 @@ class OfferAccessibilityService : AccessibilityService() {
 
                     recognizer.process(InputImage.fromBitmap(bitmap, 0))
                         .addOnSuccessListener { result ->
+                            if (!isCaptureCurrent(captureToken)) {
+                                bitmap.recycle()
+                                return@addOnSuccessListener
+                            }
                             val combined = OfferOcrText.combine(pending.packageName, accessibilityText, result, bitmap.height)
                             observeCourierScreen(pending.packageName, combined, ScreenTextSource.OCR_AUGMENTED)
                             if (combined.isNotBlank()) OfferState.saveUiText(this@OfferAccessibilityService, combined)
                             val parsed = OfferParser.parse(combined)
+                            finishCapture(captureToken)
                             if (parsed.priceCents != null) {
-                                CaptureEventLog.append(this@OfferAccessibilityService, "price_ocr", "Price detected by OCR fallback", OfferState.platformLabel(pending.packageName))
+                                CaptureEventLog.append(this@OfferAccessibilityService, "price_ocr", "Price detected by OCR fallback", platform)
                                 persistOffer(bitmap, pending, combined, parsed)
                             } else {
                                 bitmap.recycle()
-                                captureInFlight = false
                                 scheduleAttempt(adaptiveOcrDelay(pending))
                             }
                         }
                         .addOnFailureListener { error ->
-                            bitmap.recycle()
-                            captureInFlight = false
+                            val current = finishCapture(captureToken)
+                            if (!bitmap.isRecycled) bitmap.recycle()
+                            if (!current) return@addOnFailureListener
                             OfferState.markError(this@OfferAccessibilityService, "Waiting for price; OCR not ready: ${error.message ?: error.javaClass.simpleName}")
-                            CaptureEventLog.append(this@OfferAccessibilityService, "ocr_failed", error.javaClass.simpleName, OfferState.platformLabel(pending.packageName), 5_000L)
+                            CaptureEventLog.append(this@OfferAccessibilityService, "ocr_failed", error.javaClass.simpleName, platform, 5_000L)
                             scheduleAttempt(adaptiveOcrDelay(pending).coerceAtLeast(1_500L))
                         }
                 }
 
                 override fun onFailure(errorCode: Int) {
-                    captureInFlight = false
+                    if (!finishCapture(captureToken)) return
                     handleScreenshotFailure(errorCode, retry = true, pending = pending)
                 }
             },
@@ -399,20 +426,25 @@ class OfferAccessibilityService : AccessibilityService() {
     }
 
     private fun captureCurrentFrameAndPersist(pending: PendingOffer, windowId: Int, text: String, parsed: ParsedOffer) {
-        captureInFlight = true
+        val platform = OfferState.platformLabel(pending.packageName)
+        val captureToken = beginCapture("final offer screenshot", platform)
         takeTargetScreenshot(
             windowId,
             object : TakeScreenshotCallback {
                 override fun onSuccess(screenshot: ScreenshotResult) {
+                    if (!isCaptureCurrent(captureToken)) {
+                        discardScreenshot(screenshot)
+                        return
+                    }
                     val bitmap = screenshotToBitmap(screenshot)
                     if (bitmap == null) {
                         val failures = recordScreenshotFailure(pending)
-                        captureInFlight = false
+                        finishCapture(captureToken)
                         CaptureEventLog.append(
                             this@OfferAccessibilityService,
                             "bitmap_failed",
                             "Final screenshot buffer could not be converted (attempt $failures)",
-                            OfferState.platformLabel(pending.packageName),
+                            platform,
                             3_000L,
                         )
                         if (failures >= OPTIONAL_SCREENSHOT_FAILURE_LIMIT) {
@@ -420,7 +452,7 @@ class OfferAccessibilityService : AccessibilityService() {
                                 this@OfferAccessibilityService,
                                 "saved_without_screenshot",
                                 "Price is already known; saving offer metadata after repeated optional screenshot failures",
-                                OfferState.platformLabel(pending.packageName),
+                                platform,
                             )
                             persistOffer(null, pending, text, parsed)
                         } else {
@@ -429,18 +461,19 @@ class OfferAccessibilityService : AccessibilityService() {
                         return
                     }
                     resetScreenshotFailures(pending)
+                    finishCapture(captureToken)
                     persistOffer(bitmap, pending, text, parsed)
                 }
 
                 override fun onFailure(errorCode: Int) {
-                    captureInFlight = false
+                    if (!finishCapture(captureToken)) return
                     val failures = recordScreenshotFailure(pending)
                     if (failures >= OPTIONAL_SCREENSHOT_FAILURE_LIMIT) {
                         CaptureEventLog.append(
                             this@OfferAccessibilityService,
                             "saved_without_screenshot",
                             "Price is already known; saving offer metadata after $failures screenshot failures",
-                            OfferState.platformLabel(pending.packageName),
+                            platform,
                         )
                         persistOffer(null, pending, text, parsed)
                     } else {
@@ -449,6 +482,43 @@ class OfferAccessibilityService : AccessibilityService() {
                 }
             },
         )
+    }
+
+    private fun beginCapture(operation: String, platform: String): Long {
+        captureInFlight = true
+        val token = captureGuard.begin(SystemClock.elapsedRealtime(), operation, platform)
+        handler.removeCallbacks(captureWatchdogRunnable)
+        handler.postDelayed(captureWatchdogRunnable, CAPTURE_OPERATION_TIMEOUT_MS)
+        return token
+    }
+
+    private fun isCaptureCurrent(token: Long): Boolean = captureInFlight && captureGuard.isCurrent(token)
+
+    private fun finishCapture(token: Long): Boolean {
+        val finished = captureGuard.finish(token)
+        if (finished) {
+            captureInFlight = false
+            handler.removeCallbacks(captureWatchdogRunnable)
+        }
+        return finished
+    }
+
+    private fun recoverTimedOutCaptureIfNeeded(): Boolean {
+        val timedOut = captureGuard.recoverIfTimedOut(SystemClock.elapsedRealtime()) ?: return false
+        captureInFlight = false
+        handler.removeCallbacks(captureWatchdogRunnable)
+        CaptureEventLog.append(
+            this,
+            stage = "capture_watchdog_recovered",
+            platform = timedOut.platform,
+            message = "Recovered stuck ${timedOut.operation} after ${timedOut.ageMs} ms; capture loop resumed",
+            dedupeWindowMs = 3_000L,
+        )
+        return true
+    }
+
+    private fun discardScreenshot(screenshot: ScreenshotResult) {
+        runCatching { screenshot.hardwareBuffer.close() }
     }
 
     private fun takeTargetScreenshot(windowId: Int, callback: TakeScreenshotCallback) {
@@ -823,5 +893,6 @@ class OfferAccessibilityService : AccessibilityService() {
         private const val DISPLAY_SCREENSHOT_FALLBACK_DELAY_MS = 120L
         private const val DISPLAY_SCREENSHOT_RATE_LIMIT_RETRY_MS = 750L
         private const val OPTIONAL_SCREENSHOT_FAILURE_LIMIT = 3
+        private const val CAPTURE_OPERATION_TIMEOUT_MS = 8_000L
     }
 }
