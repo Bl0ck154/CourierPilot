@@ -106,6 +106,7 @@ class OfferDatabase private constructor(context: Context) :
         )
         db.execSQL("CREATE INDEX idx_offers_captured_at ON offers(captured_at)")
         db.execSQL("CREATE INDEX idx_offers_platform ON offers(platform)")
+        createMarketObservationsTable(db)
         createShiftsTable(db)
     }
 
@@ -135,7 +136,31 @@ class OfferDatabase private constructor(context: Context) :
             db.execSQL("ALTER TABLE offers ADD COLUMN market_city_name TEXT")
             db.execSQL("ALTER TABLE offers ADD COLUMN market_country_code TEXT")
         }
+        if (oldVersion < 7) {
+            createMarketObservationsTable(db)
+            db.execSQL("INSERT OR IGNORE INTO market_observations (offer_id,captured_at,city_key,city_name,country_code,platform,currency_code,price_minor,currency_fraction_digits,full_route_distance_m,route_source,delivery_count) SELECT id,captured_at,market_city_key,market_city_name,market_country_code,platform,'EUR',price_cents,2,market_route_distance_meters,market_route_source,delivery_count FROM offers WHERE market_route_distance_meters > 0 AND market_route_source LIKE 'FULL%' AND market_city_key IS NOT NULL")
+        }
     }
+
+    private fun createMarketObservationsTable(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS market_observations (offer_id INTEGER PRIMARY KEY, captured_at INTEGER NOT NULL, city_key TEXT NOT NULL, city_name TEXT, country_code TEXT, platform TEXT NOT NULL, currency_code TEXT NOT NULL, price_minor INTEGER NOT NULL, currency_fraction_digits INTEGER NOT NULL, full_route_distance_m INTEGER NOT NULL, route_source TEXT NOT NULL, delivery_count INTEGER, local_hour INTEGER, local_weekday INTEGER, uploaded_at INTEGER, sync_state TEXT NOT NULL DEFAULT 'PENDING')")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_market_cohort_time ON market_observations(city_key,currency_code,platform,captured_at)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_market_time ON market_observations(captured_at)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_market_sync ON market_observations(sync_state)")
+    }
+
+    @Synchronized
+    fun saveMarketObservation(observation: MarketObservation): Boolean {
+        if (observation.offerId <= 0 || observation.fullRouteDistanceMeters <= 0 || !observation.routeSource.startsWith("FULL", true)) return false
+        val v = ContentValues().apply { put("offer_id", observation.offerId); put("captured_at", observation.capturedAt); put("city_key", observation.cityKey); put("city_name", observation.cityName); put("country_code", observation.countryCode); put("platform", observation.platform); put("currency_code", observation.money.currencyCode); put("price_minor", observation.money.amountMinor); put("currency_fraction_digits", observation.money.fractionDigits); put("full_route_distance_m", observation.fullRouteDistanceMeters); put("route_source", observation.routeSource); put("delivery_count", observation.deliveryCount); put("local_hour", observation.localHour); put("local_weekday", observation.localWeekday); put("uploaded_at", observation.uploadedAt); put("sync_state", observation.syncState) }
+        return writableDatabase.insertWithOnConflict("market_observations", null, v, SQLiteDatabase.CONFLICT_IGNORE) != -1L
+    }
+
+    fun marketObservations(since: Long, cityKey: String, currencyCode: String, platform: String, limit: Int = 5000): List<MarketObservation> {
+        val out = mutableListOf<MarketObservation>(); readableDatabase.query("market_observations", null, "captured_at >= ? AND city_key = ? AND currency_code = ? AND platform = ?", arrayOf(since.toString(), cityKey, currencyCode, platform), null, null, "captured_at DESC", limit.coerceIn(1, 5000).toString()).use { c -> while (c.moveToNext()) out += c.toMarketObservation() }; return out
+    }
+
+    private fun Cursor.toMarketObservation() = MarketObservation(getLong(getColumnIndexOrThrow("offer_id")), getLong(getColumnIndexOrThrow("captured_at")), getString(getColumnIndexOrThrow("city_key")), getString(getColumnIndexOrThrow("city_name")), getString(getColumnIndexOrThrow("country_code")), getString(getColumnIndexOrThrow("platform")), MoneyAmount(getLong(getColumnIndexOrThrow("price_minor")), getString(getColumnIndexOrThrow("currency_code")), getInt(getColumnIndexOrThrow("currency_fraction_digits"))), getInt(getColumnIndexOrThrow("full_route_distance_m")), getString(getColumnIndexOrThrow("route_source")), null, null, null)
 
     private fun createShiftsTable(db: SQLiteDatabase) {
         db.execSQL(
@@ -496,7 +521,7 @@ class OfferDatabase private constructor(context: Context) :
 
     companion object {
         private const val DB_NAME = "courier_offers.db"
-        private const val DB_VERSION = 6
+        private const val DB_VERSION = 7
         private const val LIST_SEPARATOR = "\u001F"
 
         @Volatile private var instance: OfferDatabase? = null
