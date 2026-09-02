@@ -140,7 +140,7 @@ private fun AppUpdateScreen(refresh: Int, onBack: () -> Unit) {
                         if (status.phase == AppUpdatePhase.DOWNLOADING) {
                             val progress = (status.progressPercent ?: 0).coerceIn(0, 100)
                             LinearProgressIndicator(
-                                progress = { progress / 100f },
+                                progress = progress / 100f,
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }
@@ -199,7 +199,7 @@ private fun AppUpdateScreen(refresh: Int, onBack: () -> Unit) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Automatic updates", fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
                     Text(
-                        "Android may batch background alarms, so the hourly check is approximate.",
+                        "Android may batch periodic jobs, so the hourly check is approximate.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 11.sp,
                     )
