@@ -24,6 +24,28 @@ internal data class OfferDecision(
 )
 
 /**
+ * Sorted €/km edges for the five live bands. The defaults preserve the original fixed model;
+ * MarketIntelligence can replace them with a city profile once the server has enough observations.
+ */
+internal data class OfferDecisionThresholds(
+    val terribleBelow: Double,
+    val badBelow: Double,
+    val okAtMost: Double,
+    val goodBelow: Double,
+) {
+    init {
+        require(terribleBelow > 0.0)
+        require(badBelow > terribleBelow)
+        require(okAtMost > badBelow)
+        require(goodBelow > okAtMost)
+    }
+
+    companion object {
+        val DEFAULT = OfferDecisionThresholds(0.70, 0.85, 1.00, 1.25)
+    }
+}
+
+/**
  * Live offer verdict based only on money per real Valhalla route kilometre.
  *
  * The courier app supplied distance and ETA are deliberately ignored for scoring. When both
@@ -36,12 +58,13 @@ internal object OfferDecisionEngine {
         parsed: ParsedOffer,
         pedestrianRoute: RouteResult? = null,
         cyclewayRoute: RouteResult? = null,
+        thresholds: OfferDecisionThresholds = OfferDecisionThresholds.DEFAULT,
     ): OfferDecision {
         val euros = parsed.priceCents?.takeIf { it > 0 }?.div(100.0)
         val routeMeters = averageValhallaDistanceMeters(pedestrianRoute, cyclewayRoute)
         val routeKm = routeMeters?.div(1000.0)
         val perKm = if (euros != null && routeKm != null && routeKm > 0.0) euros / routeKm else null
-        val band = bandFor(perKm)
+        val band = bandFor(perKm, thresholds)
 
         return OfferDecision(
             rating = band.rating,
@@ -64,12 +87,15 @@ internal object OfferDecisionEngine {
         return (distances.sumOf { it.toLong() } / distances.size).toInt()
     }
 
-    private fun bandFor(perKm: Double?): OfferDecisionBand = when {
+    internal fun bandFor(
+        perKm: Double?,
+        thresholds: OfferDecisionThresholds = OfferDecisionThresholds.DEFAULT,
+    ): OfferDecisionBand = when {
         perKm == null -> OfferDecisionBand.UNKNOWN
-        perKm < 0.70 -> OfferDecisionBand.TERRIBLE
-        perKm < 0.85 -> OfferDecisionBand.BAD
-        perKm <= 1.00 -> OfferDecisionBand.OK
-        perKm < 1.25 -> OfferDecisionBand.GOOD
+        perKm < thresholds.terribleBelow -> OfferDecisionBand.TERRIBLE
+        perKm < thresholds.badBelow -> OfferDecisionBand.BAD
+        perKm <= thresholds.okAtMost -> OfferDecisionBand.OK
+        perKm < thresholds.goodBelow -> OfferDecisionBand.GOOD
         else -> OfferDecisionBand.FIRE
     }
 }

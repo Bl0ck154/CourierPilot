@@ -112,6 +112,16 @@ internal object LiveAdvisorHub {
                 parsed,
                 supplementalPickupAddresses = current.supplementalBoltPickupAddresses,
             ) { outcome ->
+                val comparison = outcome.comparison
+                if (comparison != null && outcome.scope == BoltRouteScope.FULL) {
+                    MarketIntelligence.onRouteResolved(
+                        service,
+                        current.offerId,
+                        record,
+                        comparison.pedestrian.getOrNull(),
+                        comparison.cycleway.getOrNull(),
+                    )
+                }
                 if (isCurrentOffer(current)) advisor?.updateBoltRoute(outcome)
             }
             return
@@ -119,8 +129,17 @@ internal object LiveAdvisorHub {
 
         if (record.platform.equals("Wolt", ignoreCase = true)) {
             AutomaticWoltRouteCoordinator.start(service, current.offerId, record.platform, parsed) { outcome ->
+                val comparison = outcome.comparison
+                if (comparison != null) {
+                    MarketIntelligence.onRouteResolved(
+                        service,
+                        current.offerId,
+                        record,
+                        comparison.pedestrian.getOrNull(),
+                        comparison.cycleway.getOrNull(),
+                    )
+                }
                 if (isCurrentOffer(current)) {
-                    val comparison = outcome.comparison
                     if (comparison != null) advisor?.updateRoute(comparison, outcome.waypoints.size)
                     else advisor?.updateRouteUnavailable(outcome.failureReason ?: "unknown failure")
                 }

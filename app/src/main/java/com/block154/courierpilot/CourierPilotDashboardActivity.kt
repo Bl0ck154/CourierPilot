@@ -687,9 +687,11 @@ private fun DashboardSettings(
     var woltRoute by remember { mutableStateOf(LiveAdvisorSettings.automaticWoltRouting(context)) }
     var boltRoute by remember { mutableStateOf(LiveAdvisorSettings.automaticBoltRouting(context)) }
     var saveScreenshots by remember { mutableStateOf(CaptureStorageSettings.saveOfferScreenshots(context)) }
+    var marketSharing by remember { mutableStateOf(MarketIntelligence.sharingEnabled(context)) }
     var developerTaps by remember { mutableIntStateOf(0) }
     var developerEnabled by remember { mutableStateOf(DeveloperModeSettings.enabled(context)) }
     val routeReady = runCatching { RouteEndpointSettings.load(context).validated() }.isSuccess
+    val marketStatus = MarketIntelligence.status(context)
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -732,6 +734,40 @@ private fun DashboardSettings(
                         wakeScreen = it
                         OfferState.setWakeScreen(context, it)
                     }
+                }
+            }
+        }
+
+        item { DashboardSection("City market", "Adaptive €/km scoring from recent anonymous city offers") }
+        item {
+            Card(shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.padding(16.dp)) {
+                    SettingsSwitchRow(
+                        "Share anonymous market data",
+                        "City, platform, price and calculated Valhalla kilometres only. No addresses, names, screenshots or exact GPS.",
+                        marketSharing,
+                    ) { enabled ->
+                        if (MarketIntelligence.setSharingEnabled(context, enabled)) {
+                            marketSharing = enabled
+                        } else {
+                            marketSharing = MarketIntelligence.sharingEnabled(context)
+                        }
+                    }
+                    HorizontalDivider(Modifier.padding(vertical = 12.dp))
+                    Text(
+                        marketStatus.city?.name ?: "City not resolved yet",
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        marketProfileSummary("Wolt", marketStatus.localWoltProfile, marketStatus.woltProfile),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp,
+                    )
+                    Text(
+                        marketProfileSummary("Bolt", marketStatus.localBoltProfile, marketStatus.boltProfile),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp,
+                    )
                 }
             }
         }
@@ -855,6 +891,29 @@ private fun SettingsStatusCard(
             Icon(Icons.Rounded.ChevronRight, contentDescription = null)
         }
     }
+}
+
+private fun marketProfileSummary(
+    platform: String,
+    local: LocalMarketProfile?,
+    city: MarketProfile?,
+): String {
+    val localPart = local?.let {
+        "you €${"%.2f".format(Locale.US, it.medianEurPerKm)}/km · ${it.sampleCount} local"
+    } ?: "you · learning"
+    val cityPart = city?.let { profile ->
+        val median = profile.medianEurPerKm?.let { "€%.2f/km".format(Locale.US, it) } ?: "—"
+        val trend = profile.trend?.let {
+            val arrow = when (it.direction) {
+                "up" -> "↑"
+                "down" -> "↓"
+                else -> "→"
+            }
+            " $arrow${if (it.percent >= 0) "+" else ""}${"%.1f".format(Locale.US, it.percent)}%"
+        }.orEmpty()
+        "city $median$trend"
+    } ?: "city · no data"
+    return "$platform · $localPart · $cityPart"
 }
 
 @Composable

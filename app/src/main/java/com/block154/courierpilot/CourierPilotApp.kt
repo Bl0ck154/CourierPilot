@@ -16,5 +16,8 @@ class CourierPilotApp : Application() {
         // This is a no-op unless the user explicitly enabled remote diagnostics. The actual queue
         // read/network work is scheduled on RemoteDiagnostics' dedicated background thread.
         RemoteDiagnostics.resume(this)
+        // City resolution/profile refresh and optional anonymous market upload use their own worker.
+        // No network or geocoder work runs on this Application caller thread.
+        MarketIntelligence.resume(this)
     }
 }
