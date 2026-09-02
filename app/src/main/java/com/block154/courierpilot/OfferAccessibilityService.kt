@@ -187,10 +187,12 @@ class OfferAccessibilityService : AccessibilityService() {
         // bottom-card OCR path so map labels can never become merchant names.
         if (parsed.priceCents != null && target.packageName != CourierSignals.BOLT_PACKAGE) {
             CaptureEventLog.append(this, "price_accessibility", "Price detected in Accessibility tree", platform, 3_000L)
+            // The preview already owns the overlay. Update its priced state immediately instead of
+            // waiting for the optional proof screenshot + DB insert to finish.
+            LiveAdvisorHub.showPendingOffer(this, pending, parsed)
             if (CaptureStorageSettings.saveOfferScreenshots(this)) {
                 captureCurrentFrameAndPersist(pending, target.windowId, uiText, parsed)
             } else {
-                LiveAdvisorHub.showPendingOffer(this, pending, parsed)
                 persistOffer(null, pending, uiText, parsed)
             }
         } else {

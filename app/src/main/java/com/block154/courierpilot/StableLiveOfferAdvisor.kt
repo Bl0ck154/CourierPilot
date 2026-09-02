@@ -60,6 +60,8 @@ internal class StableLiveOfferAdvisor(
     private var cachedDecisionBand = OfferDecisionBand.UNKNOWN
     private var cachedRouteLine = ""
     private var cachedRouteVisible = true
+    private var cachedPedestrianRoute: RouteResult? = null
+    private var cachedCyclewayRoute: RouteResult? = null
 
     private var gestureDownX = 0f
     private var gestureDownY = 0f
@@ -100,6 +102,8 @@ internal class StableLiveOfferAdvisor(
             cachedDecisionBand = OfferDecisionBand.UNKNOWN
             cachedRouteLine = ""
             cachedRouteVisible = true
+            cachedPedestrianRoute = null
+            cachedCyclewayRoute = null
             resetMissingEvidence()
             boltBaselineSurface = if (platform.equals("Bolt", ignoreCase = true)) {
                 findVisiblePackageRoot(packageName)?.let { inspectVisibleSurface(it).snapshot }
@@ -107,18 +111,9 @@ internal class StableLiveOfferAdvisor(
         }
         previewMode = true
         currentParsed = parsed
-        if (parsed.priceCents == null) {
-            cachedDecisionLine = "⏳  Waiting for price…"
-            cachedDecisionBand = OfferDecisionBand.UNKNOWN
-            decisionText?.apply {
-                text = cachedDecisionLine
-                setTextColor(decisionColor(cachedDecisionBand))
-            }
-        } else {
-            renderProfitability(parsed, pedestrianRoute = null, cyclewayRoute = null)
-        }
-        if (cachedRouteLine.isBlank() || cachedRouteLine.startsWith("⏳") || cachedRouteLine.startsWith("⚡")) {
-            setRouteContent(if (LiveAdvisorSettings.routeEnabled(service, platform)) "⚡ Valhalla · preparing…" else "Route off")
+        renderProgressiveDecision(parsed)
+        if (cachedRouteLine.isBlank()) {
+            setRouteContent(if (LiveAdvisorSettings.routeEnabled(service, platform)) "⚡ Valhalla · preparing route…" else "Route off")
         }
         if (!temporarilyHidden) {
             ensureView()
@@ -147,8 +142,8 @@ internal class StableLiveOfferAdvisor(
             currentPlatform = platform
             currentParsed = parsed
             previewMode = false
-            renderProfitability(parsed, pedestrianRoute = null, cyclewayRoute = null)
-            if (cachedRouteLine.isBlank() || cachedRouteLine.startsWith("⚡")) renderRouteLoadingState()
+            renderProgressiveDecision(parsed)
+            if (cachedRouteLine.isBlank()) renderRouteLoadingState()
             if (!temporarilyHidden) {
                 ensureView()
                 refreshControls()
@@ -179,6 +174,8 @@ internal class StableLiveOfferAdvisor(
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
         cachedRouteLine = ""
         cachedRouteVisible = true
+        cachedPedestrianRoute = null
+        cachedCyclewayRoute = null
         resetMissingEvidence()
         boltBaselineSurface = if (platform.equals("Bolt", ignoreCase = true)) {
             findVisiblePackageRoot(expectedPackageName)?.let { inspectVisibleSurface(it).snapshot }
@@ -190,7 +187,7 @@ internal class StableLiveOfferAdvisor(
             if (dismissed || expectedGeneration != generation) return@post
             // Cache presentation first. If the courier app was already backgrounded, keep the
             // offer warm without recreating an overlay on top of another app.
-            renderProfitability(parsed, pedestrianRoute = null, cyclewayRoute = null)
+            renderProgressiveDecision(parsed)
             renderRouteLoadingState()
             if (!temporarilyHidden) {
                 ensureView()
@@ -219,7 +216,9 @@ internal class StableLiveOfferAdvisor(
             if (dismissed) return@post
             val walking = comparison.pedestrian.getOrNull()
             val cycling = comparison.cycleway.getOrNull()
-            currentParsed?.takeIf { it.priceCents != null }?.let { parsed -> renderProfitability(parsed, walking, cycling) }
+            cachedPedestrianRoute = walking
+            cachedCyclewayRoute = cycling
+            currentParsed?.let(::renderProgressiveDecision)
             setRouteContent(LiveAdvisorPresentation.routeLine(walking, cycling))
             CaptureEventLog.append(
                 service,
@@ -285,9 +284,9 @@ internal class StableLiveOfferAdvisor(
     /** A real foreign window-state event is stronger than rootInActiveWindow on overlay-heavy OEMs. */
     fun onForegroundWindowChanged(packageName: String) {
         if (dismissed || currentParsed == null || packageName.isBlank()) return
-        when (packageName) {
-            expectedPackageName -> onCourierWindowEvent(packageName)
-            service.packageName, SYSTEM_UI_PACKAGE -> Unit
+        when {
+            packageName == expectedPackageName -> onCourierWindowEvent(packageName)
+            packageName == service.packageName || isTransientSystemOverlayPackage(packageName) -> Unit
             else -> handler.post {
                 if (!dismissed && currentParsed != null) {
                     temporarilyHide("foreground window changed to $packageName")
@@ -319,6 +318,28 @@ internal class StableLiveOfferAdvisor(
         tts = null
         ttsReady = false
         pendingSpeech = null
+    }
+
+    /** Keep intermediate economics atomic: never show an €/h-only or €/km-only half-state. */
+    private fun renderProgressiveDecision(parsed: ParsedOffer) {
+        val hasPrice = parsed.priceCents != null && parsed.money != null
+        val hasRoute = cachedPedestrianRoute != null || cachedCyclewayRoute != null
+        when {
+            !hasPrice -> setDecisionPlaceholder("⏳  Waiting for Wolt price…")
+            hasRoute -> renderProfitability(parsed, cachedPedestrianRoute, cachedCyclewayRoute)
+            LiveAdvisorSettings.routeEnabled(service, currentPlatform) ->
+                setDecisionPlaceholder("✓  Price ready · finishing route…")
+            else -> setDecisionPlaceholder("Route off · score unavailable")
+        }
+    }
+
+    private fun setDecisionPlaceholder(value: String) {
+        cachedDecisionLine = value
+        cachedDecisionBand = OfferDecisionBand.UNKNOWN
+        decisionText?.apply {
+            text = value
+            setTextColor(decisionColor(OfferDecisionBand.UNKNOWN))
+        }
     }
 
     private fun renderProfitability(
@@ -583,6 +604,8 @@ internal class StableLiveOfferAdvisor(
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
         cachedRouteLine = ""
         cachedRouteVisible = true
+        cachedPedestrianRoute = null
+        cachedCyclewayRoute = null
     }
 
     private fun refreshControls() {
@@ -617,7 +640,7 @@ internal class StableLiveOfferAdvisor(
         val definitelyAway = activePackage.isNotBlank() &&
             activePackage != expected &&
             activePackage != service.packageName &&
-            activePackage != SYSTEM_UI_PACKAGE
+            !isTransientSystemOverlayPackage(activePackage)
 
         if (definitelyAway) {
             temporarilyHide("foreground changed to $activePackage")
@@ -701,6 +724,11 @@ internal class StableLiveOfferAdvisor(
             temporarilyHide("Wolt offer surface remained unconfirmed")
         }
     }
+
+    private fun isTransientSystemOverlayPackage(packageName: String): Boolean =
+        packageName == SYSTEM_UI_PACKAGE ||
+            packageName == "com.oplus.screenshot" ||
+            packageName == "com.coloros.screenshot"
 
     private fun findVisiblePackageRoot(packageName: String): AccessibilityNodeInfo? {
         fun refreshed(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {

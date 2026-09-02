@@ -141,6 +141,29 @@ internal object RouteResearchLocation {
     private val TIMEOUT_TOKEN = Any()
 }
 
+internal object RouteGeocodeQueryPolicy {
+    fun candidates(address: String, city: MarketCity?): List<String> {
+        val raw = address.trim().replace(Regex("\\s+"), " ")
+        if (raw.isBlank()) return emptyList()
+        val cityName = city?.name?.trim().orEmpty()
+        if (cityName.isBlank() || containsToken(raw, cityName)) return listOf(raw)
+        val country = city?.countryCode?.trim()?.uppercase(Locale.ROOT).orEmpty()
+        val qualified = listOf(raw, cityName, country.takeIf { it.length == 2 })
+            .filterNotNull()
+            .joinToString(", ")
+        return listOf(qualified, raw).distinct()
+    }
+
+    private fun containsToken(value: String, token: String): Boolean {
+        fun normalize(v: String) = v.lowercase(Locale.ROOT)
+            .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+            .trim()
+        val normalizedValue = normalize(value)
+        val normalizedToken = normalize(token)
+        return normalizedToken.isNotBlank() && normalizedValue.contains(normalizedToken)
+    }
+}
+
 internal object RouteResearchGeocoder {
     private data class CachedPoint(val point: RoutePoint, val expiresAt: Long)
 
@@ -152,7 +175,7 @@ internal object RouteResearchGeocoder {
         addresses
             .map(String::trim)
             .filter(String::isNotBlank)
-            .distinctBy(::cacheKey)
+            .distinctBy { cacheKey(context, it) }
             .forEach { address -> resolve(context, address) { /* populate cache */ } }
     }
 
@@ -167,7 +190,10 @@ internal object RouteResearchGeocoder {
             return
         }
 
-        val key = cacheKey(query)
+        val app = context.applicationContext
+        val city = MarketCityResolver.cached(app)
+        val candidates = RouteGeocodeQueryPolicy.candidates(query, city)
+        val key = cacheKey(app, query)
         val now = System.currentTimeMillis()
         synchronized(lock) {
             cache[key]?.takeIf { it.expiresAt > now }?.let { cached ->
@@ -183,28 +209,72 @@ internal object RouteResearchGeocoder {
             inFlight[key] = mutableListOf(callback)
         }
 
-        val geocoder = Geocoder(context, Locale.getDefault())
+        val geocoder = Geocoder(app, Locale.getDefault())
+        val reference = RouteResearchLocation.bestLastKnown(app)?.point
+
         if (Build.VERSION.SDK_INT >= 33) {
-            geocoder.getFromLocationName(query, 1) { results ->
-                val first = results.firstOrNull()
-                val result = if (first == null) {
-                    Result.failure(IllegalArgumentException("Address not found"))
-                } else {
-                    Result.success(RoutePoint(first.latitude, first.longitude))
+            fun attempt(index: Int) {
+                if (index >= candidates.size) {
+                    app.mainExecutor.execute {
+                        complete(key, Result.failure(IllegalArgumentException("Address not found")))
+                    }
+                    return
                 }
-                context.mainExecutor.execute { complete(key, result) }
+                runCatching {
+                    geocoder.getFromLocationName(candidates[index], MAX_RESULTS) { results ->
+                        val chosen = chooseBest(results, reference, city)
+                        if (chosen == null) attempt(index + 1)
+                        else app.mainExecutor.execute {
+                            complete(key, Result.success(RoutePoint(chosen.latitude, chosen.longitude)))
+                        }
+                    }
+                }.onFailure {
+                    if (index + 1 < candidates.size) attempt(index + 1)
+                    else app.mainExecutor.execute { complete(key, Result.failure(it)) }
+                }
             }
+            attempt(0)
         } else {
             Thread {
                 val result = runCatching {
                     @Suppress("DEPRECATION")
-                    geocoder.getFromLocationName(query, 1)?.firstOrNull()
-                        ?.let { RoutePoint(it.latitude, it.longitude) }
+                    candidates.asSequence().mapNotNull { candidate ->
+                        val results = geocoder.getFromLocationName(candidate, MAX_RESULTS).orEmpty()
+                        chooseBest(results, reference, city)
+                    }.firstOrNull()?.let { RoutePoint(it.latitude, it.longitude) }
                         ?: error("Address not found")
                 }
-                context.mainExecutor.execute { complete(key, result) }
-            }.start()
+                app.mainExecutor.execute { complete(key, result) }
+            }.apply {
+                name = "CourierPilotGeocoder"
+                isDaemon = true
+                start()
+            }
         }
+    }
+
+    private fun chooseBest(
+        results: List<android.location.Address>,
+        reference: RoutePoint?,
+        city: MarketCity?,
+    ): android.location.Address? {
+        if (results.isEmpty()) return null
+        val country = city?.countryCode?.uppercase(Locale.ROOT)
+        val countryFiltered = results.filter { candidate ->
+            country == null || candidate.countryCode.isNullOrBlank() || candidate.countryCode.equals(country, ignoreCase = true)
+        }.ifEmpty { results }
+        if (reference == null) return countryFiltered.firstOrNull()
+        return countryFiltered.minByOrNull { candidate ->
+            distanceSquared(reference, RoutePoint(candidate.latitude, candidate.longitude))
+        }
+    }
+
+    private fun distanceSquared(a: RoutePoint, b: RoutePoint): Double {
+        val latScale = 111_320.0
+        val lonScale = 111_320.0 * kotlin.math.cos(Math.toRadians(a.latitude))
+        val dy = (a.latitude - b.latitude) * latScale
+        val dx = (a.longitude - b.longitude) * lonScale
+        return dx * dx + dy * dy
     }
 
     private fun complete(key: String, result: Result<RoutePoint>) {
@@ -215,10 +285,12 @@ internal object RouteResearchGeocoder {
         callbacks.forEach { it(result) }
     }
 
-    private fun cacheKey(value: String): String = value
-        .trim()
-        .lowercase(Locale.ROOT)
-        .replace(Regex("\\s+"), " ")
+    private fun cacheKey(context: Context, value: String): String {
+        val city = MarketCityResolver.cached(context)
+        return listOf(city?.key.orEmpty(), value.trim().lowercase(Locale.ROOT).replace(Regex("\\s+"), " "))
+            .joinToString("|")
+    }
 
+    private const val MAX_RESULTS = 5
     private const val CACHE_TTL_MS = 6L * 60L * 60L * 1000L
 }
