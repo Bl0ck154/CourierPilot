@@ -86,6 +86,7 @@ internal object LiveAdvisorHub {
         val parsedFromScreen = OfferParser.parse(record.rawText)
         val parsed = parsedFromScreen.copy(
             priceCents = record.priceCents,
+            money = MoneyAmount(record.priceCents.toLong(), record.currencyCode, record.currencyFractionDigits),
             distanceMeters = record.distanceMeters,
             restaurant = record.restaurant ?: parsedFromScreen.restaurant,
             merchantNames = record.merchantNames.ifEmpty { parsedFromScreen.merchantNames },

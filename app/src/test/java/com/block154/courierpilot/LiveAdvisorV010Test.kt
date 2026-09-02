@@ -11,6 +11,7 @@ class LiveAdvisorV010Test {
     fun platformEconomicsUsesVisibleOfferNumbersOnly() {
         val parsed = ParsedOffer(
             priceCents = 640,
+            money = MoneyAmount(640, "EUR", 2),
             distanceMeters = 4_000,
             restaurant = "Test",
             estimatedMinutesMin = 20,
@@ -26,6 +27,7 @@ class LiveAdvisorV010Test {
     fun missingDistanceDoesNotInventPerKilometerValue() {
         val parsed = ParsedOffer(
             priceCents = 500,
+            money = MoneyAmount(500, "EUR", 2),
             distanceMeters = null,
             restaurant = null,
             estimatedMinutesMin = 20,
@@ -107,6 +109,7 @@ class LiveAdvisorV010Test {
     fun routeDraftKeepsEveryParsedStopWithoutFabricatingCoordinates() {
         val parsed = ParsedOffer(
             priceCents = 900,
+            money = MoneyAmount(900, "EUR", 2),
             distanceMeters = 6500,
             restaurant = "A, B",
             merchantNames = listOf("A", "B"),

@@ -25,7 +25,7 @@ internal data class PlatformOfferEconomics(
     val euroPerKilometer: Double?,
     val euroPerHourMin: Double?,
     val euroPerHourMax: Double?,
-    val currencyCode: String? = "EUR",
+    val currencyCode: String? = null,
 ) {
     val moneyPerKilometer: Double? get() = euroPerKilometer
     val moneyPerHourMin: Double? get() = euroPerHourMin
@@ -35,7 +35,7 @@ internal data class PlatformOfferEconomics(
 
 internal object PlatformOfferEconomicsCalculator {
     fun calculate(parsed: ParsedOffer): PlatformOfferEconomics {
-        val money = parsed.money ?: parsed.priceCents?.takeIf { it > 0 }?.let { MoneyAmount(it.toLong(), "EUR", 2) }
+        val money = parsed.money
         val major = money?.major()?.toDouble()?.takeIf { it > 0.0 }
         val km = parsed.distanceMeters?.takeIf { it > 0 }?.div(1000.0)
         val minMinutes = parsed.estimatedMinutesMin?.takeIf { it > 0 }

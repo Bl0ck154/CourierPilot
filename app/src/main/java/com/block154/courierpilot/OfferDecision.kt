@@ -61,7 +61,7 @@ internal object OfferDecisionEngine {
         cyclewayRoute: RouteResult? = null,
         thresholds: OfferDecisionThresholds? = null,
     ): OfferDecision {
-        val money = parsed.money ?: parsed.priceCents?.takeIf { it > 0 }?.let { MoneyAmount(it.toLong(), "EUR", 2) }
+        val money = parsed.money
         val major = money?.major()?.toDouble()?.takeIf { it > 0.0 }
         val routeMeters = averageValhallaDistanceMeters(pedestrianRoute, cyclewayRoute)
         val routeKm = routeMeters?.div(1000.0)
