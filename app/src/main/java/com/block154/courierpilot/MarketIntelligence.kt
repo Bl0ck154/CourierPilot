@@ -136,7 +136,6 @@ internal object MarketIntelligence {
 
     fun thresholdsFor(context: Context, platform: String): OfferDecisionThresholds? {
         val city = profileFor(context, platform)?.takeIf { it.ready }?.thresholds
-        if (city != null) return city
         val cityInfo = MarketCityResolver.cached(context) ?: return null
         val samples = OfferDatabase.get(context).marketObservations(
             System.currentTimeMillis() - LOCAL_PROFILE_DAYS * 86_400_000L,
@@ -145,13 +144,28 @@ internal object MarketIntelligence {
             normalizePlatform(platform) ?: return null,
         )
         val normalized = samples.mapNotNull { sample ->
-            sample.money.major().toDouble().takeIf { it > 0.0 }?.let { it * 1000.0 / sample.fullRouteDistanceMeters }
+            sample.money.major().toDouble().takeIf { it > 0.0 }?.let { rate ->
+                AdaptiveMarketSample(rate * 1000.0 / sample.fullRouteDistanceMeters, sample.capturedAt, cityInfo.key, localCurrencyCode(), platform)
+            }
         }
         val profile = AdaptiveMarketScoring.profile(
-            normalized.mapIndexed { index, rate -> AdaptiveMarketSample(rate, samples[index].capturedAt, cityInfo.key, localCurrencyCode(), platform) },
+            normalized,
             System.currentTimeMillis(),
         )?.takeIf { it.sampleCount >= AdaptiveMarketScoring.PERSONAL_MIN_SAMPLES }
-        return profile?.let { OfferDecisionThresholds(it.p15, it.p35, it.p65, it.p85) }
+        val personal = profile?.let { OfferDecisionThresholds(it.p15, it.p35, it.p65, it.p85) }
+        return when {
+            personal != null && city != null -> {
+                val weight = AdaptiveMarketScoring.personalWeight(profile.effectiveSampleCount)
+                OfferDecisionThresholds(
+                    city.terribleBelow * (1 - weight) + personal.terribleBelow * weight,
+                    city.badBelow * (1 - weight) + personal.badBelow * weight,
+                    city.okAtMost * (1 - weight) + personal.okAtMost * weight,
+                    city.goodBelow * (1 - weight) + personal.goodBelow * weight,
+                )
+            }
+            personal != null -> personal
+            else -> city
+        }
     }
 
     fun profileFor(context: Context, platform: String): MarketProfile? {
