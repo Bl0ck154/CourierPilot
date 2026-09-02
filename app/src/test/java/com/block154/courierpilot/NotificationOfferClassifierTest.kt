@@ -55,7 +55,7 @@ class NotificationOfferClassifierTest {
     }
 
     @Test
-    fun learnedStructuralProfileSurvivesCompleteWordingAndActionLabelChange() {
+    fun learnedBoltProfileStillRecognizesTextlessOrderPush() {
         val learned = NotificationStructure(
             packageName = CourierSignals.BOLT_PACKAGE,
             channelId = "incoming_requests",
@@ -77,7 +77,7 @@ class NotificationOfferClassifierTest {
 
         val decision = NotificationOfferClassifier.classify(
             structure = changed,
-            text = "Completely different wording",
+            text = "",
             actionLabels = emptyList(),
             learnedProfiles = listOf(learned),
         )

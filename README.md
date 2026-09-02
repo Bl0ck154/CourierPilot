@@ -112,6 +112,8 @@ Automatic Wolt routing is off by default. Textual stops are passed to the device
 
 Raw offer text, exact addresses, GPS points and Bolt samples are sensitive data and stay out of privacy-safe Reliability diagnostics.
 
+**Remote diagnostics are optional and off by default.** When explicitly enabled in Reliability, CourierPilot uploads only bounded technical event metadata (random app-local install/session IDs, app/device version, platform, stage and sanitized message) to the project's self-hosted diagnostics endpoint. Notification body text is redacted before upload; address/GPS diagnostic stages are reduced to a redacted marker; screenshots, OCR frames, customer names, exact addresses and GPS coordinates are never included. Disabling the toggle clears the pending remote queue. Local diagnostics and normal offer capture continue to work with remote diagnostics disabled.
+
 ## Installation
 
 1. Install a release-signed CourierPilot APK.
