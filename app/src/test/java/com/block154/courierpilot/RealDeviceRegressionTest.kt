@@ -8,10 +8,11 @@ class RealDeviceRegressionTest {
 
     @Test
     fun recognizesTrustedBoltAndWoltPresenceSignals() {
-        // This real Bolt foreground-service notification only proves the app is running. It can
-        // remain visible while the courier account is offline, so it must never start work time.
+        // Current Bolt emits this foreground notification while the courier is kept active for
+        // incoming orders in the background. Real-device diagnostics confirmed it is the active
+        // state signal used by the current app build.
         assertEquals(
-            PresenceSignal.UNKNOWN,
+            PresenceSignal.ONLINE,
             CourierSignals.detectPresence(
                 "Bolt Courier app is running\nWe keep you active while app is in background"
             ),
