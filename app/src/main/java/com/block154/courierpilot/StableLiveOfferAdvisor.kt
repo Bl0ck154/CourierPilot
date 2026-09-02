@@ -45,10 +45,16 @@ internal class StableLiveOfferAdvisor(
     private var currentParsed: ParsedOffer? = null
     private var expectedPackageName = ""
     private var dismissed = false
+    private var temporarilyHidden = false
     private var generation = 0L
     private var missingSince = 0L
     private var missingChecks = 0
     private var boltBaselineSurface: LiveOfferSurfaceSnapshot? = null
+
+    private var cachedDecisionLine = ""
+    private var cachedDecisionBand = OfferDecisionBand.UNKNOWN
+    private var cachedRouteLine = ""
+    private var cachedRouteVisible = true
 
     private var gestureDownX = 0f
     private var gestureDownY = 0f
@@ -61,9 +67,11 @@ internal class StableLiveOfferAdvisor(
 
     private val visibilityWatchdog = object : Runnable {
         override fun run() {
-            if (dismissed || root == null) return
+            if (dismissed || currentParsed == null) return
             checkOfferStillVisible()
-            if (!dismissed && root != null) handler.postDelayed(this, VISIBILITY_CHECK_MS)
+            if (!dismissed && currentParsed != null) {
+                handler.postDelayed(this, if (temporarilyHidden) HIDDEN_VISIBILITY_CHECK_MS else VISIBILITY_CHECK_MS)
+            }
         }
     }
 
@@ -79,6 +87,11 @@ internal class StableLiveOfferAdvisor(
         currentParsed = parsed
         expectedPackageName = packageForPlatform(platform)
         dismissed = false
+        temporarilyHidden = false
+        cachedDecisionLine = ""
+        cachedDecisionBand = OfferDecisionBand.UNKNOWN
+        cachedRouteLine = ""
+        cachedRouteVisible = true
         resetMissingEvidence()
         boltBaselineSurface = if (platform.equals("Bolt", ignoreCase = true)) {
             findVisiblePackageRoot(expectedPackageName)?.let { inspectVisibleSurface(it).snapshot }
@@ -88,38 +101,41 @@ internal class StableLiveOfferAdvisor(
 
         handler.post {
             if (dismissed || expectedGeneration != generation) return@post
-            ensureView()
-            if (root == null) return@post
-            refreshControls()
+            // Cache presentation first. If the courier app was already backgrounded, keep the
+            // offer warm without recreating an overlay on top of another app.
             renderProfitability(parsed, pedestrianRoute = null, cyclewayRoute = null)
             renderRouteLoadingState()
-            CaptureEventLog.append(
-                service,
-                stage = "overlay_show",
-                platform = platform,
-                message = "Stable advisor shell shown before route result",
-            )
+            if (!temporarilyHidden) {
+                ensureView()
+                if (root != null) {
+                    refreshControls()
+                    applyCachedPresentation()
+                    CaptureEventLog.append(
+                        service,
+                        stage = "overlay_show",
+                        platform = platform,
+                        message = "Stable advisor shell shown before route result",
+                    )
+                    if (LiveAdvisorSettings.voiceEnabled(service)) speak(baseSpeech(platform, parsed))
+                }
+            }
             startVisibilityWatchdog()
-            if (LiveAdvisorSettings.voiceEnabled(service)) speak(baseSpeech(platform, parsed))
         }
     }
 
     fun updateRoute(comparison: RouteComparison, waypointCount: Int) {
         if (dismissed || !LiveAdvisorSettings.enabled(service)) return
         handler.post {
-            if (dismissed || root == null) return@post
+            if (dismissed) return@post
             val walking = comparison.pedestrian.getOrNull()
             val cycling = comparison.cycleway.getOrNull()
             currentParsed?.let { parsed -> renderProfitability(parsed, walking, cycling) }
-            routeText?.apply {
-                visibility = View.VISIBLE
-                text = LiveAdvisorPresentation.routeLine(walking, cycling)
-            }
+            setRouteContent(LiveAdvisorPresentation.routeLine(walking, cycling))
             CaptureEventLog.append(
                 service,
                 stage = "route_ready",
                 platform = currentPlatform,
-                message = "Valhalla updated existing card; points=$waypointCount",
+                message = "Valhalla updated cached card; points=$waypointCount; visible=${root != null}",
             )
         }
     }
@@ -127,10 +143,10 @@ internal class StableLiveOfferAdvisor(
     fun updateBoltRoute(outcome: AutomaticBoltRouteOutcome) {
         if (dismissed || !LiveAdvisorSettings.enabled(service)) return
         handler.post {
-            if (dismissed || root == null) return@post
+            if (dismissed) return@post
             val comparison = outcome.comparison
             if (comparison == null) {
-                routeText?.text = "⚠️ Valhalla · unavailable"
+                setRouteContent("⚠️ Valhalla · unavailable")
                 CaptureEventLog.append(
                     service,
                     stage = "bolt_route_failed",
@@ -147,11 +163,9 @@ internal class StableLiveOfferAdvisor(
                 currentParsed?.let { parsed -> renderProfitability(parsed, walking, cycling) }
             }
             val routes = LiveAdvisorPresentation.routeLine(walking, cycling)
-            routeText?.text = if (outcome.scope == BoltRouteScope.PICKUP_ONLY) {
-                "Pickup · $routes"
-            } else {
-                routes
-            }
+            setRouteContent(
+                if (outcome.scope == BoltRouteScope.PICKUP_ONLY) "Pickup · $routes" else routes,
+            )
             CaptureEventLog.append(
                 service,
                 stage = "bolt_route_ready",
@@ -164,9 +178,31 @@ internal class StableLiveOfferAdvisor(
     fun updateRouteUnavailable(reason: String) {
         if (dismissed || !LiveAdvisorSettings.enabled(service)) return
         handler.post {
-            if (dismissed || root == null) return@post
-            routeText?.text = "⚠️ Valhalla · unavailable"
+            if (dismissed) return@post
+            setRouteContent("⚠️ Valhalla · unavailable")
             CaptureEventLog.append(service, "route_failed", reason, currentPlatform)
+        }
+    }
+
+    /** Accessibility events make resume nearly immediate; the watchdog remains the fallback. */
+    fun onCourierWindowEvent(packageName: String) {
+        if (dismissed || currentParsed == null || packageName != expectedPackageName) return
+        handler.post {
+            if (!dismissed && currentParsed != null) checkOfferStillVisible()
+        }
+    }
+
+    /** A real foreign window-state event is stronger than rootInActiveWindow on overlay-heavy OEMs. */
+    fun onForegroundWindowChanged(packageName: String) {
+        if (dismissed || currentParsed == null || packageName.isBlank()) return
+        when (packageName) {
+            expectedPackageName -> onCourierWindowEvent(packageName)
+            service.packageName, SYSTEM_UI_PACKAGE -> Unit
+            else -> handler.post {
+                if (!dismissed && currentParsed != null) {
+                    temporarilyHide("foreground window changed to $packageName")
+                }
+            }
         }
     }
 
@@ -181,8 +217,9 @@ internal class StableLiveOfferAdvisor(
             )
         }
         dismissed = true
+        temporarilyHidden = false
         generation += 1
-        hideView()
+        clearOfferViewState()
     }
 
     fun destroy() {
@@ -201,17 +238,36 @@ internal class StableLiveOfferAdvisor(
     ) {
         val decision = OfferDecisionEngine.evaluate(parsed, pedestrianRoute, cyclewayRoute)
         val platformEconomics = PlatformOfferEconomicsCalculator.calculate(parsed)
+        cachedDecisionLine = LiveAdvisorPresentation.profitabilityLine(decision, platformEconomics)
+        cachedDecisionBand = decision.band
         decisionText?.apply {
-            text = LiveAdvisorPresentation.profitabilityLine(decision, platformEconomics)
-            setTextColor(decisionColor(decision.band))
+            text = cachedDecisionLine
+            setTextColor(decisionColor(cachedDecisionBand))
         }
     }
 
     private fun renderRouteLoadingState() {
         val enabled = LiveAdvisorSettings.routeEnabled(service, currentPlatform)
+        setRouteContent(if (enabled) "⏳ Valhalla · calculating…" else "Route off")
+    }
+
+    private fun setRouteContent(text: String, visible: Boolean = true) {
+        cachedRouteLine = text
+        cachedRouteVisible = visible
         routeText?.apply {
-            visibility = View.VISIBLE
-            text = if (enabled) "⏳ Valhalla · calculating…" else "Route off"
+            visibility = if (visible) View.VISIBLE else View.GONE
+            this.text = text
+        }
+    }
+
+    private fun applyCachedPresentation() {
+        decisionText?.apply {
+            text = cachedDecisionLine
+            setTextColor(decisionColor(cachedDecisionBand))
+        }
+        routeText?.apply {
+            visibility = if (cachedRouteVisible) View.VISIBLE else View.GONE
+            text = cachedRouteLine
         }
     }
 
@@ -333,8 +389,7 @@ internal class StableLiveOfferAdvisor(
             }
     }
 
-    private fun hideView() {
-        handler.removeCallbacks(visibilityWatchdog)
+    private fun detachView() {
         root?.let { runCatching { windowManager.removeView(it) } }
         root = null
         windowParams = null
@@ -343,8 +398,54 @@ internal class StableLiveOfferAdvisor(
         routeToggle = null
         voiceToggle = null
         gestureMode = GESTURE_NONE
+    }
+
+    private fun temporarilyHide(reason: String) {
+        if (dismissed || currentParsed == null) return
+        if (!temporarilyHidden || root != null) {
+            CaptureEventLog.append(
+                service,
+                stage = "overlay_suspend",
+                platform = currentPlatform,
+                message = reason,
+                dedupeWindowMs = 750L,
+            )
+        }
+        temporarilyHidden = true
+        detachView()
+        resetMissingEvidence()
+    }
+
+    private fun restoreFromCache(reason: String) {
+        if (dismissed || currentParsed == null || !temporarilyHidden) return
+        val pending = OfferState.pending(service)
+        if (pending != null && pending.packageName == expectedPackageName) return
+        ensureView()
+        if (root == null) return
+        temporarilyHidden = false
+        refreshControls()
+        applyCachedPresentation()
+        resetMissingEvidence()
+        CaptureEventLog.append(
+            service,
+            stage = "overlay_restore",
+            platform = currentPlatform,
+            message = reason,
+            dedupeWindowMs = 500L,
+        )
+    }
+
+    private fun clearOfferViewState() {
+        handler.removeCallbacks(visibilityWatchdog)
+        detachView()
         resetMissingEvidence()
         boltBaselineSurface = null
+        currentParsed = null
+        expectedPackageName = ""
+        cachedDecisionLine = ""
+        cachedDecisionBand = OfferDecisionBand.UNKNOWN
+        cachedRouteLine = ""
+        cachedRouteVisible = true
     }
 
     private fun refreshControls() {
@@ -371,20 +472,25 @@ internal class StableLiveOfferAdvisor(
 
     private fun checkOfferStillVisible() {
         val expected = expectedPackageName
+        val expectedOffer = currentParsed ?: return
         if (expected.isBlank()) return
 
         val activePackage = service.rootInActiveWindow?.packageName?.toString().orEmpty()
         val courierRoot = findVisiblePackageRoot(expected)
+        val definitelyAway = activePackage.isNotBlank() &&
+            activePackage != expected &&
+            activePackage != service.packageName &&
+            activePackage != SYSTEM_UI_PACKAGE
+
+        if (definitelyAway) {
+            temporarilyHide("foreground changed to $activePackage")
+            return
+        }
+
         if (courierRoot == null) {
-            val definitelyForeign = activePackage.isNotBlank() &&
-                activePackage != expected &&
-                activePackage != service.packageName &&
-                activePackage != SYSTEM_UI_PACKAGE
-            if (definitelyForeign) {
-                suppressCurrentOffer("foreground changed to $activePackage")
-                return
+            if (registerMissingEvidence()) {
+                temporarilyHide("courier window temporarily unavailable; active=$activePackage")
             }
-            if (registerMissingEvidence()) suppressCurrentOffer("courier window disappeared")
             return
         }
 
@@ -403,35 +509,40 @@ internal class StableLiveOfferAdvisor(
         val parsed = OfferParser.parse(visibleText)
         val hasOfferUi = CourierSignals.looksLikeOfferScreen(visibleText, parsed) || hasDecisionPair(visibleText)
         if (hasOfferUi) {
+            if (LiveOfferResumePolicy.definitelyDifferent(expectedOffer, parsed)) {
+                suppressCurrentOffer("different offer is now visible")
+                return
+            }
             resetMissingEvidence()
             if (currentPlatform.equals("Bolt", ignoreCase = true) && boltBaselineSurface == null) {
                 boltBaselineSurface = inspection.snapshot
             }
+            if (temporarilyHidden) restoreFromCache("same offer returned to foreground")
             return
         }
 
         if (currentPlatform.equals("Bolt", ignoreCase = true)) {
             val baseline = boltBaselineSurface
             if (baseline == null) {
-                // showBase() normally captures this while the offer is known to exist. If Android
-                // briefly withheld the root, use the first stable sample rather than guessing.
-                boltBaselineSurface = inspection.snapshot
-                resetMissingEvidence()
+                // Without a known live Bolt surface, do not resurrect a hidden card from guesswork.
+                if (!temporarilyHidden) {
+                    boltBaselineSurface = inspection.snapshot
+                    resetMissingEvidence()
+                }
                 return
             }
             if (!LiveOfferSurfaceEvidence.materiallyChanged(baseline, inspection.snapshot)) {
-                // Bolt can expose almost no semantic card text. An unchanged underlying surface is
-                // stronger evidence that the same offer remains than generic text absence.
                 resetMissingEvidence()
+                if (temporarilyHidden) restoreFromCache("same sparse Bolt offer surface returned")
                 return
             }
             if (registerMissingEvidence(graceMs = BOLT_GONE_GRACE_MS, minChecks = BOLT_MIN_MISSING_CHECKS)) {
-                suppressCurrentOffer("Bolt offer surface disappeared")
+                temporarilyHide("Bolt offer surface is no longer visible")
             }
             return
         }
 
-        if (registerMissingEvidence()) suppressCurrentOffer("Wolt offer controls disappeared")
+        if (registerMissingEvidence()) temporarilyHide("Wolt offer controls are no longer visible")
     }
 
     private fun findVisiblePackageRoot(packageName: String): AccessibilityNodeInfo? {
@@ -648,6 +759,7 @@ internal class StableLiveOfferAdvisor(
     private companion object {
         const val SYSTEM_UI_PACKAGE = "com.android.systemui"
         const val VISIBILITY_CHECK_MS = 750L
+        const val HIDDEN_VISIBILITY_CHECK_MS = 1_500L
         const val GONE_GRACE_MS = 1_500L
         const val MIN_MISSING_CHECKS = 3
         const val BOLT_GONE_GRACE_MS = 700L

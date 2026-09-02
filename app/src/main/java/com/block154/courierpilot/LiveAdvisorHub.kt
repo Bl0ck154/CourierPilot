@@ -131,8 +131,19 @@ internal object LiveAdvisorHub {
     private fun isCurrentOffer(expected: CurrentAdvisorOffer): Boolean =
         currentOffer?.offerId == expected.offerId
 
+    fun onForegroundWindowChanged(context: Context, packageName: String) {
+        attach(context)
+        advisor?.onForegroundWindowChanged(packageName)
+    }
+
+    fun onCourierWindowEvent(context: Context, packageName: String) {
+        attach(context)
+        advisor?.onCourierWindowEvent(packageName)
+    }
+
     fun observeScreen(context: Context, packageName: String, text: String) {
         attach(context)
+        advisor?.onCourierWindowEvent(packageName)
         DeliveryLifecycleTracking.observeScreen(context, packageName, text)
     }
 }
