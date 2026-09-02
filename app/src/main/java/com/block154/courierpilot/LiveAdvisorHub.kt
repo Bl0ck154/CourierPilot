@@ -17,6 +17,7 @@ internal object LiveAdvisorHub {
     )
 
     private data class PendingAdvisorOffer(
+        val key: String,
         val packageName: String,
         val armedAt: Long,
         val parsed: ParsedOffer,
@@ -37,7 +38,7 @@ internal object LiveAdvisorHub {
             if (!enabled) return@routeToggle
             val current = currentOffer ?: return@routeToggle
             if (!current.record.platform.equals(platform, ignoreCase = true)) return@routeToggle
-            startRouteForOffer(service, current)
+            startRouteForOffer(service, current, preparedKey = null)
         })
     }
 
@@ -60,16 +61,38 @@ internal object LiveAdvisorHub {
         val service = serviceRef.get() ?: return
         val platform = OfferState.platformLabel(pending.packageName)
         val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
-        pendingPreview = PendingAdvisorOffer(pending.packageName, pending.armedAt, parsed)
+        pendingPreview = PendingAdvisorOffer(key, pending.packageName, pending.armedAt, parsed)
         advisor?.showPending(platform, parsed)
-        if (pending.packageName == CourierSignals.WOLT_PACKAGE && AutomaticWoltRouteCoordinator.prewarm(service, parsed)) {
-            CaptureEventLog.append(
-                service,
-                stage = "route_prewarm",
-                platform = platform,
-                message = "Started/continued Wolt geocode prewarm before price persistence",
-                dedupeWindowMs = 2_000L,
-            )
+        if (pending.packageName == CourierSignals.WOLT_PACKAGE) {
+            val started = AutomaticWoltRouteCoordinator.prepare(service, key, parsed) { prepared ->
+                val active = pendingPreview
+                if (active?.key != key || active.packageName != pending.packageName) return@prepare
+                val comparison = prepared.comparison ?: return@prepare
+                val walking = comparison.pedestrian.getOrNull()?.distanceMeters
+                val cycling = comparison.cycleway.getOrNull()?.distanceMeters
+                val average = OfferDecisionEngine.averageValhallaDistanceMeters(
+                    comparison.pedestrian.getOrNull(), comparison.cycleway.getOrNull(),
+                )
+                CaptureEventLog.append(
+                    service,
+                    stage = "route_prepared",
+                    platform = platform,
+                    message = "points=${prepared.waypoints.size}; walk_m=${walking ?: -1}; cycle_m=${cycling ?: -1}; " +
+                        "avg_m=${average ?: -1}; direct_chain_m=${prepared.directChainMeters ?: -1}; " +
+                        "gps_age_ms=${prepared.locationAgeMillis ?: -1}; gps_accuracy_m=${prepared.locationAccuracyMeters ?: -1f}",
+                    dedupeWindowMs = 500L,
+                )
+                advisor?.updateRoute(comparison, prepared.waypoints.size)
+            }
+            if (started) {
+                CaptureEventLog.append(
+                    service,
+                    stage = "route_prepare_start",
+                    platform = platform,
+                    message = "Full Wolt route preparation started before price",
+                    dedupeWindowMs = 10_000L,
+                )
+            }
         }
     }
 
@@ -110,6 +133,7 @@ internal object LiveAdvisorHub {
             emptyList()
         }
 
+        val preparedKey = pendingPreview?.key ?: captureOfferKey
         val current = CurrentAdvisorOffer(offerId, record, parsed, supplementalBoltPickups)
         currentOffer = current
         pendingPreview = null
@@ -120,10 +144,14 @@ internal object LiveAdvisorHub {
         // The card shell is rendered synchronously before any route/geocoder work starts. Valhalla
         // only updates rows inside this already-visible card; it never controls whether the card exists.
         currentAdvisor.showBase(record.platform, parsed)
-        startRouteForOffer(service, current)
+        startRouteForOffer(service, current, preparedKey)
     }
 
-    private fun startRouteForOffer(service: AccessibilityService, current: CurrentAdvisorOffer) {
+    private fun startRouteForOffer(
+        service: AccessibilityService,
+        current: CurrentAdvisorOffer,
+        preparedKey: String? = null,
+    ) {
         val record = current.record
         val parsed = current.parsed
         if (!LiveAdvisorSettings.routeEnabled(service, record.platform)) return
@@ -168,7 +196,13 @@ internal object LiveAdvisorHub {
         }
 
         if (record.platform.equals("Wolt", ignoreCase = true)) {
-            AutomaticWoltRouteCoordinator.start(service, current.offerId, record.platform, parsed) { outcome ->
+            AutomaticWoltRouteCoordinator.start(
+                service,
+                current.offerId,
+                record.platform,
+                parsed,
+                preparedKey = preparedKey,
+            ) { outcome ->
                 val comparison = outcome.comparison
                 // Render first so the candidate cannot train the thresholds used to judge itself.
                 if (isCurrentOffer(current)) {
