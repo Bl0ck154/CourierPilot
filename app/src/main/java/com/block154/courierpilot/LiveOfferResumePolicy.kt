@@ -4,6 +4,25 @@ import java.util.Locale
 
 /** Conservative identity guard used only when restoring a temporarily hidden live card. */
 internal object LiveOfferResumePolicy {
+    fun hasMatchingIdentity(expected: ParsedOffer, visible: ParsedOffer): Boolean {
+        if (definitelyDifferent(expected, visible)) return false
+
+        val expectedPrice = expected.priceCents
+        val visiblePrice = visible.priceCents
+        if (expectedPrice != null && visiblePrice != null && expectedPrice == visiblePrice) return true
+
+        val expectedRestaurant = normalize(expected.restaurant)
+        val visibleRestaurant = normalize(visible.restaurant)
+        if (expectedRestaurant != null && visibleRestaurant != null && looselyMatches(expectedRestaurant, visibleRestaurant)) {
+            return true
+        }
+
+        if (setOverlaps(expected.pickupAddresses, visible.pickupAddresses)) return true
+        if (setOverlaps(expected.dropoffAddresses, visible.dropoffAddresses)) return true
+        if (setOverlaps(expected.merchantNames, visible.merchantNames)) return true
+        return false
+    }
+
     fun definitelyDifferent(expected: ParsedOffer, visible: ParsedOffer): Boolean {
         val expectedPrice = expected.priceCents
         val visiblePrice = visible.priceCents
@@ -16,6 +35,13 @@ internal object LiveOfferResumePolicy {
         if (strongSetConflict(expected.pickupAddresses, visible.pickupAddresses)) return true
         if (strongSetConflict(expected.merchantNames, visible.merchantNames)) return true
         return false
+    }
+
+    private fun setOverlaps(expected: List<String>, visible: List<String>): Boolean {
+        val left = expected.mapNotNull(::normalize).toSet()
+        val right = visible.mapNotNull(::normalize).toSet()
+        if (left.isEmpty() || right.isEmpty()) return false
+        return left.any { expectedValue -> right.any { visibleValue -> looselyMatches(expectedValue, visibleValue) } }
     }
 
     private fun strongSetConflict(expected: List<String>, visible: List<String>): Boolean {

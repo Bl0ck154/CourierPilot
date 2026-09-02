@@ -123,6 +123,9 @@ internal class StableLiveOfferAdvisor(
         }
     }
 
+    fun isTrackingOffer(packageName: String): Boolean =
+        !dismissed && currentParsed != null && expectedPackageName == packageName
+
     fun updateRoute(comparison: RouteComparison, waypointCount: Int) {
         if (dismissed || !LiveAdvisorSettings.enabled(service)) return
         handler.post {
@@ -496,18 +499,12 @@ internal class StableLiveOfferAdvisor(
 
         val inspection = inspectVisibleSurface(courierRoot)
         val visibleText = inspection.text
-        DeliveryLifecycleTracking.detect(visibleText)?.let {
-            suppressCurrentOffer("offer ended: ${it.type}")
-            return
-        }
-        val presence = CourierSignals.detectPresence(visibleText)
-        if (presence != PresenceSignal.UNKNOWN) {
-            suppressCurrentOffer("offer replaced by presence=$presence")
-            return
-        }
-
         val parsed = OfferParser.parse(visibleText)
         val hasOfferUi = CourierSignals.looksLikeOfferScreen(visibleText, parsed) || hasDecisionPair(visibleText)
+
+        // A live offer is stronger evidence than generic background/presence strings rendered on
+        // the same Wolt screen. In particular, Wolt can expose "Go offline" while an incoming
+        // offer is still fully visible. Never end the card before checking the offer UI itself.
         if (hasOfferUi) {
             if (LiveOfferResumePolicy.definitelyDifferent(expectedOffer, parsed)) {
                 suppressCurrentOffer("different offer is now visible")
@@ -518,6 +515,27 @@ internal class StableLiveOfferAdvisor(
                 boltBaselineSurface = inspection.snapshot
             }
             if (temporarilyHidden) restoreFromCache("same offer returned to foreground")
+            return
+        }
+
+        // Some Wolt Compose recompositions temporarily drop the Accept/Decline semantics while the
+        // price/merchant/address remains visible. A matching identity keeps the card alive.
+        if (
+            currentPlatform.equals("Wolt", ignoreCase = true) &&
+            LiveOfferResumePolicy.hasMatchingIdentity(expectedOffer, parsed)
+        ) {
+            resetMissingEvidence()
+            if (temporarilyHidden) restoreFromCache("same Wolt offer identity returned without controls")
+            return
+        }
+
+        DeliveryLifecycleTracking.detect(visibleText)?.let {
+            suppressCurrentOffer("offer ended: ${it.type}")
+            return
+        }
+        val presence = CourierSignals.detectPresence(visibleText)
+        if (presence != PresenceSignal.UNKNOWN) {
+            suppressCurrentOffer("offer replaced by presence=$presence")
             return
         }
 
@@ -542,7 +560,12 @@ internal class StableLiveOfferAdvisor(
             return
         }
 
-        if (registerMissingEvidence()) temporarilyHide("Wolt offer controls are no longer visible")
+        // Missing Wolt controls alone are weak evidence: real-device telemetry shows the Compose
+        // tree can stay semantically sparse for >1.5 s while the offer is still visible. Keep the
+        // card through that transient gap; explicit lifecycle/presence still ends it immediately.
+        if (registerMissingEvidence(graceMs = WOLT_UNCERTAIN_GRACE_MS, minChecks = WOLT_UNCERTAIN_MIN_CHECKS)) {
+            temporarilyHide("Wolt offer surface remained unconfirmed")
+        }
     }
 
     private fun findVisiblePackageRoot(packageName: String): AccessibilityNodeInfo? {
@@ -764,6 +787,8 @@ internal class StableLiveOfferAdvisor(
         const val MIN_MISSING_CHECKS = 3
         const val BOLT_GONE_GRACE_MS = 700L
         const val BOLT_MIN_MISSING_CHECKS = 2
+        const val WOLT_UNCERTAIN_GRACE_MS = 5_000L
+        const val WOLT_UNCERTAIN_MIN_CHECKS = 5
         const val DEFAULT_Y_DP = 48
         const val MIN_Y_DP = 12
         const val BOTTOM_MARGIN_DP = 16

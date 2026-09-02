@@ -45,4 +45,35 @@ class LiveOfferResumePolicyTest {
         val visible = expected.copy(pickupAddresses = listOf("Gedimino pr. 9"))
         assertTrue(LiveOfferResumePolicy.definitelyDifferent(expected, visible))
     }
+
+    @Test
+    fun matchingPriceKeepsWoltOfferAliveWhenControlsTemporarilyDisappear() {
+        val visible = ParsedOffer(
+            priceCents = 450,
+            distanceMeters = null,
+            restaurant = null,
+        )
+        assertTrue(LiveOfferResumePolicy.hasMatchingIdentity(expected, visible))
+    }
+
+    @Test
+    fun emptySparseFrameDoesNotPretendToMatchIdentity() {
+        val visible = ParsedOffer(
+            priceCents = null,
+            distanceMeters = null,
+            restaurant = null,
+        )
+        assertFalse(LiveOfferResumePolicy.hasMatchingIdentity(expected, visible))
+    }
+
+    @Test
+    fun matchingPriceDoesNotOverrideConflictingMerchantIdentity() {
+        val visible = ParsedOffer(
+            priceCents = 450,
+            distanceMeters = null,
+            restaurant = "McDonald's",
+            merchantNames = listOf("McDonald's"),
+        )
+        assertFalse(LiveOfferResumePolicy.hasMatchingIdentity(expected, visible))
+    }
 }
