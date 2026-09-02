@@ -40,18 +40,28 @@ internal object CaptureEventLog {
             }
         }
 
+        val event = CaptureEvent(
+            timestamp = now,
+            stage = stage.take(48),
+            platform = platform.take(24),
+            message = message.take(320),
+        )
         events.put(
             JSONObject()
-                .put("timestamp", now)
-                .put("stage", stage.take(48))
-                .put("platform", platform.take(24))
-                .put("message", message.take(320))
+                .put("timestamp", event.timestamp)
+                .put("stage", event.stage)
+                .put("platform", event.platform)
+                .put("message", event.message)
         )
 
         val trimmed = JSONArray()
         val start = (events.length() - MAX_EVENTS).coerceAtLeast(0)
         for (i in start until events.length()) trimmed.put(events.optJSONObject(i))
         prefs.edit().putString(KEY_EVENTS, trimmed.toString()).apply()
+
+        // This method only hands the already-sanitized event to a dedicated executor. No HTTP or
+        // remote queue serialization runs on the notification/accessibility caller thread.
+        RemoteDiagnostics.enqueue(context, event)
     }
 
     fun recent(context: Context, limit: Int = 80): List<CaptureEvent> {
