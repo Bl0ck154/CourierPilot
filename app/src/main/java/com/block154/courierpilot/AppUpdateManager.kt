@@ -683,7 +683,7 @@ internal object AppUpdateManager {
                 .setAutoCancel(true)
                 .setOnlyAlertOnce(true)
                 .setCategory(Notification.CATEGORY_STATUS)
-                .addAction(0, if (ready) "Install" else "Download", primaryAction)
+                .addAction(0, if (ready) "Install" else "Open", primaryAction)
                 .addAction(0, "Later", later)
                 .build()
         )
