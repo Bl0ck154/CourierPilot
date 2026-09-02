@@ -457,6 +457,245 @@ In `Bl0ck154/wolt-discount-monitor`:
 - verify old observations are visible in history but excluded from the 30-day live profile;
 - only then remove remaining legacy v1/fixed-threshold code.
 
+## Parallel implementation layout
+
+The implementation should be run as an orchestrated multi-agent job, not as several agents editing the same branch. The goal is to maximize parallel work while keeping merge conflicts and hidden contract drift low.
+
+### Wave 0 — orchestrator contract freeze
+
+Before spawning implementation agents, the orchestrator creates one short-lived integration branch from current `main` and freezes these cross-cutting contracts in either a small contract commit or an implementation note attached to the work:
+
+- `MoneyAmount` semantics: `amountMinor`, `currencyCode`, `fractionDigits`;
+- market cohort key: `city + currency + platform`;
+- eligible observation fields and FULL-route requirement;
+- percentile bands: P15/P35/P65/P85;
+- `LEARNING` semantics and confidence vocabulary;
+- 30-day live window and historical-retention separation;
+- server v2 request/response field names;
+- client-facing profile/history repository interfaces used by UI and sync.
+
+Agents may implement behind these contracts, but must not independently rename or reinterpret them. Any required contract change is reported to the orchestrator instead of being silently changed in one branch.
+
+### Shared-hotspot rule
+
+The following existing files are integration hotspots and should be edited only by the orchestrator unless a task below explicitly assigns ownership:
+
+- `OfferDecision.kt`;
+- `MarketIntelligence.kt`;
+- `StableLiveOfferAdvisor.kt`;
+- `CourierPilotDashboardActivity.kt`;
+- `app/build.gradle.kts`;
+- Android manifest/resources that are shared by multiple features.
+
+Sub-agents should prefer new focused files and tests. The orchestrator performs the final wiring into these hotspots after merging each workstream.
+
+### Agent A — Android money, parsing and local storage
+
+Repository: `Bl0ck154/CourierPilot`.
+
+Owns:
+
+- new currency-aware money types/utilities;
+- Wolt/Bolt price parsing for ISO codes/symbols/fraction digits;
+- dedicated `market_observations` local table and DB migration;
+- migration/backfill of existing EUR market data where provenance makes that safe;
+- local queries for exact `city + currency + platform` cohorts and historical day/week/month buckets;
+- dedicated parser/storage/migration tests.
+
+Must not:
+
+- implement rating bands;
+- implement server networking;
+- edit live overlay/UI integration hotspots;
+- mix Wolt/Bolt cohorts.
+
+Expected handoff: stable local data interfaces plus tests, with no live scoring behavior change by itself.
+
+### Agent B — pure adaptive scoring engine
+
+Repository: `Bl0ck154/CourierPilot`.
+
+Owns new pure Kotlin scoring/statistics files and their tests only.
+
+Implements:
+
+- 30-day eligibility window;
+- recency weighting and effective sample size;
+- robust scale-invariant outlier handling;
+- weighted percentile/percentile-rank calculations;
+- P15/P35/P65/P85 five-band mapping;
+- `LEARNING` / confidence behavior beginning at five personal samples;
+- smooth personal evidence weighting such as `nEffective / (nEffective + priorStrength)`;
+- candidate-before-insert semantics as a pure API contract;
+- currency-scale invariance tests and outlier/trend regression tests.
+
+Must not:
+
+- read SQLite directly;
+- perform HTTP;
+- edit parser, dashboard or overlay files;
+- contain absolute currency-unit fallback thresholds.
+
+Expected handoff: a deterministic engine that consumes currency-agnostic normalized observations/profile inputs and returns rating, percentile, confidence and source metadata.
+
+### Agent C — server market schema/API v2
+
+Repository: `Bl0ck154/wolt-discount-monitor`.
+
+This workstream is independent from Android file ownership and can start immediately after Wave 0 contracts are frozen.
+
+Owns:
+
+- v2 currency-aware ingest schema;
+- safe EUR migration/compatibility for v1 rows/uploads;
+- exact city/currency/platform cohort profiles;
+- 30-day weighted collective profiles with per-install influence control;
+- `ready=false` for insufficient evidence with no fake default monetary edges;
+- long-lived privacy-safe day/week/month aggregate history;
+- profile/history endpoints and server tests;
+- retention/cleanup behavior for raw versus aggregate rows.
+
+Must preserve privacy boundaries: no addresses, names, OCR, screenshots or exact GPS.
+
+Expected handoff: documented v2 API examples, migration notes and green server tests.
+
+### Agent D — Android server sync and collective repository
+
+Repository: `Bl0ck154/CourierPilot`.
+
+Owns new networking/DTO/repository files for market v2 and dedicated tests.
+
+Implements:
+
+- v2 upload DTOs using explicit currency;
+- exact cohort profile fetch;
+- day/week/month history fetch;
+- queue/retry/dedup behavior for eligible observations;
+- v1 compatibility reader only where required during rollout;
+- local cache of collective profiles/history;
+- privacy tests/serialization tests ensuring forbidden fields cannot enter payloads.
+
+Must not:
+
+- decide rating bands;
+- edit `MarketIntelligence.kt` directly unless the orchestrator explicitly delegates it;
+- own dashboard UI.
+
+Expected handoff: a repository/service API that the orchestrator can connect to Agent B's scoring engine and Agent E's UI.
+
+### Agent E — Market / Pay trends UI
+
+Repository: `Bl0ck154/CourierPilot`.
+
+Owns new Compose screen/components, presentation models and UI tests/previews.
+
+Build against the frozen repository/view-state interfaces, using fakes if the backend implementations are not merged yet.
+
+Implements:
+
+- dedicated Market / Pay trends screen;
+- Wolt/Bolt selector;
+- current personal vs city median in native currency;
+- percentile/rating source/confidence/sample count;
+- `Learning X / 5` state;
+- 7-day trend;
+- day/week/month history with P25–P75 and sample counts;
+- empty/loading/offline states.
+
+Must not:
+
+- implement statistics;
+- perform HTTP/SQLite access directly;
+- edit the main dashboard entry point. The orchestrator adds the final navigation hook.
+
+Expected handoff: a screen driven entirely by presentation state with no market-business logic embedded in Compose.
+
+### Agent F — independent regression/compatibility suite
+
+Repository: primarily `Bl0ck154/CourierPilot`; server contract fixtures may also be added in `Bl0ck154/wolt-discount-monitor` if the orchestrator gives a separate worktree.
+
+Owns uniquely named test/fixture files; does not edit production logic.
+
+Covers the required regression matrix below, especially:
+
+- EUR vs PLN scale invariance;
+- 0- and 3-fraction-digit currencies;
+- 0–4 samples -> `LEARNING`;
+- fifth sample activation;
+- 30-day exclusion with historical retention;
+- Wolt/Bolt isolation;
+- candidate-before-insert;
+- Bolt `PICKUP_ONLY` exclusion;
+- one-install collective domination resistance;
+- v1/v2 migration fixtures;
+- no forbidden private fields in v2 payloads.
+
+This agent should report failures as integration evidence rather than modifying production code to make tests pass.
+
+### Orchestrator — integration and final ownership
+
+The orchestrator is the only owner of cross-workstream wiring and release decisions.
+
+Recommended merge order:
+
+1. rebase/check all workstreams against current `main`;
+2. merge Agent A local money/data model;
+3. merge Agent B pure scoring engine;
+4. merge Agent C server v2, deploy it and verify real endpoints before client activation;
+5. merge Agent D client sync/repository;
+6. wire A+B+D into `MarketIntelligence.kt` / `OfferDecision.kt` / `StableLiveOfferAdvisor.kt`;
+7. merge Agent E UI and add dashboard navigation;
+8. merge Agent F regression suite and resolve any failures without weakening tests;
+9. remove the old fixed-threshold production path only after the new path passes all gates;
+10. run full Android tests/build plus server tests, inspect diffs for contract drift/privacy regressions, then release.
+
+The orchestrator must explicitly verify that there is no remaining production path where missing evidence falls back to `0.70/0.85/1.00/1.25` or any other universal money/km constants.
+
+### Branch/worktree convention
+
+Use one isolated branch/worktree per workstream. Suggested names:
+
+```text
+feat/market-v2-money-storage
+feat/market-v2-scoring-engine
+feat/market-v2-server
+feat/market-v2-client-sync
+feat/market-v2-ui
+test/market-v2-regression
+integration/market-v2
+```
+
+Agents commit only to their own branch. They do not merge each other, force-push other branches, or resolve conflicts in files owned by another workstream. The orchestrator cherry-picks/merges reviewed commits into `integration/market-v2`, resolves shared-hotspot wiring, and only then opens the final implementation PR(s).
+
+### Parallelism dependency graph
+
+```text
+                 Wave 0 contract freeze
+                         |
+        +----------------+------------------+
+        |                |                  |
+        v                v                  v
+   Agent A          Agent B             Agent C
+ money/storage      scoring             server v2
+        |                |                  |
+        +-------+--------+                  |
+                |                           |
+                v                           v
+              Agent D <---------------- server contract
+            client sync
+                |
+                +-------------+
+                              |
+                              v
+                           Agent E
+                              UI
+
+Agent F regression work runs alongside A-E from frozen fixtures/contracts.
+The orchestrator integrates only when upstream contracts/tests for each edge are satisfied.
+```
+
+Agent E can begin immediately with fake presentation-state fixtures; it does not need to wait for Agent D to finish. Agent D can begin DTO/cache/queue work from the frozen v2 contract while Agent C implements the real server. This keeps the workstreams parallel without making them edit the same production files.
+
 ## Required regression tests
 
 At minimum:
