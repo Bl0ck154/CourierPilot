@@ -60,6 +60,7 @@ import com.block154.courierpilot.ui.CourierPilotToggleRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -176,7 +177,7 @@ class CourierPilotDashboardActivity : ComponentActivity() {
     }
 }
 
-private enum class DashboardScreen { HOME, HISTORY, ADDRESSES, STATS, SETTINGS }
+private enum class DashboardScreen { HOME, HISTORY, ADDRESSES, STATS, MARKET, SETTINGS }
 
 @Composable
 private fun DashboardRoot(
@@ -201,6 +202,7 @@ private fun DashboardRoot(
                         Triple(DashboardScreen.HISTORY, "History", Icons.Rounded.History),
                         Triple(DashboardScreen.ADDRESSES, "Addresses", Icons.Rounded.Place),
                         Triple(DashboardScreen.STATS, "Stats", Icons.Rounded.BarChart),
+                        Triple(DashboardScreen.MARKET, "Market", Icons.Rounded.Storefront),
                     ).forEach { (target, label, icon) ->
                         NavigationBarItem(
                             selected = screen == target,
@@ -249,12 +251,91 @@ private fun DashboardRoot(
                 onHistory = { screen = DashboardScreen.HISTORY },
                 onAddresses = { screen = DashboardScreen.ADDRESSES },
             )
+            DashboardScreen.MARKET -> DashboardMarket(padding)
             DashboardScreen.SETTINGS -> DashboardSettings(notificationOk, accessibilityOk, padding) {
                 screen = DashboardScreen.HOME
             }
         }
     }
 }
+
+@Composable
+private fun DashboardMarket(padding: PaddingValues) {
+    val context = LocalContext.current
+    var platform by remember { mutableStateOf(MarketPlatform.WOLT) }
+    var period by remember { mutableStateOf(MarketHistoryPeriod.WEEK) }
+    var historyRevision by remember { mutableIntStateOf(0) }
+    val platformName = if (platform == MarketPlatform.WOLT) "Wolt" else "Bolt"
+    val currencyCode = MarketIntelligence.currencyFor(context, platformName)
+    val profile = MarketIntelligence.profileFor(context, platformName, currencyCode)
+    val local = MarketIntelligence.localProfileFor(context, platformName, currencyCode)
+    val periodKey = period.name.lowercase(Locale.ROOT)
+
+    LaunchedEffect(platformName, currencyCode, periodKey) {
+        MarketIntelligence.refreshHistory(context, platformName, currencyCode, periodKey) {
+            historyRevision += 1
+        }
+    }
+
+    val personalHistory = remember(platformName, currencyCode, periodKey, historyRevision) {
+        MarketIntelligence.localHistoryFor(context, platformName, currencyCode, periodKey).map { point ->
+            MarketHistoryBucket(
+                label = point.bucket,
+                median = "%.2f".format(Locale.getDefault(), point.medianNativeMoneyPerKm),
+                p25 = "%.2f".format(Locale.getDefault(), point.p25),
+                p75 = "%.2f".format(Locale.getDefault(), point.p75),
+                sampleCount = point.sampleCount,
+            )
+        }
+    }
+    val cityHistory = remember(platformName, currencyCode, periodKey, historyRevision) {
+        MarketIntelligence.cityHistoryFor(context, platformName, currencyCode, periodKey).map { point ->
+            MarketHistoryBucket(
+                label = point.bucket,
+                median = "%.2f".format(Locale.getDefault(), point.medianNativeMoneyPerKm),
+                p25 = "%.2f".format(Locale.getDefault(), point.p25),
+                p75 = "%.2f".format(Locale.getDefault(), point.p75),
+                sampleCount = point.sampleCount,
+            )
+        }
+    }
+    val source = when {
+        local != null && profile?.ready == true -> MarketSource.PERSONAL_AND_CITY
+        local != null -> MarketSource.PERSONAL
+        profile?.ready == true -> MarketSource.CITY
+        else -> MarketSource.LEARNING
+    }
+    val confidence = when {
+        local != null && local.sampleCount >= 25 -> MarketUiConfidence.HIGH
+        local != null && local.sampleCount >= 10 -> MarketUiConfidence.MEDIUM
+        local != null && local.sampleCount >= 5 -> MarketUiConfidence.LOW
+        profile?.confidence?.equals("HIGH", true) == true -> MarketUiConfidence.HIGH
+        profile?.confidence?.equals("MEDIUM", true) == true -> MarketUiConfidence.MEDIUM
+        profile?.confidence?.equals("LOW", true) == true -> MarketUiConfidence.LOW
+        else -> MarketUiConfidence.NOT_READY
+    }
+    val state = MarketScreenState(
+        platform = platform,
+        currencyCode = currencyCode,
+        personalMedian = local?.medianNativeMoneyPerKm?.let { MarketMedian("%.2f".format(Locale.getDefault(), it), currencyCode) },
+        cityMedian = profile?.medianNativeMoneyPerKm?.let { MarketMedian("%.2f".format(Locale.getDefault(), it), currencyCode) },
+        source = source,
+        confidence = confidence,
+        sampleCount = local?.sampleCount ?: profile?.sampleCount ?: 0,
+        trend = profile?.trend?.let { MarketUiTrend(percent = it.percent, improving = it.direction == "up") },
+        period = period,
+        personalHistory = personalHistory,
+        cityHistory = cityHistory,
+    )
+    Column(Modifier.fillMaxSize().padding(padding)) {
+        MarketScreen(
+            state = state,
+            onPlatformSelected = { platform = it },
+            onPeriodSelected = { period = it },
+        )
+    }
+}
+
 
 @Composable
 private fun DashboardHome(
@@ -893,16 +974,21 @@ private fun SettingsStatusCard(
     }
 }
 
+private fun formatMarketMoneyRate(value: Double, currencyCode: String): String =
+    if (currencyCode == "EUR") "€${"%.2f".format(Locale.US, value)}"
+    else "$currencyCode ${"%.2f".format(Locale.US, value)}"
+
 private fun marketProfileSummary(
     platform: String,
     local: LocalMarketProfile?,
     city: MarketProfile?,
 ): String {
     val localPart = local?.let {
-        "you €${"%.2f".format(Locale.US, it.medianEurPerKm)}/km · ${it.sampleCount} local"
+        val code = city?.currencyCode ?: "EUR"
+        "you ${formatMarketMoneyRate(it.medianNativeMoneyPerKm, code)}/km · ${it.sampleCount} local"
     } ?: "you · learning"
     val cityPart = city?.let { profile ->
-        val median = profile.medianEurPerKm?.let { "€%.2f/km".format(Locale.US, it) } ?: "—"
+        val median = profile.medianNativeMoneyPerKm?.let { "${formatMarketMoneyRate(it, profile.currencyCode)}/km" } ?: "—"
         val trend = profile.trend?.let {
             val arrow = when (it.direction) {
                 "up" -> "↑"

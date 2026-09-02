@@ -330,7 +330,9 @@ internal class StableLiveOfferAdvisor(
             parsed,
             pedestrianRoute,
             cyclewayRoute,
-            thresholds = MarketIntelligence.thresholdsFor(service, currentPlatform),
+            thresholds = parsed.money?.currencyCode?.let { currencyCode ->
+                MarketIntelligence.thresholdsFor(service, currentPlatform, currencyCode)
+            },
         )
         val platformEconomics = PlatformOfferEconomicsCalculator.calculate(parsed)
         cachedDecisionLine = LiveAdvisorPresentation.profitabilityLine(decision, platformEconomics)
@@ -877,7 +879,7 @@ internal class StableLiveOfferAdvisor(
     }
 
     private fun baseSpeech(platform: String, parsed: ParsedOffer): String {
-        val price = parsed.priceCents?.let { "${it / 100} euro ${it % 100}" }
+        val price = parsed.money?.let { "${it.major().toPlainString()} ${it.currencyCode}" }
         return listOfNotNull(platform, price).joinToString(". ") + "."
     }
 

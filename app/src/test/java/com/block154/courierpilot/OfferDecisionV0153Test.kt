@@ -19,6 +19,7 @@ class OfferDecisionV0153Test {
     fun ratingUsesAverageOfWalkingAndCyclingValhallaDistance() {
         val parsed = ParsedOffer(
             priceCents = 550,
+            money = MoneyAmount(550, "EUR", 2),
             distanceMeters = 1_000, // platform distance must be ignored
             restaurant = "Test",
             estimatedMinutesMin = 10,
@@ -33,13 +34,13 @@ class OfferDecisionV0153Test {
 
         assertEquals(5_500, decision.routeDistanceMeters)
         assertEquals(1.0, decision.euroPerKilometer!!, 0.0001)
-        assertEquals(OfferDecisionBand.OK, decision.band)
-        assertEquals(3, decision.rating)
+        assertEquals(OfferDecisionBand.UNKNOWN, decision.band)
+        assertNull(decision.rating)
     }
 
     @Test
     fun moreThanOneEuroPerKmIsGood() {
-        val parsed = ParsedOffer(priceCents = 600, distanceMeters = 500, restaurant = null)
+        val parsed = ParsedOffer(priceCents = 600, money = MoneyAmount(600, "EUR", 2), distanceMeters = 500, restaurant = null)
         val decision = OfferDecisionEngine.evaluate(
             parsed,
             pedestrianRoute = route(RouteProfile.PEDESTRIAN_SHORTCUT, 5_000),
@@ -47,13 +48,13 @@ class OfferDecisionV0153Test {
         )
 
         assertTrue(decision.euroPerKilometer!! > 1.0)
-        assertEquals(OfferDecisionBand.GOOD, decision.band)
-        assertEquals(4, decision.rating)
+        assertEquals(OfferDecisionBand.UNKNOWN, decision.band)
+        assertNull(decision.rating)
     }
 
     @Test
     fun highEuroPerKmGetsFire() {
-        val parsed = ParsedOffer(priceCents = 700, distanceMeters = 100, restaurant = null)
+        val parsed = ParsedOffer(priceCents = 700, money = MoneyAmount(700, "EUR", 2), distanceMeters = 100, restaurant = null)
         val decision = OfferDecisionEngine.evaluate(
             parsed,
             pedestrianRoute = route(RouteProfile.PEDESTRIAN_SHORTCUT, 5_000),
@@ -61,14 +62,15 @@ class OfferDecisionV0153Test {
         )
 
         assertTrue(decision.euroPerKilometer!! >= 1.25)
-        assertEquals(OfferDecisionBand.FIRE, decision.band)
-        assertEquals(5, decision.rating)
+        assertEquals(OfferDecisionBand.UNKNOWN, decision.band)
+        assertNull(decision.rating)
     }
 
     @Test
     fun platformDistanceNeverCreatesRatingBeforeValhalla() {
         val parsed = ParsedOffer(
             priceCents = 900,
+            money = MoneyAmount(900, "EUR", 2),
             distanceMeters = 500,
             restaurant = null,
             estimatedMinutesMin = 5,
@@ -85,7 +87,7 @@ class OfferDecisionV0153Test {
 
     @Test
     fun cityMarketThresholdsCanRaiseTheMeaningOfAGoodOffer() {
-        val parsed = ParsedOffer(priceCents = 600, distanceMeters = 100, restaurant = null)
+        val parsed = ParsedOffer(priceCents = 600, money = MoneyAmount(600, "EUR", 2), distanceMeters = 100, restaurant = null)
         val decision = OfferDecisionEngine.evaluate(
             parsed,
             pedestrianRoute = route(RouteProfile.PEDESTRIAN_SHORTCUT, 5_000),
@@ -105,7 +107,7 @@ class OfferDecisionV0153Test {
 
     @Test
     fun cityMarketThresholdsCanLowerTheMeaningOfAFireOffer() {
-        val parsed = ParsedOffer(priceCents = 500, distanceMeters = 100, restaurant = null)
+        val parsed = ParsedOffer(priceCents = 500, money = MoneyAmount(500, "EUR", 2), distanceMeters = 100, restaurant = null)
         val decision = OfferDecisionEngine.evaluate(
             parsed,
             pedestrianRoute = route(RouteProfile.PEDESTRIAN_SHORTCUT, 5_000),
@@ -124,8 +126,22 @@ class OfferDecisionV0153Test {
     }
 
     @Test
+    fun legacyPriceCentsWithoutExplicitMoneyDoesNotAssumeEuro() {
+        val parsed = ParsedOffer(priceCents = 600, distanceMeters = 100, restaurant = null)
+        val decision = OfferDecisionEngine.evaluate(
+            parsed,
+            pedestrianRoute = route(RouteProfile.PEDESTRIAN_SHORTCUT, 5_000),
+            thresholds = OfferDecisionThresholds(0.8, 0.9, 1.0, 1.1),
+        )
+
+        assertNull(decision.euroPerKilometer)
+        assertNull(decision.currencyCode)
+        assertEquals(OfferDecisionBand.UNKNOWN, decision.band)
+    }
+
+    @Test
     fun oneSuccessfulValhallaProfileIsUsedAsFallback() {
-        val parsed = ParsedOffer(priceCents = 500, distanceMeters = 100, restaurant = null)
+        val parsed = ParsedOffer(priceCents = 500, money = MoneyAmount(500, "EUR", 2), distanceMeters = 100, restaurant = null)
         val decision = OfferDecisionEngine.evaluate(
             parsed,
             pedestrianRoute = route(RouteProfile.PEDESTRIAN_SHORTCUT, 5_000),

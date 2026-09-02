@@ -5,9 +5,10 @@ import kotlin.math.abs
 
 internal object LiveAdvisorPresentation {
     fun profitabilityLine(decision: OfferDecision, economics: PlatformOfferEconomics): String {
-        val km = decision.euroPerKilometer
-            ?.let { "€${"%.2f".format(Locale.US, it)}/km" }
-            ?: "€/km —"
+        val code = decision.currencyCode ?: economics.currencyCode
+        val km = decision.moneyPerKilometer
+            ?.let { "${formatMoneyRate(it, code)}/km" }
+            ?: "${code ?: "money"}/km —"
         val hour = hourText(economics)
         return "${decision.band.emoji}  $km  •  $hour"
     }
@@ -21,13 +22,19 @@ internal object LiveAdvisorPresentation {
     }
 
     private fun hourText(economics: PlatformOfferEconomics): String {
-        val lo = economics.euroPerHourMin
-        val hi = economics.euroPerHourMax
+        val lo = economics.moneyPerHourMin
+        val hi = economics.moneyPerHourMax
+        val code = economics.currencyCode
         return when {
-            lo != null && hi != null && abs(lo - hi) < 0.05 -> "€${"%.1f".format(Locale.US, lo)}/h"
-            lo != null && hi != null -> "€${"%.1f".format(Locale.US, lo)}–€${"%.1f".format(Locale.US, hi)}/h"
-            else -> "€/h —"
+            lo != null && hi != null && abs(lo - hi) < 0.05 -> "${formatMoneyRate(lo, code, 1)}/h"
+            lo != null && hi != null -> "${formatMoneyRate(lo, code, 1)}–${formatMoneyRate(hi, code, 1)}/h"
+            else -> "${code ?: "money"}/h —"
         }
+    }
+
+    private fun formatMoneyRate(value: Double, currencyCode: String?, decimals: Int = 2): String {
+        val amount = "% .${decimals}f".format(Locale.US, value).trim()
+        return if (currencyCode == "EUR") "€$amount" else "${currencyCode ?: ""} $amount".trim()
     }
 
     private fun formatKm(meters: Int): String = "${"%.2f".format(Locale.US, meters / 1000.0)} km"

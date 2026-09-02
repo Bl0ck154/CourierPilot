@@ -12,6 +12,8 @@ data class OfferRecord(
     val platform: String,
     val packageName: String,
     val priceCents: Int,
+    val currencyCode: String = "EUR",
+    val currencyFractionDigits: Int = 2,
     val distanceMeters: Int?,
     val restaurant: String?,
     val screenshotUri: String,
@@ -82,6 +84,8 @@ class OfferDatabase private constructor(context: Context) :
                 platform TEXT NOT NULL,
                 package_name TEXT NOT NULL,
                 price_cents INTEGER NOT NULL,
+                currency_code TEXT NOT NULL DEFAULT 'EUR',
+                currency_fraction_digits INTEGER NOT NULL DEFAULT 2,
                 distance_meters INTEGER,
                 restaurant TEXT,
                 screenshot_uri TEXT NOT NULL,
@@ -106,6 +110,7 @@ class OfferDatabase private constructor(context: Context) :
         )
         db.execSQL("CREATE INDEX idx_offers_captured_at ON offers(captured_at)")
         db.execSQL("CREATE INDEX idx_offers_platform ON offers(platform)")
+        createMarketObservationsTable(db)
         createShiftsTable(db)
     }
 
@@ -135,7 +140,86 @@ class OfferDatabase private constructor(context: Context) :
             db.execSQL("ALTER TABLE offers ADD COLUMN market_city_name TEXT")
             db.execSQL("ALTER TABLE offers ADD COLUMN market_country_code TEXT")
         }
+        if (oldVersion < 7) {
+            createMarketObservationsTable(db)
+            db.execSQL("INSERT OR IGNORE INTO market_observations (offer_id,captured_at,city_key,city_name,country_code,platform,currency_code,price_minor,currency_fraction_digits,full_route_distance_m,route_source,delivery_count) SELECT id,captured_at,market_city_key,market_city_name,market_country_code,platform,'EUR',price_cents,2,market_route_distance_meters,market_route_source,delivery_count FROM offers WHERE market_route_distance_meters > 0 AND market_route_source LIKE 'FULL%' AND market_city_key IS NOT NULL")
+        }
+        if (oldVersion < 8) {
+            db.execSQL("ALTER TABLE offers ADD COLUMN currency_code TEXT NOT NULL DEFAULT 'EUR'")
+            db.execSQL("ALTER TABLE offers ADD COLUMN currency_fraction_digits INTEGER NOT NULL DEFAULT 2")
+        }
     }
+
+    private fun createMarketObservationsTable(db: SQLiteDatabase) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS market_observations (offer_id INTEGER PRIMARY KEY, captured_at INTEGER NOT NULL, city_key TEXT NOT NULL, city_name TEXT, country_code TEXT, platform TEXT NOT NULL, currency_code TEXT NOT NULL, price_minor INTEGER NOT NULL, currency_fraction_digits INTEGER NOT NULL, full_route_distance_m INTEGER NOT NULL, route_source TEXT NOT NULL, delivery_count INTEGER, local_hour INTEGER, local_weekday INTEGER, uploaded_at INTEGER, sync_state TEXT NOT NULL DEFAULT 'PENDING')")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_market_cohort_time ON market_observations(city_key,currency_code,platform,captured_at)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_market_time ON market_observations(captured_at)")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_market_sync ON market_observations(sync_state)")
+    }
+
+    @Synchronized
+    fun saveMarketObservation(observation: MarketObservation): Boolean {
+        if (observation.offerId <= 0 || observation.fullRouteDistanceMeters <= 0 || !observation.routeSource.startsWith("FULL", true)) return false
+        val v = ContentValues().apply { put("offer_id", observation.offerId); put("captured_at", observation.capturedAt); put("city_key", observation.cityKey); put("city_name", observation.cityName); put("country_code", observation.countryCode); put("platform", observation.platform); put("currency_code", observation.money.currencyCode); put("price_minor", observation.money.amountMinor); put("currency_fraction_digits", observation.money.fractionDigits); put("full_route_distance_m", observation.fullRouteDistanceMeters); put("route_source", observation.routeSource); put("delivery_count", observation.deliveryCount); put("local_hour", observation.localHour); put("local_weekday", observation.localWeekday); put("uploaded_at", observation.uploadedAt); put("sync_state", observation.syncState) }
+        return writableDatabase.insertWithOnConflict("market_observations", null, v, SQLiteDatabase.CONFLICT_IGNORE) != -1L
+    }
+
+    fun marketObservations(since: Long, cityKey: String, currencyCode: String, platform: String, limit: Int = 5000): List<MarketObservation> {
+        val out = mutableListOf<MarketObservation>(); readableDatabase.query("market_observations", null, "captured_at >= ? AND city_key = ? AND currency_code = ? AND platform = ?", arrayOf(since.toString(), cityKey, currencyCode, platform), null, null, "captured_at DESC", limit.coerceIn(1, 50_000).toString()).use { c -> while (c.moveToNext()) out += c.toMarketObservation() }; return out
+    }
+
+    fun latestMarketCurrency(cityKey: String, platform: String): String? {
+        readableDatabase.query(
+            "market_observations",
+            arrayOf("currency_code"),
+            "city_key = ? AND platform = ?",
+            arrayOf(cityKey, platform),
+            null,
+            null,
+            "captured_at DESC",
+            "1",
+        ).use { cursor ->
+            return if (cursor.moveToFirst()) cursor.getString(0)?.takeIf { it.matches(Regex("[A-Z]{3}")) } else null
+        }
+    }
+
+    private fun Cursor.toMarketObservation(): MarketObservation {
+        fun nullableString(name: String): String? = getString(getColumnIndexOrThrow(name))
+        fun nullableInt(name: String): Int? = if (isNull(getColumnIndexOrThrow(name))) null else getInt(getColumnIndexOrThrow(name))
+        return MarketObservation(
+            offerId = getLong(getColumnIndexOrThrow("offer_id")),
+            capturedAt = getLong(getColumnIndexOrThrow("captured_at")),
+            cityKey = getString(getColumnIndexOrThrow("city_key")),
+            cityName = nullableString("city_name"),
+            countryCode = nullableString("country_code"),
+            platform = getString(getColumnIndexOrThrow("platform")),
+            money = MoneyAmount(getLong(getColumnIndexOrThrow("price_minor")), getString(getColumnIndexOrThrow("currency_code")), getInt(getColumnIndexOrThrow("currency_fraction_digits"))),
+            fullRouteDistanceMeters = getInt(getColumnIndexOrThrow("full_route_distance_m")),
+            routeSource = getString(getColumnIndexOrThrow("route_source")),
+            deliveryCount = nullableInt("delivery_count"),
+            localHour = nullableInt("local_hour"),
+            localWeekday = nullableInt("local_weekday"),
+            uploadedAt = if (isNull(getColumnIndexOrThrow("uploaded_at"))) null else getLong(getColumnIndexOrThrow("uploaded_at")),
+            syncState = getString(getColumnIndexOrThrow("sync_state")),
+        )
+    }
+
+    /** Historical buckets are retained independently of the 30-day live scoring query. */
+    fun marketObservationBuckets(
+        since: Long,
+        cityKey: String,
+        currencyCode: String,
+        platform: String,
+        bucket: MarketObservationBucket,
+    ): Map<String, List<MarketObservation>> = marketObservations(since, cityKey, currencyCode, platform, limit = 50_000)
+        .groupBy { observation ->
+            val calendar = java.util.Calendar.getInstance().apply { timeInMillis = observation.capturedAt }
+            when (bucket) {
+                MarketObservationBucket.DAY -> "%tF".format(java.util.Date(observation.capturedAt))
+                MarketObservationBucket.WEEK -> "${calendar.weekYear}-W${calendar.get(java.util.Calendar.WEEK_OF_YEAR).toString().padStart(2, '0')}"
+                MarketObservationBucket.MONTH -> "%tY-%<tm".format(java.util.Date(observation.capturedAt))
+            }
+        }
 
     private fun createShiftsTable(db: SQLiteDatabase) {
         db.execSQL(
@@ -292,6 +376,8 @@ class OfferDatabase private constructor(context: Context) :
             platform = getString(getColumnIndexOrThrow("platform")),
             packageName = getString(getColumnIndexOrThrow("package_name")),
             priceCents = getInt(getColumnIndexOrThrow("price_cents")),
+            currencyCode = nullableString("currency_code") ?: "EUR",
+            currencyFractionDigits = nullableInt("currency_fraction_digits") ?: 2,
             distanceMeters = nullableInt("distance_meters"),
             restaurant = nullableString("restaurant"),
             screenshotUri = getString(getColumnIndexOrThrow("screenshot_uri")),
@@ -406,7 +492,7 @@ class OfferDatabase private constructor(context: Context) :
             null,
             null,
             "captured_at DESC",
-            limit.coerceIn(1, 5000).toString(),
+            limit.coerceIn(1, 50_000).toString(),
         ).use { cursor ->
             while (cursor.moveToNext()) {
                 out += LocalMarketSample(
@@ -496,7 +582,7 @@ class OfferDatabase private constructor(context: Context) :
 
     companion object {
         private const val DB_NAME = "courier_offers.db"
-        private const val DB_VERSION = 6
+        private const val DB_VERSION = 8
         private const val LIST_SEPARATOR = "\u001F"
 
         @Volatile private var instance: OfferDatabase? = null

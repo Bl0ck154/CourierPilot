@@ -25,18 +25,25 @@ internal data class PlatformOfferEconomics(
     val euroPerKilometer: Double?,
     val euroPerHourMin: Double?,
     val euroPerHourMax: Double?,
-)
+    val currencyCode: String? = null,
+) {
+    val moneyPerKilometer: Double? get() = euroPerKilometer
+    val moneyPerHourMin: Double? get() = euroPerHourMin
+    val moneyPerHourMax: Double? get() = euroPerHourMax
+}
+
 
 internal object PlatformOfferEconomicsCalculator {
     fun calculate(parsed: ParsedOffer): PlatformOfferEconomics {
-        val euros = parsed.priceCents?.takeIf { it > 0 }?.div(100.0)
+        val money = parsed.money
+        val major = money?.major()?.toDouble()?.takeIf { it > 0.0 }
         val km = parsed.distanceMeters?.takeIf { it > 0 }?.div(1000.0)
         val minMinutes = parsed.estimatedMinutesMin?.takeIf { it > 0 }
         val maxMinutes = parsed.estimatedMinutesMax?.takeIf { it > 0 }
-        val perKm = if (euros != null && km != null) euros / km else null
-        val perHourMin = if (euros != null && maxMinutes != null) euros * 60.0 / maxMinutes else null
-        val perHourMax = if (euros != null && minMinutes != null) euros * 60.0 / minMinutes else null
-        return PlatformOfferEconomics(perKm, perHourMin, perHourMax)
+        val perKm = if (major != null && km != null) major / km else null
+        val perHourMin = if (major != null && maxMinutes != null) major * 60.0 / maxMinutes else null
+        val perHourMax = if (major != null && minMinutes != null) major * 60.0 / minMinutes else null
+        return PlatformOfferEconomics(perKm, perHourMin, perHourMax, money?.currencyCode)
     }
 }
 
@@ -582,19 +589,24 @@ internal class LiveOfferAdvisor(
     private fun formatEconomics(parsed: ParsedOffer): String {
         val economics = PlatformOfferEconomicsCalculator.calculate(parsed)
         return buildList {
-            val lo = economics.euroPerHourMin
-            val hi = economics.euroPerHourMax
+            val lo = economics.moneyPerHourMin
+            val hi = economics.moneyPerHourMax
             if (lo != null && hi != null) {
                 add(
                     if (kotlin.math.abs(lo - hi) < 0.05) {
-                        "€${"%.1f".format(Locale.US, lo)}/h"
+                        "${formatMoney(lo, economics.currencyCode, 1)}/h"
                     } else {
-                        "€${"%.1f".format(Locale.US, lo)}–€${"%.1f".format(Locale.US, hi)}/h"
+                        "${formatMoney(lo, economics.currencyCode, 1)}–${formatMoney(hi, economics.currencyCode, 1)}/h"
                     },
                 )
             }
-            economics.euroPerKilometer?.let { add("€${"%.2f".format(Locale.US, it)}/km") }
+            economics.moneyPerKilometer?.let { add("${formatMoney(it, economics.currencyCode, 2)}/km") }
         }.joinToString("   •   ")
+    }
+
+    private fun formatMoney(value: Double, currencyCode: String?, decimals: Int): String {
+        val amount = "% .${decimals}f".format(Locale.US, value).trim()
+        return if (currencyCode == "EUR") "€$amount" else "${currencyCode ?: ""} $amount".trim()
     }
 
     private fun formatRouteComparison(pedestrian: RouteResult?, cycleway: RouteResult?): String {
@@ -604,7 +616,9 @@ internal class LiveOfferAdvisor(
     }
 
     private fun baseSpeech(platform: String, parsed: ParsedOffer): String {
-        val price = parsed.priceCents?.let { "${it / 100} euro ${it % 100}" } ?: "price unknown"
+        val price = parsed.money?.let { "${it.major().toPlainString()} ${it.currencyCode}" }
+            ?: parsed.priceCents?.let { "${it / 100}.${(it % 100).toString().padStart(2, '0')} EUR" }
+            ?: "price unknown"
         val distance = parsed.distanceMeters?.let { "${"%.1f".format(Locale.US, it / 1000.0)} kilometers" }
         val eta = when {
             parsed.estimatedMinutesMin != null && parsed.estimatedMinutesMax != null ->

@@ -682,8 +682,9 @@ class OfferAccessibilityService : AccessibilityService() {
             return
         }
 
+        val money = parsed.money
         val priceCents = parsed.priceCents
-        if (priceCents == null) {
+        if (money == null || priceCents == null) {
             bitmap?.recycle()
             captureInFlight = false
             scheduleAttempt(adaptiveOcrDelay(pending))
@@ -706,6 +707,8 @@ class OfferAccessibilityService : AccessibilityService() {
             platform = OfferParser.platformName(pending.packageName, pending.sourceName),
             packageName = pending.packageName,
             priceCents = priceCents,
+            currencyCode = money.currencyCode,
+            currencyFractionDigits = money.fractionDigits,
             distanceMeters = parsed.distanceMeters,
             restaurant = parsed.restaurant,
             screenshotUri = "",

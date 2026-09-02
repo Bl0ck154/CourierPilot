@@ -86,6 +86,7 @@ internal object LiveAdvisorHub {
         val parsedFromScreen = OfferParser.parse(record.rawText)
         val parsed = parsedFromScreen.copy(
             priceCents = record.priceCents,
+            money = MoneyAmount(record.priceCents.toLong(), record.currencyCode, record.currencyFractionDigits),
             distanceMeters = record.distanceMeters,
             restaurant = record.restaurant ?: parsedFromScreen.restaurant,
             merchantNames = record.merchantNames.ifEmpty { parsedFromScreen.merchantNames },
@@ -150,6 +151,9 @@ internal object LiveAdvisorHub {
                 supplementalPickupAddresses = current.supplementalBoltPickupAddresses,
             ) { outcome ->
                 val comparison = outcome.comparison
+                // Score/render the candidate against the existing reference corpus before inserting
+                // this offer into local/server market history.
+                if (isCurrentOffer(current)) advisor?.updateBoltRoute(outcome)
                 if (comparison != null && outcome.scope == BoltRouteScope.FULL) {
                     MarketIntelligence.onRouteResolved(
                         service,
@@ -159,7 +163,6 @@ internal object LiveAdvisorHub {
                         comparison.cycleway.getOrNull(),
                     )
                 }
-                if (isCurrentOffer(current)) advisor?.updateBoltRoute(outcome)
             }
             return
         }
@@ -167,6 +170,11 @@ internal object LiveAdvisorHub {
         if (record.platform.equals("Wolt", ignoreCase = true)) {
             AutomaticWoltRouteCoordinator.start(service, current.offerId, record.platform, parsed) { outcome ->
                 val comparison = outcome.comparison
+                // Render first so the candidate cannot train the thresholds used to judge itself.
+                if (isCurrentOffer(current)) {
+                    if (comparison != null) advisor?.updateRoute(comparison, outcome.waypoints.size)
+                    else advisor?.updateRouteUnavailable(outcome.failureReason ?: "unknown failure")
+                }
                 if (comparison != null) {
                     MarketIntelligence.onRouteResolved(
                         service,
@@ -175,10 +183,6 @@ internal object LiveAdvisorHub {
                         comparison.pedestrian.getOrNull(),
                         comparison.cycleway.getOrNull(),
                     )
-                }
-                if (isCurrentOffer(current)) {
-                    if (comparison != null) advisor?.updateRoute(comparison, outcome.waypoints.size)
-                    else advisor?.updateRouteUnavailable(outcome.failureReason ?: "unknown failure")
                 }
             }
         }
