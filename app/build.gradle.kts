@@ -70,6 +70,12 @@ android {
 }
 
 tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    // Robolectric resolves its instrumented Android SDK at test runtime instead of through Gradle's
+    // normal dependency graph. Its legacy default is repo1.maven.org, which intermittently returns
+    // HTTP 403 to GitHub-hosted runners. Pin the canonical Maven Central endpoint explicitly so a
+    // healthy test suite cannot fail because that legacy hostname blocks the runner.
+    systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
+
     testLogging {
         showStandardStreams = true
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
