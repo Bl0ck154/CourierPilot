@@ -28,6 +28,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -59,11 +60,21 @@ class AppUpdateActivity : ComponentActivity() {
                 AppUpdateScreen(refresh = refresh, onBack = ::finish)
             }
         }
+        if (intent.getBooleanExtra(EXTRA_INSTALL_NOW, false)) {
+            window.decorView.post {
+                AppUpdateManager.requestInstall(this)
+                intent.removeExtra(EXTRA_INSTALL_NOW)
+            }
+        }
     }
 
     override fun onResume() {
         super.onResume()
         refreshVersion.intValue++
+    }
+
+    companion object {
+        const val EXTRA_INSTALL_NOW = "install_update_now"
     }
 }
 
@@ -73,11 +84,13 @@ private fun AppUpdateScreen(refresh: Int, onBack: () -> Unit) {
     var status by remember { mutableStateOf(AppUpdateManager.snapshot(context)) }
     var autoDownload by remember { mutableStateOf(AppUpdateSettings.autoDownload(context)) }
     var wifiOnly by remember { mutableStateOf(AppUpdateSettings.wifiOnly(context)) }
+    var frequency by remember { mutableStateOf(AppUpdateSettings.checkFrequency(context)) }
 
     LaunchedEffect(refresh) {
         status = AppUpdateManager.snapshot(context)
         autoDownload = AppUpdateSettings.autoDownload(context)
         wifiOnly = AppUpdateSettings.wifiOnly(context)
+        frequency = AppUpdateSettings.checkFrequency(context)
     }
 
     val busy = status.phase == AppUpdatePhase.CHECKING || status.phase == AppUpdatePhase.DOWNLOADING
@@ -177,6 +190,7 @@ private fun AppUpdateScreen(refresh: Int, onBack: () -> Unit) {
                                     status.phase == AppUpdatePhase.DOWNLOADING ->
                                         "Downloading ${status.progressPercent ?: 0}%"
                                     ready -> "Install ${status.version ?: "update"}"
+                                    status.phase == AppUpdatePhase.AVAILABLE -> "Download ${status.version ?: "update"}"
                                     else -> "Check & download now"
                                 }
                             )
@@ -199,7 +213,7 @@ private fun AppUpdateScreen(refresh: Int, onBack: () -> Unit) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Automatic updates", fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
                     Text(
-                        "Android may batch periodic jobs, so the hourly check is approximate.",
+                        "Android schedules these approximately, not to the exact minute. The minimum periodic interval is 15 minutes.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 11.sp,
                     )
@@ -209,9 +223,30 @@ private fun AppUpdateScreen(refresh: Int, onBack: () -> Unit) {
             item {
                 Card(shape = RoundedCornerShape(20.dp)) {
                     Column(Modifier.padding(16.dp)) {
+                        Text("Check frequency", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            "1 hour is the recommended default. Shorter intervals only make a small GitHub release-metadata request when no update exists.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 11.sp,
+                        )
+                        AppUpdateCheckFrequency.entries.forEach { option ->
+                            TextButton(
+                                onClick = {
+                                    frequency = option
+                                    AppUpdateSettings.setCheckFrequency(context, option)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                RadioButton(selected = frequency == option, onClick = null)
+                                Spacer(Modifier.size(8.dp))
+                                Text(option.label, modifier = Modifier.weight(1f))
+                            }
+                        }
+
+                        HorizontalDivider(Modifier.padding(vertical = 12.dp))
                         CourierPilotToggleRow(
                             title = "Automatically download updates",
-                            subtitle = "Check about once an hour and download a newer verified APK in the background.",
+                            subtitle = "When a newer release is found, download and verify that APK once in the background.",
                             checked = autoDownload,
                         ) { enabled ->
                             autoDownload = enabled
@@ -233,7 +268,7 @@ private fun AppUpdateScreen(refresh: Int, onBack: () -> Unit) {
 
             item {
                 Text(
-                    "Before installation CourierPilot verifies the GitHub SHA-256 digest/checksum, package name, version code and the permanent CourierPilot signing certificate. Android still shows its own final install confirmation.",
+                    "Background result: when an update is ready, Android shows a normal CourierPilot notification with Install and Later. Swiping it away or tapping Later hides that same version without deleting the verified APK; it remains installable from Settings. Before installation CourierPilot verifies SHA-256, package name, version code and the permanent signing certificate. Android still shows its own final install confirmation.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 11.sp,
                 )
