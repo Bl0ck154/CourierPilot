@@ -10,6 +10,9 @@ class CourierPilotApp : Application() {
         CaptureServiceRecovery.install(this)
         DayRolloverUiRefresh.install(this)
         HeartbeatScheduler.ensureScheduled(this)
+        // Scheduling only installs an inexact AlarmManager entry; network work happens later in the
+        // explicit update receiver, never on a live-offer process cold start.
+        AppUpdateScheduler.ensureScheduled(this)
         // This is a no-op unless the user explicitly enabled remote diagnostics. The actual queue
         // read/network work is scheduled on RemoteDiagnostics' dedicated background thread.
         RemoteDiagnostics.resume(this)
