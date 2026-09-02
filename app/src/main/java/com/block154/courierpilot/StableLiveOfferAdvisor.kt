@@ -3,6 +3,7 @@ package com.block154.courierpilot
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
@@ -36,7 +37,6 @@ internal class StableLiveOfferAdvisor(
     private var root: LinearLayout? = null
     private var windowParams: WindowManager.LayoutParams? = null
     private var decisionText: TextView? = null
-    private var economicsText: TextView? = null
     private var routeText: TextView? = null
     private var routeToggle: TextView? = null
     private var voiceToggle: TextView? = null
@@ -48,6 +48,7 @@ internal class StableLiveOfferAdvisor(
     private var generation = 0L
     private var missingSince = 0L
     private var missingChecks = 0
+    private var boltBaselineSurface: LiveOfferSurfaceSnapshot? = null
 
     private var gestureDownX = 0f
     private var gestureDownY = 0f
@@ -79,6 +80,11 @@ internal class StableLiveOfferAdvisor(
         expectedPackageName = packageForPlatform(platform)
         dismissed = false
         resetMissingEvidence()
+        boltBaselineSurface = if (platform.equals("Bolt", ignoreCase = true)) {
+            findVisiblePackageRoot(expectedPackageName)?.let { inspectVisibleSurface(it).snapshot }
+        } else {
+            null
+        }
 
         handler.post {
             if (dismissed || expectedGeneration != generation) return@post
@@ -107,7 +113,7 @@ internal class StableLiveOfferAdvisor(
             currentParsed?.let { parsed -> renderProfitability(parsed, walking, cycling) }
             routeText?.apply {
                 visibility = View.VISIBLE
-                text = formatRoutes(walking, cycling)
+                text = LiveAdvisorPresentation.routeLine(walking, cycling)
             }
             CaptureEventLog.append(
                 service,
@@ -140,9 +146,9 @@ internal class StableLiveOfferAdvisor(
             if (outcome.scope == BoltRouteScope.FULL) {
                 currentParsed?.let { parsed -> renderProfitability(parsed, walking, cycling) }
             }
-            val routes = formatRoutes(walking, cycling)
+            val routes = LiveAdvisorPresentation.routeLine(walking, cycling)
             routeText?.text = if (outcome.scope == BoltRouteScope.PICKUP_ONLY) {
-                "Pickup only · $routes"
+                "Pickup · $routes"
             } else {
                 routes
             }
@@ -194,24 +200,11 @@ internal class StableLiveOfferAdvisor(
         cyclewayRoute: RouteResult?,
     ) {
         val decision = OfferDecisionEngine.evaluate(parsed, pedestrianRoute, cyclewayRoute)
+        val platformEconomics = PlatformOfferEconomicsCalculator.calculate(parsed)
         decisionText?.apply {
-            val km = decision.euroPerKilometer?.let { "€${"%.2f".format(Locale.US, it)}/km" }
-            text = listOfNotNull(decision.band.emoji, km).joinToString("  ")
+            text = LiveAdvisorPresentation.profitabilityLine(decision, platformEconomics)
             setTextColor(decisionColor(decision.band))
         }
-
-        val platformEconomics = PlatformOfferEconomicsCalculator.calculate(parsed)
-        val kmText = decision.euroPerKilometer?.let {
-            "€${"%.2f".format(Locale.US, it)}/km · avg Valhalla ${formatKm(decision.routeDistanceMeters ?: 0)}"
-        } ?: "€/km — · waiting for Valhalla"
-        val lo = platformEconomics.euroPerHourMin
-        val hi = platformEconomics.euroPerHourMax
-        val hourText = when {
-            lo != null && hi != null && abs(lo - hi) < 0.05 -> "€${"%.1f".format(Locale.US, lo)}/h"
-            lo != null && hi != null -> "€${"%.1f".format(Locale.US, lo)}–€${"%.1f".format(Locale.US, hi)}/h"
-            else -> "€/h —"
-        }
-        economicsText?.text = "$kmText   •   $hourText"
     }
 
     private fun renderRouteLoadingState() {
@@ -294,16 +287,6 @@ internal class StableLiveOfferAdvisor(
             container.addView(it)
         }
 
-        economicsText = TextView(service).apply {
-            setTextColor(Color.WHITE)
-            textSize = 14.5f
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-            setPadding(0, dp(5), 0, 0)
-        }.also {
-            installGestureSurface(it)
-            container.addView(it)
-        }
-
         routeText = TextView(service).apply {
             setTextColor(Color.rgb(226, 232, 240))
             textSize = 13.5f
@@ -356,12 +339,12 @@ internal class StableLiveOfferAdvisor(
         root = null
         windowParams = null
         decisionText = null
-        economicsText = null
         routeText = null
         routeToggle = null
         voiceToggle = null
         gestureMode = GESTURE_NONE
         resetMissingEvidence()
+        boltBaselineSurface = null
     }
 
     private fun refreshControls() {
@@ -379,12 +362,6 @@ internal class StableLiveOfferAdvisor(
         OfferDecisionBand.BAD -> Color.rgb(253, 186, 116)
         OfferDecisionBand.TERRIBLE -> Color.rgb(252, 165, 165)
         OfferDecisionBand.UNKNOWN -> Color.rgb(203, 213, 225)
-    }
-
-    private fun formatRoutes(walking: RouteResult?, cycling: RouteResult?): String {
-        val walk = walking?.let { formatKm(it.distanceMeters) } ?: "—"
-        val cycle = cycling?.let { formatKm(it.distanceMeters) } ?: "—"
-        return "🚶 $walk      🚲 $cycle"
     }
 
     private fun startVisibilityWatchdog() {
@@ -411,8 +388,8 @@ internal class StableLiveOfferAdvisor(
             return
         }
 
-        resetMissingEvidence()
-        val visibleText = collectVisibleText(courierRoot)
+        val inspection = inspectVisibleSurface(courierRoot)
+        val visibleText = inspection.text
         DeliveryLifecycleTracking.detect(visibleText)?.let {
             suppressCurrentOffer("offer ended: ${it.type}")
             return
@@ -423,29 +400,65 @@ internal class StableLiveOfferAdvisor(
             return
         }
 
-        // Bolt's offer card/map is frequently sparse in Accessibility. Window presence is stronger
-        // evidence than missing text, so generic text absence must never make the Bolt card blink.
-        if (currentPlatform.equals("Bolt", ignoreCase = true)) return
-
         val parsed = OfferParser.parse(visibleText)
-        if (CourierSignals.looksLikeOfferScreen(visibleText, parsed) || hasDecisionPair(visibleText)) return
+        val hasOfferUi = CourierSignals.looksLikeOfferScreen(visibleText, parsed) || hasDecisionPair(visibleText)
+        if (hasOfferUi) {
+            resetMissingEvidence()
+            if (currentPlatform.equals("Bolt", ignoreCase = true) && boltBaselineSurface == null) {
+                boltBaselineSurface = inspection.snapshot
+            }
+            return
+        }
+
+        if (currentPlatform.equals("Bolt", ignoreCase = true)) {
+            val baseline = boltBaselineSurface
+            if (baseline == null) {
+                // showBase() normally captures this while the offer is known to exist. If Android
+                // briefly withheld the root, use the first stable sample rather than guessing.
+                boltBaselineSurface = inspection.snapshot
+                resetMissingEvidence()
+                return
+            }
+            if (!LiveOfferSurfaceEvidence.materiallyChanged(baseline, inspection.snapshot)) {
+                // Bolt can expose almost no semantic card text. An unchanged underlying surface is
+                // stronger evidence that the same offer remains than generic text absence.
+                resetMissingEvidence()
+                return
+            }
+            if (registerMissingEvidence(graceMs = BOLT_GONE_GRACE_MS, minChecks = BOLT_MIN_MISSING_CHECKS)) {
+                suppressCurrentOffer("Bolt offer surface disappeared")
+            }
+            return
+        }
+
         if (registerMissingEvidence()) suppressCurrentOffer("Wolt offer controls disappeared")
     }
 
     private fun findVisiblePackageRoot(packageName: String): AccessibilityNodeInfo? {
-        val active = service.rootInActiveWindow
-        if (active?.packageName?.toString() == packageName) return active
+        fun refreshed(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
+            val candidate = node ?: return null
+            if (candidate.packageName?.toString() != packageName) return null
+            val valid = runCatching { candidate.refresh() }.getOrDefault(false)
+            if (!valid || candidate.packageName?.toString() != packageName) return null
+            return candidate
+        }
+
+        refreshed(service.rootInActiveWindow)?.let { return it }
         service.windows.forEach { window ->
-            val candidate = runCatching { window.root }.getOrNull() ?: return@forEach
-            if (candidate.packageName?.toString() == packageName) return candidate
+            val candidate = runCatching { window.root }.getOrNull()
+            refreshed(candidate)?.let { return it }
         }
         return null
     }
 
-    private fun registerMissingEvidence(now: Long = SystemClock.elapsedRealtime()): Boolean {
+    private fun registerMissingEvidence(
+        now: Long = SystemClock.elapsedRealtime(),
+        graceMs: Long = GONE_GRACE_MS,
+        minChecks: Int = MIN_MISSING_CHECKS,
+    ): Boolean {
         if (missingSince == 0L) missingSince = now
         missingChecks += 1
-        return missingChecks >= MIN_MISSING_CHECKS && now - missingSince >= GONE_GRACE_MS
+        return missingChecks >= minChecks && now - missingSince >= graceMs
     }
 
     private fun resetMissingEvidence() {
@@ -453,21 +466,72 @@ internal class StableLiveOfferAdvisor(
         missingChecks = 0
     }
 
-    private fun collectVisibleText(rootNode: AccessibilityNodeInfo): String {
+    private data class SurfaceInspection(
+        val text: String,
+        val snapshot: LiveOfferSurfaceSnapshot,
+    )
+
+    /**
+     * Accessibility trees can retain Compose nodes after they are visually hidden. Only visible
+     * nodes are allowed to keep an offer alive; otherwise stale Accept/Decline text can pin the
+     * advisor on screen until the user opens another menu.
+     */
+    private fun inspectVisibleSurface(rootNode: AccessibilityNodeInfo): SurfaceInspection {
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         val pieces = mutableListOf<String>()
+        val interactiveSlots = linkedSetOf<String>()
+        val screenWidth = service.resources.displayMetrics.widthPixels.coerceAtLeast(1)
+        val screenHeight = service.resources.displayMetrics.heightPixels.coerceAtLeast(1)
+        val bounds = Rect()
         queue.add(rootNode)
         var visited = 0
+        var visibleNodes = 0
+        var leafNodes = 0
+        var bottomNodes = 0
+
         while (queue.isNotEmpty() && visited < 600) {
             val node = queue.removeFirst()
             visited += 1
+            val childCount = node.childCount
+            for (index in 0 until childCount) node.getChild(index)?.let(queue::addLast)
+
+            if (!runCatching { node.isVisibleToUser }.getOrDefault(true)) continue
+            visibleNodes += 1
+            if (childCount == 0) leafNodes += 1
+
             listOf(node.text, node.contentDescription).forEach { value ->
                 val cleaned = value?.toString()?.trim().orEmpty()
                 if (cleaned.isNotEmpty() && pieces.lastOrNull() != cleaned) pieces += cleaned
             }
-            for (index in 0 until node.childCount) node.getChild(index)?.let(queue::addLast)
+
+            bounds.setEmpty()
+            runCatching { node.getBoundsInScreen(bounds) }
+            val centerY = bounds.centerY()
+            if (centerY >= (screenHeight * 55 / 100)) bottomNodes += 1
+
+            val interactive = runCatching { node.isClickable || node.isLongClickable }.getOrDefault(false)
+            if (interactive && !bounds.isEmpty) {
+                val className = node.className?.toString()?.substringAfterLast('.') ?: "node"
+                val centerXBin = (bounds.centerX().coerceIn(0, screenWidth) * 20 / screenWidth)
+                val centerYBin = (bounds.centerY().coerceIn(0, screenHeight) * 20 / screenHeight)
+                val widthBin = (bounds.width().coerceAtLeast(0) * 20 / screenWidth).coerceAtMost(20)
+                val heightBin = (bounds.height().coerceAtLeast(0) * 20 / screenHeight).coerceAtMost(20)
+                interactiveSlots += "$className:$centerXBin:$centerYBin:$widthBin:$heightBin"
+            }
         }
-        return pieces.joinToString("\n")
+
+        val text = pieces.joinToString("\n")
+        return SurfaceInspection(
+            text = text,
+            snapshot = LiveOfferSurfaceSnapshot(
+                windowId = rootNode.windowId,
+                nodeCount = visibleNodes,
+                leafCount = leafNodes,
+                bottomNodeCount = bottomNodes,
+                interactiveSlots = interactiveSlots,
+                stableLines = LiveOfferSurfaceEvidence.normalizeStableLines(pieces),
+            ),
+        )
     }
 
     private fun hasDecisionPair(text: String): Boolean {
@@ -579,7 +643,6 @@ internal class StableLiveOfferAdvisor(
         else -> ""
     }
 
-    private fun formatKm(meters: Int): String = "${"%.2f".format(Locale.US, meters / 1000.0)} km"
     private fun dp(value: Int): Int = (value * service.resources.displayMetrics.density).toInt()
 
     private companion object {
@@ -587,6 +650,8 @@ internal class StableLiveOfferAdvisor(
         const val VISIBILITY_CHECK_MS = 750L
         const val GONE_GRACE_MS = 1_500L
         const val MIN_MISSING_CHECKS = 3
+        const val BOLT_GONE_GRACE_MS = 700L
+        const val BOLT_MIN_MISSING_CHECKS = 2
         const val DEFAULT_Y_DP = 48
         const val MIN_Y_DP = 12
         const val BOTTOM_MARGIN_DP = 16
