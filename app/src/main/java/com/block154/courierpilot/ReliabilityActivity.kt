@@ -21,7 +21,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowBack
@@ -38,15 +37,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -92,6 +89,7 @@ private fun ReliabilityScreen(onBack: () -> Unit, onRefresh: () -> Unit) {
     val pending = OfferState.pending(context)
     val error = OfferState.lastError(context)
     val events = CaptureEventLog.recent(context, 30)
+    val remoteDiagnostics = RemoteDiagnostics.status(context)
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -176,6 +174,41 @@ private fun ReliabilityScreen(onBack: () -> Unit, onRefresh: () -> Unit) {
                                 Spacer(Modifier.size(8.dp))
                                 Text(error, color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 12.sp)
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        item { ReliabilitySection("Remote diagnostics", "Optional technical logs for faster debugging") }
+        item {
+            Card(shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Upload privacy-safe diagnostics", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "No screenshots, addresses, customer text or GPS coordinates are uploaded.",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 11.sp,
+                            )
+                        }
+                        Switch(
+                            checked = remoteDiagnostics.enabled,
+                            onCheckedChange = { enabled ->
+                                RemoteDiagnostics.setEnabled(context, enabled)
+                                onRefresh()
+                            },
+                        )
+                    }
+                    if (remoteDiagnostics.enabled) {
+                        ReliabilityFact("Queued events", remoteDiagnostics.queued.toString())
+                        ReliabilityFact(
+                            "Last upload",
+                            remoteDiagnostics.lastUploadAt.takeIf { it > 0L }?.let(::reliabilityTime) ?: "Not uploaded yet",
+                        )
+                        if (remoteDiagnostics.lastError.isNotBlank()) {
+                            ReliabilityFact("Last upload error", remoteDiagnostics.lastError)
                         }
                     }
                 }
@@ -313,6 +346,7 @@ private fun reliabilityShareDiagnostics(context: android.content.Context) {
     val power = context.getSystemService(PowerManager::class.java)
     val activityManager = context.getSystemService(ActivityManager::class.java)
     val pending = OfferState.pending(context)
+    val remote = RemoteDiagnostics.status(context)
     val body = buildString {
         appendLine("CourierPilot ${reliabilityVersion(context)}")
         appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
@@ -322,6 +356,7 @@ private fun reliabilityShareDiagnostics(context: android.content.Context) {
         appendLine("Ignoring battery optimizations: ${power?.isIgnoringBatteryOptimizations(context.packageName) == true}")
         if (Build.VERSION.SDK_INT >= 28) appendLine("Background restricted: ${activityManager?.isBackgroundRestricted == true}")
         appendLine("Gallery screenshots: ${CaptureStorageSettings.saveOfferScreenshots(context)}")
+        appendLine("Remote diagnostics: ${remote.enabled}; queued=${remote.queued}; lastUpload=${remote.lastUploadAt}; error=${remote.lastError}")
         appendLine("Pending: ${pending?.let { OfferState.platformLabel(it.packageName) } ?: "none"}")
         appendLine("Last capture: ${OfferState.lastCapture(context)}")
         appendLine("Last error: ${OfferState.lastError(context)}")
