@@ -15,6 +15,8 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
+import android.view.animation.AccelerateInterpolator
+import android.view.animation.DecelerateInterpolator
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -50,6 +52,9 @@ internal class StableLiveOfferAdvisor(
     private var missingSince = 0L
     private var missingChecks = 0
     private var boltBaselineSurface: LiveOfferSurfaceSnapshot? = null
+    private var previewMode = false
+    private var captureSuppressed = false
+    private var offerVisualStartedAtElapsed = 0L
 
     private var cachedDecisionLine = ""
     private var cachedDecisionBand = OfferDecisionBand.UNKNOWN
@@ -75,19 +80,101 @@ internal class StableLiveOfferAdvisor(
         }
     }
 
+    /**
+     * Show the advisor as soon as CourierPilot has a verified offer surface, even while the courier
+     * app is still loading the price. Later price/persistence/route updates mutate this same view.
+     */
+    fun showPending(platform: String, parsed: ParsedOffer) {
+        if (!LiveAdvisorSettings.enabled(service)) return
+        val packageName = packageForPlatform(platform)
+        val sameSurface = !dismissed && currentParsed != null && expectedPackageName == packageName
+        val createdSurface = !sameSurface
+        if (!sameSurface) {
+            generation += 1
+            offerVisualStartedAtElapsed = SystemClock.elapsedRealtime()
+            currentPlatform = platform
+            expectedPackageName = packageName
+            dismissed = false
+            temporarilyHidden = false
+            cachedDecisionLine = ""
+            cachedDecisionBand = OfferDecisionBand.UNKNOWN
+            cachedRouteLine = ""
+            cachedRouteVisible = true
+            resetMissingEvidence()
+            boltBaselineSurface = if (platform.equals("Bolt", ignoreCase = true)) {
+                findVisiblePackageRoot(packageName)?.let { inspectVisibleSurface(it).snapshot }
+            } else null
+        }
+        previewMode = true
+        currentParsed = parsed
+        if (parsed.priceCents == null) {
+            cachedDecisionLine = "⏳  Waiting for price…"
+            cachedDecisionBand = OfferDecisionBand.UNKNOWN
+            decisionText?.apply {
+                text = cachedDecisionLine
+                setTextColor(decisionColor(cachedDecisionBand))
+            }
+        } else {
+            renderProfitability(parsed, pedestrianRoute = null, cyclewayRoute = null)
+        }
+        if (cachedRouteLine.isBlank() || cachedRouteLine.startsWith("⏳") || cachedRouteLine.startsWith("⚡")) {
+            setRouteContent(if (LiveAdvisorSettings.routeEnabled(service, platform)) "⚡ Valhalla · preparing…" else "Route off")
+        }
+        if (!temporarilyHidden) {
+            ensureView()
+            refreshControls()
+            applyCachedPresentation()
+            if (createdSurface && root != null) {
+                CaptureEventLog.append(
+                    service,
+                    stage = "overlay_preview",
+                    platform = platform,
+                    message = "Progressive advisor shown before final price persistence",
+                )
+            }
+        }
+        startVisibilityWatchdog()
+    }
+
     fun showBase(platform: String, parsed: ParsedOffer) {
         if (!LiveAdvisorSettings.enabled(service)) {
             suppressCurrentOffer("advisor disabled")
             return
         }
 
+        val packageName = packageForPlatform(platform)
+        if (!dismissed && currentParsed != null && expectedPackageName == packageName && previewMode) {
+            currentPlatform = platform
+            currentParsed = parsed
+            previewMode = false
+            renderProfitability(parsed, pedestrianRoute = null, cyclewayRoute = null)
+            if (cachedRouteLine.isBlank() || cachedRouteLine.startsWith("⚡")) renderRouteLoadingState()
+            if (!temporarilyHidden) {
+                ensureView()
+                refreshControls()
+                applyCachedPresentation()
+            }
+            CaptureEventLog.append(
+                service,
+                stage = "overlay_promote",
+                platform = platform,
+                message = "Pending advisor promoted in place after price capture",
+                dedupeWindowMs = 1_000L,
+            )
+            if (LiveAdvisorSettings.voiceEnabled(service)) speak(baseSpeech(platform, parsed))
+            startVisibilityWatchdog()
+            return
+        }
+
         generation += 1
+        offerVisualStartedAtElapsed = SystemClock.elapsedRealtime()
         val expectedGeneration = generation
         currentPlatform = platform
         currentParsed = parsed
         expectedPackageName = packageForPlatform(platform)
         dismissed = false
         temporarilyHidden = false
+        previewMode = false
         cachedDecisionLine = ""
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
         cachedRouteLine = ""
@@ -132,13 +219,13 @@ internal class StableLiveOfferAdvisor(
             if (dismissed) return@post
             val walking = comparison.pedestrian.getOrNull()
             val cycling = comparison.cycleway.getOrNull()
-            currentParsed?.let { parsed -> renderProfitability(parsed, walking, cycling) }
+            currentParsed?.takeIf { it.priceCents != null }?.let { parsed -> renderProfitability(parsed, walking, cycling) }
             setRouteContent(LiveAdvisorPresentation.routeLine(walking, cycling))
             CaptureEventLog.append(
                 service,
                 stage = "route_ready",
                 platform = currentPlatform,
-                message = "Valhalla updated cached card; points=$waypointCount; visible=${root != null}",
+                message = "Valhalla updated cached card; points=$waypointCount; visible=${root != null}; card_age_ms=${(SystemClock.elapsedRealtime() - offerVisualStartedAtElapsed).coerceAtLeast(0L)}",
             )
         }
     }
@@ -209,7 +296,7 @@ internal class StableLiveOfferAdvisor(
         }
     }
 
-    fun suppressCurrentOffer(reason: String = "superseded") {
+    fun suppressCurrentOffer(reason: String = "superseded", animate: Boolean = true) {
         if (!dismissed || root != null) {
             CaptureEventLog.append(
                 service,
@@ -222,11 +309,11 @@ internal class StableLiveOfferAdvisor(
         dismissed = true
         temporarilyHidden = false
         generation += 1
-        clearOfferViewState()
+        clearOfferViewState(animate = animate)
     }
 
     fun destroy() {
-        suppressCurrentOffer("advisor destroyed")
+        suppressCurrentOffer("advisor destroyed", animate = false)
         tts?.stop()
         tts?.shutdown()
         tts = null
@@ -380,6 +467,15 @@ internal class StableLiveOfferAdvisor(
         runCatching { windowManager.addView(container, params) }
             .onSuccess {
                 root = container
+                captureSuppressed = false
+                container.alpha = 0f
+                container.translationY = -dp(FADE_OFFSET_DP).toFloat()
+                container.animate()
+                    .alpha(1f)
+                    .translationY(0f)
+                    .setInterpolator(DecelerateInterpolator())
+                    .setDuration(FADE_IN_MS)
+                    .start()
                 container.post {
                     val current = windowParams ?: return@post
                     current.y = clampY(current.y, container)
@@ -397,8 +493,8 @@ internal class StableLiveOfferAdvisor(
             }
     }
 
-    private fun detachView() {
-        root?.let { runCatching { windowManager.removeView(it) } }
+    private fun detachView(animate: Boolean = true) {
+        val view = root
         root = null
         windowParams = null
         decisionText = null
@@ -406,6 +502,34 @@ internal class StableLiveOfferAdvisor(
         routeToggle = null
         voiceToggle = null
         gestureMode = GESTURE_NONE
+        captureSuppressed = false
+        if (view == null) return
+        view.animate().cancel()
+        if (!animate || !view.isAttachedToWindow) {
+            runCatching { windowManager.removeView(view) }
+            return
+        }
+        view.animate()
+            .alpha(0f)
+            .translationY(-dp(FADE_OFFSET_DP).toFloat())
+            .setInterpolator(AccelerateInterpolator())
+            .setDuration(FADE_OUT_MS)
+            .withEndAction { runCatching { windowManager.removeView(view) } }
+            .start()
+    }
+
+    /** Temporarily make the accessibility overlay invisible to display-level screenshots. */
+    fun setCaptureSuppressed(suppressed: Boolean) {
+        if (captureSuppressed == suppressed) return
+        captureSuppressed = suppressed
+        val view = root ?: return
+        view.animate().cancel()
+        if (suppressed) {
+            view.alpha = 0f
+        } else {
+            view.translationY = 0f
+            view.alpha = 1f
+        }
     }
 
     private fun temporarilyHide(reason: String) {
@@ -427,7 +551,7 @@ internal class StableLiveOfferAdvisor(
     private fun restoreFromCache(reason: String) {
         if (dismissed || currentParsed == null || !temporarilyHidden) return
         val pending = OfferState.pending(service)
-        if (pending != null && pending.packageName == expectedPackageName) return
+        if (pending != null && pending.packageName == expectedPackageName && !previewMode) return
         ensureView()
         if (root == null) return
         temporarilyHidden = false
@@ -443,11 +567,14 @@ internal class StableLiveOfferAdvisor(
         )
     }
 
-    private fun clearOfferViewState() {
+    private fun clearOfferViewState(animate: Boolean = true) {
         handler.removeCallbacks(visibilityWatchdog)
-        detachView()
+        detachView(animate = animate)
         resetMissingEvidence()
         boltBaselineSurface = null
+        previewMode = false
+        captureSuppressed = false
+        offerVisualStartedAtElapsed = 0L
         currentParsed = null
         expectedPackageName = ""
         cachedDecisionLine = ""
@@ -794,6 +921,9 @@ internal class StableLiveOfferAdvisor(
         const val BOLT_MIN_MISSING_CHECKS = 2
         const val WOLT_UNCERTAIN_GRACE_MS = 5_000L
         const val WOLT_UNCERTAIN_MIN_CHECKS = 5
+        const val FADE_IN_MS = 220L
+        const val FADE_OUT_MS = 160L
+        const val FADE_OFFSET_DP = 6
         const val DEFAULT_Y_DP = 48
         const val MIN_Y_DP = 12
         const val BOTTOM_MARGIN_DP = 16

@@ -6,6 +6,7 @@ import android.os.Looper
 import java.util.Collections
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 internal data class AutomaticRouteOutcome(
     val offerId: Long,
@@ -21,6 +22,14 @@ internal data class AutomaticRouteOutcome(
 internal object AutomaticWoltRouteCoordinator {
     private val executor = Executors.newSingleThreadExecutor()
     private val inFlight = Collections.synchronizedSet(mutableSetOf<Long>())
+
+    /** Resolve stable textual stops while Wolt is still loading the price. */
+    fun prewarm(context: Context, parsed: ParsedOffer): Boolean {
+        val addresses = buildStopSpecs(parsed).map { it.address }
+        if (addresses.isEmpty()) return false
+        RouteResearchGeocoder.prewarm(context.applicationContext, addresses)
+        return true
+    }
 
     fun start(
         context: Context,
@@ -49,10 +58,10 @@ internal object AutomaticWoltRouteCoordinator {
             return
         }
 
-        RouteResearchLocation.requestCurrent(app) { locationResult ->
+        RouteResearchLocation.requestForLiveOffer(app) { locationResult ->
             val fix = locationResult.getOrElse {
                 completeFailure(app, offerId, platform, parsed, emptyList(), null, "current location unavailable", onComplete)
-                return@requestCurrent
+                return@requestForLiveOffer
             }
             val resolved = mutableListOf(
                 ResolvedWaypoint(
@@ -63,7 +72,7 @@ internal object AutomaticWoltRouteCoordinator {
                     confidence = locationConfidence(fix),
                 )
             )
-            resolveNext(app, stopSpecs, 0, resolved) { resolution ->
+            resolveAll(app, stopSpecs, resolved) { resolution ->
                 resolution.onFailure {
                     completeFailure(
                         app,
@@ -132,30 +141,45 @@ internal object AutomaticWoltRouteCoordinator {
             .distinctBy { "${it.kind}|${it.address.trim().lowercase()}" }
     }
 
-    private fun resolveNext(
+    private fun resolveAll(
         context: Context,
         specs: List<StopSpec>,
-        index: Int,
         resolved: MutableList<ResolvedWaypoint>,
         complete: (Result<List<ResolvedWaypoint>>) -> Unit,
     ) {
-        if (index >= specs.size) {
+        if (specs.isEmpty()) {
             complete(Result.success(resolved.toList()))
             return
         }
-        val spec = specs[index]
-        resolveStopWithTimeout(context, spec.address) { result ->
-            result.onFailure {
-                complete(Result.failure(IllegalStateException("Could not geocode ${spec.kind.name.lowercase()} stop", it)))
-            }.onSuccess { point ->
-                resolved += ResolvedWaypoint(
-                    kind = spec.kind,
-                    point = point,
-                    label = spec.label ?: spec.address,
-                    provenance = CoordinateProvenance.GEOCODED_ADDRESS,
-                    confidence = 0.85,
-                )
-                resolveNext(context, specs, index + 1, resolved, complete)
+        val results = arrayOfNulls<Result<RoutePoint>>(specs.size)
+        val remaining = AtomicInteger(specs.size)
+        specs.forEachIndexed { index, spec ->
+            resolveStopWithTimeout(context, spec.address) { result ->
+                results[index] = result
+                if (remaining.decrementAndGet() != 0) return@resolveStopWithTimeout
+
+                val failureIndex = results.indexOfFirst { it == null || it.isFailure }
+                if (failureIndex >= 0) {
+                    val failedSpec = specs[failureIndex]
+                    val failure = results[failureIndex]?.exceptionOrNull()
+                    complete(Result.failure(IllegalStateException(
+                        "Could not geocode ${failedSpec.kind.name.lowercase()} stop",
+                        failure,
+                    )))
+                    return@resolveStopWithTimeout
+                }
+
+                val ordered = specs.indices.map { i ->
+                    val item = specs[i]
+                    ResolvedWaypoint(
+                        kind = item.kind,
+                        point = results[i]!!.getOrThrow(),
+                        label = item.label ?: item.address,
+                        provenance = CoordinateProvenance.GEOCODED_ADDRESS,
+                        confidence = 0.85,
+                    )
+                }
+                complete(Result.success(resolved.toList() + ordered))
             }
         }
     }

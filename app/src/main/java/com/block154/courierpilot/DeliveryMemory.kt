@@ -27,9 +27,9 @@ internal object DeliveryMemory {
         if (text.isBlank()) return
 
         LiveAdvisorHub.attach(context)
-        if (OfferState.pending(context) != null) LiveAdvisorHub.hideForCapture(context)
-
         val parsed = OfferParser.parse(text)
+        OfferState.pending(context)?.let { pending -> LiveAdvisorHub.hideForCapture(context, pending) }
+
         if (CourierSignals.looksLikeOfferScreen(text, parsed)) {
             CourierPresence.markOfferOnline(context, packageName, "offer screen")
         }

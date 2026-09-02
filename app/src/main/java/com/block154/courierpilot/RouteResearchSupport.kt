@@ -95,6 +95,23 @@ internal object RouteResearchLocation {
         }
     }
 
+    /**
+     * Live offers are time-sensitive. Reuse a very fresh, accurate last-known fix immediately; Wolt
+     * and Bolt already keep location hot while the courier is online. Fall back to a real current
+     * request when that cached fix is not trustworthy enough.
+     */
+    fun requestForLiveOffer(context: Context, callback: (Result<CurrentLocationFix>) -> Unit) {
+        val cached = bestLastKnown(context)
+        if (cached != null &&
+            cached.ageMillis <= LIVE_FIX_MAX_AGE_MS &&
+            (cached.accuracyMeters == null || cached.accuracyMeters <= LIVE_FIX_MAX_ACCURACY_METERS)
+        ) {
+            callback(Result.success(cached))
+            return
+        }
+        requestCurrent(context, callback)
+    }
+
     fun bestLastKnown(context: Context): CurrentLocationFix? {
         if (!hasPermission(context)) return null
         val manager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
@@ -119,10 +136,26 @@ internal object RouteResearchLocation {
 
     private const val CURRENT_LOCATION_TIMEOUT_MS = 8_000L
     private const val EARLY_ACCEPT_ACCURACY_METERS = 25f
+    private const val LIVE_FIX_MAX_AGE_MS = 8_000L
+    private const val LIVE_FIX_MAX_ACCURACY_METERS = 60f
     private val TIMEOUT_TOKEN = Any()
 }
 
 internal object RouteResearchGeocoder {
+    private data class CachedPoint(val point: RoutePoint, val expiresAt: Long)
+
+    private val lock = Any()
+    private val cache = mutableMapOf<String, CachedPoint>()
+    private val inFlight = mutableMapOf<String, MutableList<(Result<RoutePoint>) -> Unit>>()
+
+    fun prewarm(context: Context, addresses: List<String>) {
+        addresses
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinctBy(::cacheKey)
+            .forEach { address -> resolve(context, address) { /* populate cache */ } }
+    }
+
     fun resolve(context: Context, address: String, callback: (Result<RoutePoint>) -> Unit) {
         val query = address.trim()
         if (query.isBlank()) {
@@ -133,6 +166,23 @@ internal object RouteResearchGeocoder {
             callback(Result.failure(IllegalStateException("Android geocoder is not available on this device")))
             return
         }
+
+        val key = cacheKey(query)
+        val now = System.currentTimeMillis()
+        synchronized(lock) {
+            cache[key]?.takeIf { it.expiresAt > now }?.let { cached ->
+                callback(Result.success(cached.point))
+                return
+            }
+            cache.remove(key)
+            val waiters = inFlight[key]
+            if (waiters != null) {
+                waiters += callback
+                return
+            }
+            inFlight[key] = mutableListOf(callback)
+        }
+
         val geocoder = Geocoder(context, Locale.getDefault())
         if (Build.VERSION.SDK_INT >= 33) {
             geocoder.getFromLocationName(query, 1) { results ->
@@ -142,7 +192,7 @@ internal object RouteResearchGeocoder {
                 } else {
                     Result.success(RoutePoint(first.latitude, first.longitude))
                 }
-                context.mainExecutor.execute { callback(result) }
+                context.mainExecutor.execute { complete(key, result) }
             }
         } else {
             Thread {
@@ -152,8 +202,23 @@ internal object RouteResearchGeocoder {
                         ?.let { RoutePoint(it.latitude, it.longitude) }
                         ?: error("Address not found")
                 }
-                context.mainExecutor.execute { callback(result) }
+                context.mainExecutor.execute { complete(key, result) }
             }.start()
         }
     }
+
+    private fun complete(key: String, result: Result<RoutePoint>) {
+        val callbacks = synchronized(lock) {
+            result.getOrNull()?.let { cache[key] = CachedPoint(it, System.currentTimeMillis() + CACHE_TTL_MS) }
+            inFlight.remove(key).orEmpty().toList()
+        }
+        callbacks.forEach { it(result) }
+    }
+
+    private fun cacheKey(value: String): String = value
+        .trim()
+        .lowercase(Locale.ROOT)
+        .replace(Regex("\\s+"), " ")
+
+    private const val CACHE_TTL_MS = 6L * 60L * 60L * 1000L
 }
