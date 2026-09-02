@@ -28,7 +28,7 @@ class MarketV2RegressionFixturesTest {
     }
 
     @Test fun personalLearningEndsAtFifthEligibleSample() {
-        assertEquals("LEARNING", (0..4).map { "sample" }.let { if (it.size < 5) "LEARNING" else "LOW" })
+        assertEquals("LEARNING", (0 until 4).map { "sample" }.let { if (it.size < 5) "LEARNING" else "LOW" })
         assertEquals("LOW", (0..4).map { "sample" }.let { if (it.size < 5) "LEARNING" else "LOW" })
     }
 
