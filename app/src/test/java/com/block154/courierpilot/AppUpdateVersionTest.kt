@@ -35,4 +35,5 @@ class AppUpdateVersionTest {
     fun rejectsMalformedChecksum() {
         assertNull(AppUpdateIntegrity.parseSha256("not-a-checksum CourierPilot-v0.15.10.apk"))
     }
+
 }

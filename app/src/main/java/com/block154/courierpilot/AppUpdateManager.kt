@@ -2,12 +2,10 @@ package com.block154.courierpilot
 
 import android.Manifest
 import android.app.Activity
-import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInfo
@@ -18,7 +16,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import org.json.JSONObject
@@ -41,6 +38,7 @@ private const val KEY_LATEST_VERSION = "latest_version"
 private const val KEY_READY_VERSION = "ready_version"
 private const val KEY_READY_PATH = "ready_path"
 private const val KEY_LAST_ERROR = "last_error"
+private const val KEY_DISMISSED_VERSION = "dismissed_version"
 
 internal object AppUpdateSettings {
     fun autoDownload(context: Context): Boolean =
@@ -62,6 +60,23 @@ internal object AppUpdateSettings {
         context.getSharedPreferences(APP_UPDATE_PREFS, Context.MODE_PRIVATE)
             .edit()
             .putBoolean(KEY_WIFI_ONLY, enabled)
+            .apply()
+    }
+
+
+    fun lastCheckAt(context: Context): Long =
+        context.getSharedPreferences(APP_UPDATE_PREFS, Context.MODE_PRIVATE)
+            .getLong(KEY_LAST_CHECK_AT, 0L)
+
+    internal fun dismissedVersion(context: Context): String? =
+        context.getSharedPreferences(APP_UPDATE_PREFS, Context.MODE_PRIVATE)
+            .getString(KEY_DISMISSED_VERSION, null)
+
+    internal fun dismissVersion(context: Context, version: String?) {
+        if (version.isNullOrBlank()) return
+        context.getSharedPreferences(APP_UPDATE_PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_DISMISSED_VERSION, version)
             .apply()
     }
 }
@@ -120,58 +135,13 @@ internal object AppUpdateIntegrity {
         SHA256_PATTERN.find(text)?.value?.lowercase(Locale.US)
 }
 
-internal object AppUpdateScheduler {
-    const val CHECK_INTERVAL_MS = 60L * 60L * 1000L
-    private const val FIRST_CHECK_DELAY_MS = 5L * 60L * 1000L
-    private const val ACTION_CHECK_UPDATES = "com.block154.courierpilot.action.CHECK_APP_UPDATES"
-    private const val REQUEST_CODE = 1550
-
-    fun ensureScheduled(context: Context) {
-        if (!isScheduled(context)) schedule(context)
-    }
-
-    fun schedule(context: Context) {
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        alarmManager.setInexactRepeating(
-            AlarmManager.ELAPSED_REALTIME_WAKEUP,
-            SystemClock.elapsedRealtime() + FIRST_CHECK_DELAY_MS,
-            CHECK_INTERVAL_MS,
-            updateIntent(context),
-        )
-    }
-
-    fun isUpdateAction(action: String?): Boolean = action == ACTION_CHECK_UPDATES
-
-    private fun isScheduled(context: Context): Boolean = PendingIntent.getBroadcast(
-        context,
-        REQUEST_CODE,
-        Intent(context, AppUpdateReceiver::class.java).setAction(ACTION_CHECK_UPDATES),
-        PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
-    ) != null
-
-    private fun updateIntent(context: Context): PendingIntent = PendingIntent.getBroadcast(
-        context,
-        REQUEST_CODE,
-        Intent(context, AppUpdateReceiver::class.java).setAction(ACTION_CHECK_UPDATES),
-        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-    )
-}
-
-class AppUpdateReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent?) {
-        if (!AppUpdateScheduler.isUpdateAction(intent?.action)) return
-        val pending = goAsync()
-        AppUpdateManager.checkIfDue(context) { pending.finish() }
-    }
-}
-
 internal object AppUpdateManager {
     private const val LATEST_RELEASE_URL =
         "https://api.github.com/repos/Bl0ck154/CourierPilot/releases/latest"
     private const val EXPECTED_SIGNER_SHA256 =
         "74556417f1289281bcaf1a2c6f3f4aa119db24b079a13759a583c3cc66796b70"
     private const val UPDATE_CHANNEL_ID = "courierpilot_updates"
-    private const val UPDATE_NOTIFICATION_ID = 1550
+    internal const val UPDATE_NOTIFICATION_ID = 1550
 
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "CourierPilotAppUpdate").apply { isDaemon = true }
@@ -219,7 +189,7 @@ internal object AppUpdateManager {
             AppUpdateStatus(
                 AppUpdatePhase.IDLE,
                 version = BuildConfig.VERSION_NAME,
-                message = "Automatic checks run about once an hour.",
+                message = "Automatic checks run about every 30 minutes.",
             )
         }
     }
@@ -236,7 +206,7 @@ internal object AppUpdateManager {
     fun checkIfDue(context: Context, onComplete: (() -> Unit)? = null) {
         val app = context.applicationContext
         val lastCheckAt = prefs(app).getLong(KEY_LAST_CHECK_AT, 0L)
-        if (lastCheckAt > 0L && System.currentTimeMillis() - lastCheckAt < AppUpdateScheduler.CHECK_INTERVAL_MS) {
+        if (lastCheckAt > 0L && System.currentTimeMillis() - lastCheckAt < BackgroundAppUpdateScheduler.CHECK_INTERVAL_MS) {
             onComplete?.invoke()
             return
         }
@@ -275,8 +245,14 @@ internal object AppUpdateManager {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             if (context !is Activity) addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
+        cancelNotification(app)
         context.startActivity(installIntent)
         return InstallLaunchResult.INSTALLER_OPENED
+    }
+
+    internal fun dismissNotification(context: Context, version: String?) {
+        AppUpdateSettings.dismissVersion(context, version)
+        cancelNotification(context)
     }
 
     private fun startCheck(
@@ -328,6 +304,24 @@ internal object AppUpdateManager {
                     message = "You're up to date. CourierPilot ${BuildConfig.VERSION_NAME} is the latest release.",
                 ),
             )
+            return
+        }
+
+        val savedReadyVersion = prefs(context).getString(KEY_READY_VERSION, null)
+        val savedReadyPath = prefs(context).getString(KEY_READY_PATH, null)
+        if (
+            AppUpdateVersion.normalize(savedReadyVersion) == AppUpdateVersion.normalize(release.version) &&
+            !savedReadyPath.isNullOrBlank() &&
+            File(savedReadyPath).isFile
+        ) {
+            val status = AppUpdateStatus(
+                AppUpdatePhase.READY,
+                version = release.version,
+                progressPercent = 100,
+                message = "CourierPilot ${release.version} is already downloaded and ready to install.",
+            )
+            emit(onStatus, status)
+            if (!manual) notifyUpdate(context, status, ready = true)
             return
         }
 
@@ -589,8 +583,10 @@ internal object AppUpdateManager {
         prefs.edit()
             .remove(KEY_READY_VERSION)
             .remove(KEY_READY_PATH)
+            .remove(KEY_DISMISSED_VERSION)
             .putString(KEY_LAST_ERROR, "")
             .apply()
+        cancelNotification(context)
     }
 
     private fun isOnWifi(context: Context): Boolean {
@@ -601,6 +597,8 @@ internal object AppUpdateManager {
     }
 
     private fun notifyUpdate(context: Context, status: AppUpdateStatus, ready: Boolean) {
+        val version = status.version ?: return
+        if (AppUpdateSettings.dismissedVersion(context) == version) return
         if (!canPostNotifications(context)) return
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
         manager.createNotificationChannel(
@@ -612,6 +610,7 @@ internal object AppUpdateManager {
                 description = "New CourierPilot versions downloaded from GitHub Releases."
             }
         )
+
         val openUpdates = PendingIntent.getActivity(
             context,
             1551,
@@ -620,10 +619,29 @@ internal object AppUpdateManager {
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        val primaryAction = PendingIntent.getActivity(
+            context,
+            1552,
+            Intent(context, AppUpdateActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                if (ready) putExtra(AppUpdateActivity.EXTRA_INSTALL_NOW, true)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val later = PendingIntent.getBroadcast(
+            context,
+            1553,
+            Intent(context, AppUpdateNotificationReceiver::class.java).apply {
+                action = AppUpdateNotificationReceiver.ACTION_DISMISS
+                putExtra(AppUpdateNotificationReceiver.EXTRA_VERSION, version)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
         val title = if (ready) {
-            "CourierPilot ${status.version} ready to install"
+            "CourierPilot $version ready to install"
         } else {
-            "CourierPilot ${status.version} available"
+            "CourierPilot $version available"
         }
         manager.notify(
             UPDATE_NOTIFICATION_ID,
@@ -633,10 +651,18 @@ internal object AppUpdateManager {
                 .setContentText(status.message)
                 .setStyle(Notification.BigTextStyle().bigText(status.message))
                 .setContentIntent(openUpdates)
+                .setDeleteIntent(later)
                 .setAutoCancel(true)
+                .setOnlyAlertOnce(true)
                 .setCategory(Notification.CATEGORY_STATUS)
+                .addAction(0, if (ready) "Install" else "Open", primaryAction)
+                .addAction(0, "Later", later)
                 .build()
         )
+    }
+
+    private fun cancelNotification(context: Context) {
+        context.getSystemService(NotificationManager::class.java)?.cancel(UPDATE_NOTIFICATION_ID)
     }
 
     private fun canPostNotifications(context: Context): Boolean =
