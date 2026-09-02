@@ -26,6 +26,7 @@ class WoltRoutePreparationTest {
         val parsed = ParsedOffer(
             priceCents = null,
             distanceMeters = null,
+            restaurant = null,
             pickupAddresses = listOf("Sodų g. 17, Vilnius"),
             dropoffAddresses = listOf("Dariaus ir Girėno g. 11, Vilnius"),
             deliveryCount = 2,
@@ -38,6 +39,7 @@ class WoltRoutePreparationTest {
         val first = ParsedOffer(
             priceCents = null,
             distanceMeters = null,
+            restaurant = null,
             pickupAddresses = listOf("Sodų g. 17, Vilnius"),
             dropoffAddresses = listOf("Dariaus ir Girėno g. 11, Vilnius"),
             deliveryCount = 1,
