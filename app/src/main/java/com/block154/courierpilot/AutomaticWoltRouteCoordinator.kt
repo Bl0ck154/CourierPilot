@@ -74,7 +74,10 @@ internal object AutomaticWoltRouteCoordinator {
         var ready: PreparedWoltRoute? = null
         synchronized(preparationLock) {
             prunePreparationsLocked()
-            val existing = preparations[key]
+            val existing = preparations[key]?.takeIf {
+                System.currentTimeMillis() - it.startedAt <= PREPARED_REUSE_MS
+            }
+            if (existing == null) preparations.remove(key)
             if (existing != null && existing.fingerprint == fingerprint) {
                 if (existing.result != null && !existing.previewDelivered) {
                     existing.previewDelivered = true
@@ -163,6 +166,10 @@ internal object AutomaticWoltRouteCoordinator {
         var ready: PreparedWoltRoute? = null
         synchronized(preparationLock) {
             val state = preparations[key] ?: return false
+            if (System.currentTimeMillis() - state.startedAt > PREPARED_REUSE_MS) {
+                preparations.remove(key)
+                return false
+            }
             if (state.fingerprint != fingerprint) {
                 preparations.remove(key)
                 return false
@@ -506,6 +513,7 @@ internal object AutomaticWoltRouteCoordinator {
     }
 
     private const val GEOCODER_TIMEOUT_MS = 7_000L
+    private const val PREPARED_REUSE_MS = 30_000L
     private const val PREPARED_TTL_MS = 3L * 60L * 1000L
     private const val MAX_PREPARATIONS = 6
 }
