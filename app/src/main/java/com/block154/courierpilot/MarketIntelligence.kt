@@ -30,6 +30,7 @@ internal data class MarketProfile(
     val thresholds: OfferDecisionThresholds?,
     val trend: MarketTrend?,
     val fetchedAt: Long,
+    val currencyCode: String = "EUR",
 )
 
 internal data class MarketIntelligenceStatus(
@@ -161,6 +162,7 @@ internal object MarketIntelligence {
         if (System.currentTimeMillis() - parsed.fetchedAt > PROFILE_MAX_AGE_MS) return null
         val city = MarketCityResolver.cached(context)
         if (city != null && parsed.cityKey != city.key) return null
+        if (parsed.currencyCode != localCurrencyCode()) return null
         return parsed
     }
 
@@ -460,6 +462,7 @@ internal object MarketIntelligence {
             thresholds = thresholds,
             trend = trend,
             fetchedAt = json.optLong("_fetched_at", 0L),
+            currencyCode = json.optString("currencyCode", "EUR").ifBlank { "EUR" },
         )
     }.getOrNull()
 

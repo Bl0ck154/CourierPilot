@@ -268,9 +268,9 @@ private fun DashboardMarket(padding: PaddingValues) {
     val local = if (platform == MarketPlatform.WOLT) status.localWoltProfile else status.localBoltProfile
     val state = MarketScreenState(
         platform = platform,
-        currencyCode = "EUR",
-        personalMedian = local?.medianEurPerKm?.let { MarketMedian("%.2f".format(Locale.getDefault(), it), "EUR") },
-        cityMedian = profile?.medianEurPerKm?.let { MarketMedian("%.2f".format(Locale.getDefault(), it), "EUR") },
+        currencyCode = profile?.currencyCode ?: "EUR",
+        personalMedian = local?.medianEurPerKm?.let { MarketMedian("%.2f".format(Locale.getDefault(), it), profile?.currencyCode ?: "EUR") },
+        cityMedian = profile?.medianEurPerKm?.let { MarketMedian("%.2f".format(Locale.getDefault(), it), profile.currencyCode) },
         source = when { local != null && profile != null -> MarketSource.PERSONAL_AND_CITY; local != null -> MarketSource.PERSONAL; profile?.ready == true -> MarketSource.CITY; else -> MarketSource.LEARNING },
         confidence = when (profile?.confidence?.lowercase()) { "high" -> MarketUiConfidence.HIGH; "medium" -> MarketUiConfidence.MEDIUM; "low" -> MarketUiConfidence.LOW; else -> MarketUiConfidence.NOT_READY },
         sampleCount = local?.sampleCount ?: profile?.sampleCount ?: 0,

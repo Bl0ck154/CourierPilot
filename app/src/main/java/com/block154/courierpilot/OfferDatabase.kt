@@ -187,14 +187,14 @@ class OfferDatabase private constructor(context: Context) :
         cityKey: String,
         currencyCode: String,
         platform: String,
-        bucket: MarketHistoryBucket,
+        bucket: MarketObservationBucket,
     ): Map<String, List<MarketObservation>> = marketObservations(since, cityKey, currencyCode, platform)
         .groupBy { observation ->
             val calendar = java.util.Calendar.getInstance().apply { timeInMillis = observation.capturedAt }
             when (bucket) {
-                MarketHistoryBucket.DAY -> "%tF".format(java.util.Date(observation.capturedAt))
-                MarketHistoryBucket.WEEK -> "${calendar.get(java.util.Calendar.WEEK_YEAR)}-W${calendar.get(java.util.Calendar.WEEK_OF_YEAR).toString().padStart(2, '0')}"
-                MarketHistoryBucket.MONTH -> "%tY-%<tm".format(java.util.Date(observation.capturedAt))
+                MarketObservationBucket.DAY -> "%tF".format(java.util.Date(observation.capturedAt))
+                MarketObservationBucket.WEEK -> "${calendar.get(java.util.Calendar.WEEK_YEAR)}-W${calendar.get(java.util.Calendar.WEEK_OF_YEAR).toString().padStart(2, '0')}"
+                MarketObservationBucket.MONTH -> "%tY-%<tm".format(java.util.Date(observation.capturedAt))
             }
         }
 

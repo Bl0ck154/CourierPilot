@@ -27,7 +27,7 @@ enum class MarketUiConfidence { NOT_READY, LOW, MEDIUM, HIGH }
 enum class MarketSource { LEARNING, PERSONAL, CITY, PERSONAL_AND_CITY }
 
 data class MarketMedian(val value: String, val currencyCode: String)
-data class MarketTrend(val percent: Double, val improving: Boolean) {
+data class MarketUiTrend(val percent: Double, val improving: Boolean) {
     val label: String get() = (if (improving) "↑" else "↓") + " " + "%+.1f".format(percent) + "%"
 }
 data class MarketHistoryBucket(
@@ -48,7 +48,7 @@ data class MarketScreenState(
     val confidence: MarketUiConfidence = MarketUiConfidence.NOT_READY,
     val sampleCount: Int = 0,
     val learningTarget: Int = 5,
-    val trend: MarketTrend? = null,
+    val trend: MarketUiTrend? = null,
     val period: MarketHistoryPeriod = MarketHistoryPeriod.WEEK,
     val history: List<MarketHistoryBucket> = emptyList(),
     val loading: Boolean = false,
@@ -112,4 +112,4 @@ private fun MarketSource.displayName() = when (this) { MarketSource.PERSONAL_AND
 private fun MarketUiConfidence.displayName() = name.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() }
 
 @Preview(showBackground = true)
-@Composable private fun MarketScreenPreview() { MarketScreen(MarketScreenState(personalMedian = MarketMedian("1.24", "EUR"), cityMedian = MarketMedian("1.31", "EUR"), percentile = 68, rating = "GOOD", source = MarketSource.PERSONAL_AND_CITY, confidence = MarketUiConfidence.MEDIUM, sampleCount = 14, trend = MarketTrend(8.4, true), history = listOf(MarketHistoryBucket("Mon", "1.30", "1.05", "1.56", 8)))) }
+@Composable private fun MarketScreenPreview() { MarketScreen(MarketScreenState(personalMedian = MarketMedian("1.24", "EUR"), cityMedian = MarketMedian("1.31", "EUR"), percentile = 68, rating = "GOOD", source = MarketSource.PERSONAL_AND_CITY, confidence = MarketUiConfidence.MEDIUM, sampleCount = 14, trend = MarketUiTrend(8.4, true), history = listOf(MarketHistoryBucket("Mon", "1.30", "1.05", "1.56", 8)))) }
