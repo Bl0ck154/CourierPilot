@@ -31,8 +31,8 @@ internal object LiveOfferResumePolicy {
     private fun normalize(value: String?): String? = value
         ?.trim()
         ?.lowercase(Locale.ROOT)
-        ?.replace(Regex("[^\p{L}\p{N}]+"), " ")
-        ?.replace(Regex("\s+"), " ")
+        ?.replace(Regex("""[^\p{L}\p{N}]+"""), " ")
+        ?.replace(Regex("""\s+"""), " ")
         ?.trim()
         ?.takeIf { it.isNotBlank() }
 }
