@@ -84,6 +84,46 @@ class OfferDecisionV0153Test {
     }
 
     @Test
+    fun cityMarketThresholdsCanRaiseTheMeaningOfAGoodOffer() {
+        val parsed = ParsedOffer(priceCents = 600, distanceMeters = 100, restaurant = null)
+        val decision = OfferDecisionEngine.evaluate(
+            parsed,
+            pedestrianRoute = route(RouteProfile.PEDESTRIAN_SHORTCUT, 5_000),
+            cyclewayRoute = null,
+            thresholds = OfferDecisionThresholds(
+                terribleBelow = 0.90,
+                badBelow = 1.05,
+                okAtMost = 1.20,
+                goodBelow = 1.45,
+            ),
+        )
+
+        assertEquals(1.2, decision.euroPerKilometer!!, 0.0001)
+        assertEquals(OfferDecisionBand.OK, decision.band)
+        assertEquals(3, decision.rating)
+    }
+
+    @Test
+    fun cityMarketThresholdsCanLowerTheMeaningOfAFireOffer() {
+        val parsed = ParsedOffer(priceCents = 500, distanceMeters = 100, restaurant = null)
+        val decision = OfferDecisionEngine.evaluate(
+            parsed,
+            pedestrianRoute = route(RouteProfile.PEDESTRIAN_SHORTCUT, 5_000),
+            cyclewayRoute = null,
+            thresholds = OfferDecisionThresholds(
+                terribleBelow = 0.55,
+                badBelow = 0.70,
+                okAtMost = 0.82,
+                goodBelow = 0.95,
+            ),
+        )
+
+        assertEquals(1.0, decision.euroPerKilometer!!, 0.0001)
+        assertEquals(OfferDecisionBand.FIRE, decision.band)
+        assertEquals(5, decision.rating)
+    }
+
+    @Test
     fun oneSuccessfulValhallaProfileIsUsedAsFallback() {
         val parsed = ParsedOffer(priceCents = 500, distanceMeters = 100, restaurant = null)
         val decision = OfferDecisionEngine.evaluate(

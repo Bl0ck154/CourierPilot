@@ -61,6 +61,15 @@ data class ShiftSummary(
     val active: Boolean,
 )
 
+internal data class LocalMarketSample(
+    val offerId: Long,
+    val capturedAt: Long,
+    val platform: String,
+    val priceCents: Int,
+    val routeDistanceMeters: Int,
+    val cityKey: String,
+)
+
 class OfferDatabase private constructor(context: Context) :
     SQLiteOpenHelper(context.applicationContext, DB_NAME, null, DB_VERSION) {
 
@@ -86,7 +95,12 @@ class OfferDatabase private constructor(context: Context) :
                 estimated_min INTEGER,
                 estimated_max INTEGER,
                 capture_key TEXT,
-                visual_fingerprint TEXT
+                visual_fingerprint TEXT,
+                market_route_distance_meters INTEGER,
+                market_route_source TEXT,
+                market_city_key TEXT,
+                market_city_name TEXT,
+                market_country_code TEXT
             )
             """.trimIndent()
         )
@@ -113,6 +127,13 @@ class OfferDatabase private constructor(context: Context) :
         }
         if (oldVersion < 5) {
             db.execSQL("ALTER TABLE offers ADD COLUMN visual_fingerprint TEXT")
+        }
+        if (oldVersion < 6) {
+            db.execSQL("ALTER TABLE offers ADD COLUMN market_route_distance_meters INTEGER")
+            db.execSQL("ALTER TABLE offers ADD COLUMN market_route_source TEXT")
+            db.execSQL("ALTER TABLE offers ADD COLUMN market_city_key TEXT")
+            db.execSQL("ALTER TABLE offers ADD COLUMN market_city_name TEXT")
+            db.execSQL("ALTER TABLE offers ADD COLUMN market_country_code TEXT")
         }
     }
 
@@ -339,6 +360,68 @@ class OfferDatabase private constructor(context: Context) :
         return out
     }
 
+    @Synchronized
+    internal fun updateMarketRoute(
+        offerId: Long,
+        routeDistanceMeters: Int,
+        routeSource: String,
+        city: MarketCity,
+    ): Boolean {
+        if (offerId <= 0L || routeDistanceMeters <= 0) return false
+        return writableDatabase.update(
+            "offers",
+            ContentValues().apply {
+                put("market_route_distance_meters", routeDistanceMeters)
+                put("market_route_source", routeSource.take(32))
+                put("market_city_key", city.key)
+                put("market_city_name", city.name)
+                put("market_country_code", city.countryCode)
+            },
+            "id = ?",
+            arrayOf(offerId.toString()),
+        ) > 0
+    }
+
+    internal fun localMarketSamplesSince(
+        since: Long,
+        cityKey: String,
+        platform: String? = null,
+        limit: Int = 2500,
+    ): List<LocalMarketSample> {
+        val out = mutableListOf<LocalMarketSample>()
+        val selection = buildString {
+            append("captured_at >= ? AND market_route_distance_meters > 0 AND price_cents > 0 AND market_city_key = ?")
+            if (!platform.isNullOrBlank()) append(" AND platform = ?")
+        }
+        val args = if (platform.isNullOrBlank()) {
+            arrayOf(since.toString(), cityKey)
+        } else {
+            arrayOf(since.toString(), cityKey, platform)
+        }
+        readableDatabase.query(
+            "offers",
+            arrayOf("id", "captured_at", "platform", "price_cents", "market_route_distance_meters", "market_city_key"),
+            selection,
+            args,
+            null,
+            null,
+            "captured_at DESC",
+            limit.coerceIn(1, 5000).toString(),
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                out += LocalMarketSample(
+                    offerId = cursor.getLong(0),
+                    capturedAt = cursor.getLong(1),
+                    platform = cursor.getString(2),
+                    priceCents = cursor.getInt(3),
+                    routeDistanceMeters = cursor.getInt(4),
+                    cityKey = cursor.getString(5),
+                )
+            }
+        }
+        return out
+    }
+
     fun activeShift(): ShiftRecord? {
         readableDatabase.query(
             "shifts",
@@ -413,7 +496,7 @@ class OfferDatabase private constructor(context: Context) :
 
     companion object {
         private const val DB_NAME = "courier_offers.db"
-        private const val DB_VERSION = 5
+        private const val DB_VERSION = 6
         private const val LIST_SEPARATOR = "\u001F"
 
         @Volatile private var instance: OfferDatabase? = null

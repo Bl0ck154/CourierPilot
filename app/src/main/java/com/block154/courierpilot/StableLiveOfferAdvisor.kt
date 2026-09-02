@@ -239,7 +239,12 @@ internal class StableLiveOfferAdvisor(
         pedestrianRoute: RouteResult?,
         cyclewayRoute: RouteResult?,
     ) {
-        val decision = OfferDecisionEngine.evaluate(parsed, pedestrianRoute, cyclewayRoute)
+        val decision = OfferDecisionEngine.evaluate(
+            parsed,
+            pedestrianRoute,
+            cyclewayRoute,
+            thresholds = MarketIntelligence.thresholdsFor(service, currentPlatform),
+        )
         val platformEconomics = PlatformOfferEconomicsCalculator.calculate(parsed)
         cachedDecisionLine = LiveAdvisorPresentation.profitabilityLine(decision, platformEconomics)
         cachedDecisionBand = decision.band

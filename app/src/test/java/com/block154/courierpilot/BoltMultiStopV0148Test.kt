@@ -157,6 +157,29 @@ class BoltMultiStopV0148Test {
     }
 
     @Test
+    fun currentOfferPickupAnchorsIgnoreStaleCachedRestaurants() {
+        val anchors = BoltPickupAddressPlanner.routeAnchors(
+            active = listOf(
+                "Old restaurant A, Vilnius",
+                "Old restaurant B, Vilnius",
+            ),
+            offered = listOf("Upės g. 9, Vilnius"),
+        )
+
+        assertEquals(listOf("Upės g. 9, Vilnius"), anchors)
+    }
+
+    @Test
+    fun cachedPickupIsOnlyLastResortWhenCurrentOfferHasNoAddress() {
+        val anchors = BoltPickupAddressPlanner.routeAnchors(
+            active = listOf("Older pickup, Vilnius", "Latest pickup, Vilnius"),
+            offered = emptyList(),
+        )
+
+        assertEquals(listOf("Latest pickup, Vilnius"), anchors)
+    }
+
+    @Test
     fun twoExpectedCustomersAreNotCollapsedJustBecauseTheyAreWithinThirtyFiveMeters() {
         val current = RoutePoint(54.6800000, 25.2800000)
         val metersPerPixel = 5.0

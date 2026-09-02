@@ -210,7 +210,7 @@ internal object RemoteDiagnostics {
     private fun uploadBatch(context: Context, batch: PendingBatch): UploadOutcome {
         val payload = JSONObject()
             .put("schema", 1)
-            .put("install_id", installId(context))
+            .put("install_id", installationId(context))
             .put("session_id", batch.sessionId)
             .put("app_version", BuildConfig.VERSION_NAME)
             .put("version_code", BuildConfig.VERSION_CODE)
@@ -256,7 +256,7 @@ internal object RemoteDiagnostics {
         }
     }
 
-    private fun installId(context: Context): String {
+    internal fun installationId(context: Context): String {
         val prefs = context.getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE)
         val existing = prefs.getString(KEY_INSTALL_ID, null)
         if (!existing.isNullOrBlank()) return existing

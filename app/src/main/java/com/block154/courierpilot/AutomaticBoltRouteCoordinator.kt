@@ -164,6 +164,22 @@ internal object BoltPickupAddressPlanner {
         return result
     }
 
+    /**
+     * Geocoded route anchors must come from the offer currently visible on screen. The durable
+     * active-pickup cache is only a last-resort anchor when Bolt exposes no pickup address at all.
+     * Extra active/add-on pickups that are really present are recovered from the current map pins.
+     * This prevents stale cached restaurants from becoming real sequential route stops.
+     */
+    fun routeAnchors(active: List<String>, offered: List<String>): List<String> {
+        val current = merge(emptyList(), offered)
+        if (current.isNotEmpty()) return current
+        return active.asReversed()
+            .firstOrNull(String::isNotBlank)
+            ?.trim()
+            ?.let(::listOf)
+            .orEmpty()
+    }
+
     fun sameAddress(first: String, second: String): Boolean {
         val firstIdentity = DeliveryAddressNormalizer.identity(first)
         val secondIdentity = DeliveryAddressNormalizer.identity(second)
@@ -520,6 +536,13 @@ internal object AutomaticBoltRouteCoordinator {
                         val expectedLabel = expectedDropoffs?.let { " ($it expected)" }.orEmpty()
                         "showing $pickupCount pickup${if (pickupCount == 1) "" else "s"}; customer marker set incomplete$expectedLabel"
                     }
+                    CaptureEventLog.append(
+                        app,
+                        stage = "bolt_route_plan",
+                        platform = platform,
+                        message = "scope=$scope; waypoints=${waypoints.size}; offered_pickups=${parsed.pickupAddresses.count(String::isNotBlank)}; cached_pickups=${supplementalPickupAddresses.count(String::isNotBlank)}; map_pickups=${mapMarkers?.pickups?.size ?: 0}; routed_pickups=$pickupCount; dropoffs=$dropoffCount",
+                        dedupeWindowMs = 2_000L,
+                    )
 
                     val comparison = runCatching {
                         RouteComparisonEngine(ValhallaRouteProvider(config)).compare(waypoints.map { it.point })
@@ -563,7 +586,7 @@ internal object AutomaticBoltRouteCoordinator {
         supplementalPickupAddresses: List<String>,
         callback: (List<ResolvedWaypoint>) -> Unit,
     ) {
-        val addresses = BoltPickupAddressPlanner.merge(supplementalPickupAddresses, parsed.pickupAddresses)
+        val addresses = BoltPickupAddressPlanner.routeAnchors(supplementalPickupAddresses, parsed.pickupAddresses)
         val result = mutableListOf<ResolvedWaypoint>()
 
         fun next(index: Int) {
