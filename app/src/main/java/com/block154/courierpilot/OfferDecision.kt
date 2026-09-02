@@ -41,6 +41,7 @@ internal data class OfferDecisionThresholds(
     }
 
     companion object {
+        @Deprecated("v1 compatibility only; never use for live market scoring")
         val DEFAULT = OfferDecisionThresholds(0.70, 0.85, 1.00, 1.25)
     }
 }
