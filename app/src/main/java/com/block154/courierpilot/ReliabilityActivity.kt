@@ -170,6 +170,18 @@ private fun ReliabilityScreen(onBack: () -> Unit, onRefresh: () -> Unit) {
             )
         }
 
+        item { ReliabilitySection("App updates", "Hourly GitHub checks and secure APK installation") }
+        item {
+            FilledTonalButton(
+                onClick = { context.startActivity(Intent(context, AppUpdateActivity::class.java)) },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(Icons.Rounded.PhoneAndroid, contentDescription = null)
+                Spacer(Modifier.size(8.dp))
+                Text("Open app updates")
+            }
+        }
+
         item { ReliabilitySection("Current capture", "Latest capture state") }
         item {
             Card(shape = RoundedCornerShape(20.dp)) {
