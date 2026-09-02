@@ -78,7 +78,11 @@ class OfferAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val eventPackage = event?.packageName?.toString().orEmpty()
+        if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && eventPackage.isNotBlank()) {
+            LiveAdvisorHub.onForegroundWindowChanged(this, eventPackage)
+        }
         if (CourierSignals.isCourierPackage(eventPackage)) {
+            LiveAdvisorHub.onCourierWindowEvent(this, eventPackage)
             if (OfferOpenState.markWindowVisible(this, eventPackage)) {
                 CaptureEventLog.append(
                     this,
