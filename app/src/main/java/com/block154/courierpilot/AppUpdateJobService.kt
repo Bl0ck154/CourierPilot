@@ -7,35 +7,33 @@ import android.app.job.JobService
 import android.content.ComponentName
 import android.content.Context
 
-/**
- * Android-owned periodic scheduling for automatic update checks/downloads.
- *
- * APK downloads may take longer than a BroadcastReceiver execution window, so the recurring path
- * is a JobService. The manual path still runs immediately while AppUpdateActivity is foreground.
- */
+/** Android-owned periodic scheduling for automatic update checks/downloads. */
 internal object BackgroundAppUpdateScheduler {
-    const val CHECK_INTERVAL_MS = 60L * 60L * 1000L
     private const val JOB_ID = 1550
 
     fun ensureScheduled(context: Context) {
         val scheduler = context.getSystemService(JobScheduler::class.java) ?: return
-        if (scheduler.getPendingJob(JOB_ID) != null) return
-        schedule(context, scheduler)
+        val wantedInterval = AppUpdateSettings.checkFrequency(context).intervalMs
+        val existing = scheduler.getPendingJob(JOB_ID)
+        if (existing != null && existing.intervalMillis == wantedInterval) return
+        scheduler.cancel(JOB_ID)
+        schedule(context, scheduler, wantedInterval)
     }
 
-    fun schedule(context: Context) {
+    fun reschedule(context: Context) {
         val scheduler = context.getSystemService(JobScheduler::class.java) ?: return
-        schedule(context, scheduler)
+        scheduler.cancel(JOB_ID)
+        schedule(context, scheduler, AppUpdateSettings.checkFrequency(context).intervalMs)
     }
 
-    private fun schedule(context: Context, scheduler: JobScheduler) {
+    private fun schedule(context: Context, scheduler: JobScheduler, intervalMs: Long) {
         scheduler.schedule(
             JobInfo.Builder(
                 JOB_ID,
                 ComponentName(context, AppUpdateJobService::class.java),
             )
                 .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
-                .setPeriodic(CHECK_INTERVAL_MS)
+                .setPeriodic(intervalMs)
                 .setPersisted(true)
                 .build()
         )
@@ -51,7 +49,6 @@ class AppUpdateJobService : JobService() {
     }
 
     override fun onStopJob(params: JobParameters): Boolean {
-        // Ask JobScheduler to retry if Android interrupted a running network transfer.
         return true
     }
 }
