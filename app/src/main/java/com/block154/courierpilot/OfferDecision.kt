@@ -24,8 +24,8 @@ internal data class OfferDecision(
 )
 
 /**
- * Sorted €/km edges for the five live bands. The defaults preserve the original fixed model;
- * MarketIntelligence can replace them with a city profile once the server has enough observations.
+ * Sorted native-money/km percentile edges for the five live bands. A legacy DEFAULT value is kept
+ * only for migration/unit compatibility; the live advisor passes null until a v2 profile is ready.
  */
 internal data class OfferDecisionThresholds(
     val terribleBelow: Double,
@@ -58,7 +58,7 @@ internal object OfferDecisionEngine {
         parsed: ParsedOffer,
         pedestrianRoute: RouteResult? = null,
         cyclewayRoute: RouteResult? = null,
-        thresholds: OfferDecisionThresholds? = OfferDecisionThresholds.DEFAULT,
+        thresholds: OfferDecisionThresholds? = null,
     ): OfferDecision {
         val euros = parsed.priceCents?.takeIf { it > 0 }?.div(100.0)
         val routeMeters = averageValhallaDistanceMeters(pedestrianRoute, cyclewayRoute)
@@ -89,7 +89,7 @@ internal object OfferDecisionEngine {
 
     internal fun bandFor(
         perKm: Double?,
-        thresholds: OfferDecisionThresholds = OfferDecisionThresholds.DEFAULT,
+        thresholds: OfferDecisionThresholds,
     ): OfferDecisionBand = when {
         perKm == null -> OfferDecisionBand.UNKNOWN
         perKm < thresholds.terribleBelow -> OfferDecisionBand.TERRIBLE
