@@ -700,11 +700,14 @@ private fun DashboardSettings(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Settings", fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
-                    Text("Offers, routes, storage and Android access", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Updates, offers, routes, storage and Android access", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 TextButton(onClick = onBack) { Text("Done") }
             }
         }
+
+        item { DashboardSection("App updates", "Version, manual check and automatic update options") }
+        item { AppUpdateSettingsSummaryCard() }
 
         item { DashboardSection("Offers", "What CourierPilot does when an offer appears") }
         item {
