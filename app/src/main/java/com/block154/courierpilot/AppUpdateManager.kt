@@ -33,26 +33,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 private const val APP_UPDATE_PREFS = "courierpilot_app_updates"
 private const val KEY_AUTO_DOWNLOAD = "auto_download"
 private const val KEY_WIFI_ONLY = "wifi_only"
-private const val KEY_CHECK_INTERVAL_MS = "check_interval_ms"
 private const val KEY_LAST_CHECK_AT = "last_check_at"
 private const val KEY_LATEST_VERSION = "latest_version"
 private const val KEY_READY_VERSION = "ready_version"
 private const val KEY_READY_PATH = "ready_path"
 private const val KEY_LAST_ERROR = "last_error"
 private const val KEY_DISMISSED_VERSION = "dismissed_version"
-
-internal enum class AppUpdateCheckFrequency(val intervalMs: Long, val label: String) {
-    FIFTEEN_MINUTES(15L * 60L * 1000L, "Every 15 minutes"),
-    THIRTY_MINUTES(30L * 60L * 1000L, "Every 30 minutes"),
-    ONE_HOUR(60L * 60L * 1000L, "Every 1 hour"),
-    THREE_HOURS(3L * 60L * 60L * 1000L, "Every 3 hours"),
-    SIX_HOURS(6L * 60L * 60L * 1000L, "Every 6 hours");
-
-    companion object {
-        fun fromIntervalMs(value: Long): AppUpdateCheckFrequency =
-            entries.firstOrNull { it.intervalMs == value } ?: ONE_HOUR
-    }
-}
 
 internal object AppUpdateSettings {
     fun autoDownload(context: Context): Boolean =
@@ -77,19 +63,6 @@ internal object AppUpdateSettings {
             .apply()
     }
 
-    fun checkFrequency(context: Context): AppUpdateCheckFrequency {
-        val value = context.getSharedPreferences(APP_UPDATE_PREFS, Context.MODE_PRIVATE)
-            .getLong(KEY_CHECK_INTERVAL_MS, AppUpdateCheckFrequency.ONE_HOUR.intervalMs)
-        return AppUpdateCheckFrequency.fromIntervalMs(value)
-    }
-
-    fun setCheckFrequency(context: Context, frequency: AppUpdateCheckFrequency) {
-        context.getSharedPreferences(APP_UPDATE_PREFS, Context.MODE_PRIVATE)
-            .edit()
-            .putLong(KEY_CHECK_INTERVAL_MS, frequency.intervalMs)
-            .apply()
-        BackgroundAppUpdateScheduler.reschedule(context.applicationContext)
-    }
 
     fun lastCheckAt(context: Context): Long =
         context.getSharedPreferences(APP_UPDATE_PREFS, Context.MODE_PRIVATE)
@@ -216,7 +189,7 @@ internal object AppUpdateManager {
             AppUpdateStatus(
                 AppUpdatePhase.IDLE,
                 version = BuildConfig.VERSION_NAME,
-                message = "Automatic checks: ${AppUpdateSettings.checkFrequency(context).label.lowercase()}.",
+                message = "Automatic checks run about every 30 minutes.",
             )
         }
     }
@@ -233,8 +206,7 @@ internal object AppUpdateManager {
     fun checkIfDue(context: Context, onComplete: (() -> Unit)? = null) {
         val app = context.applicationContext
         val lastCheckAt = prefs(app).getLong(KEY_LAST_CHECK_AT, 0L)
-        val intervalMs = AppUpdateSettings.checkFrequency(app).intervalMs
-        if (lastCheckAt > 0L && System.currentTimeMillis() - lastCheckAt < intervalMs) {
+        if (lastCheckAt > 0L && System.currentTimeMillis() - lastCheckAt < BackgroundAppUpdateScheduler.CHECK_INTERVAL_MS) {
             onComplete?.invoke()
             return
         }

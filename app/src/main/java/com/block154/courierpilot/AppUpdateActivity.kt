@@ -28,7 +28,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -84,13 +83,11 @@ private fun AppUpdateScreen(refresh: Int, onBack: () -> Unit) {
     var status by remember { mutableStateOf(AppUpdateManager.snapshot(context)) }
     var autoDownload by remember { mutableStateOf(AppUpdateSettings.autoDownload(context)) }
     var wifiOnly by remember { mutableStateOf(AppUpdateSettings.wifiOnly(context)) }
-    var frequency by remember { mutableStateOf(AppUpdateSettings.checkFrequency(context)) }
 
     LaunchedEffect(refresh) {
         status = AppUpdateManager.snapshot(context)
         autoDownload = AppUpdateSettings.autoDownload(context)
         wifiOnly = AppUpdateSettings.wifiOnly(context)
-        frequency = AppUpdateSettings.checkFrequency(context)
     }
 
     val busy = status.phase == AppUpdatePhase.CHECKING || status.phase == AppUpdatePhase.DOWNLOADING
@@ -213,7 +210,7 @@ private fun AppUpdateScreen(refresh: Int, onBack: () -> Unit) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Automatic updates", fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
                     Text(
-                        "Android schedules these approximately, not to the exact minute. The minimum periodic interval is 15 minutes.",
+                        "CourierPilot checks roughly every 30 minutes. Android may batch the background job, so it is not exact to the minute.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 11.sp,
                     )
@@ -223,27 +220,6 @@ private fun AppUpdateScreen(refresh: Int, onBack: () -> Unit) {
             item {
                 Card(shape = RoundedCornerShape(20.dp)) {
                     Column(Modifier.padding(16.dp)) {
-                        Text("Check frequency", fontWeight = FontWeight.SemiBold)
-                        Text(
-                            "1 hour is the recommended default. Shorter intervals only make a small GitHub release-metadata request when no update exists.",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 11.sp,
-                        )
-                        AppUpdateCheckFrequency.entries.forEach { option ->
-                            TextButton(
-                                onClick = {
-                                    frequency = option
-                                    AppUpdateSettings.setCheckFrequency(context, option)
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                RadioButton(selected = frequency == option, onClick = null)
-                                Spacer(Modifier.size(8.dp))
-                                Text(option.label, modifier = Modifier.weight(1f))
-                            }
-                        }
-
-                        HorizontalDivider(Modifier.padding(vertical = 12.dp))
                         CourierPilotToggleRow(
                             title = "Automatically download updates",
                             subtitle = "When a newer release is found, download and verify that APK once in the background.",

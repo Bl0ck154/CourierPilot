@@ -35,7 +35,6 @@ import androidx.compose.ui.unit.sp
 internal fun AppUpdateSettingsSummaryCard() {
     val context = LocalContext.current
     var status by remember { mutableStateOf(AppUpdateManager.snapshot(context)) }
-    val frequency = AppUpdateSettings.checkFrequency(context)
     val busy = status.phase == AppUpdatePhase.CHECKING || status.phase == AppUpdatePhase.DOWNLOADING
     val ready = status.phase == AppUpdatePhase.READY
 
@@ -57,11 +56,6 @@ internal fun AppUpdateSettingsSummaryCard() {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         },
                         fontSize = 12.sp,
-                    )
-                    Text(
-                        "Automatic check: ${frequency.label}",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 11.sp,
                     )
                 }
             }

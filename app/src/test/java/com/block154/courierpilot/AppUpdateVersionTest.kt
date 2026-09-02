@@ -36,14 +36,4 @@ class AppUpdateVersionTest {
         assertNull(AppUpdateIntegrity.parseSha256("not-a-checksum CourierPilot-v0.15.10.apk"))
     }
 
-    @Test
-    fun updateFrequencyStartsAtAndroidPeriodicMinimumAndDefaultsToOneHour() {
-        assertEquals(15L * 60L * 1000L, AppUpdateCheckFrequency.FIFTEEN_MINUTES.intervalMs)
-        assertEquals(30L * 60L * 1000L, AppUpdateCheckFrequency.THIRTY_MINUTES.intervalMs)
-        assertEquals(60L * 60L * 1000L, AppUpdateCheckFrequency.ONE_HOUR.intervalMs)
-        assertEquals(
-            AppUpdateCheckFrequency.ONE_HOUR,
-            AppUpdateCheckFrequency.fromIntervalMs(123L),
-        )
-    }
 }
