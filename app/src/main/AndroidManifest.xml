@@ -65,8 +65,9 @@
             </intent-filter>
         </receiver>
 
-        <receiver
-            android:name=".AppUpdateReceiver"
+        <service
+            android:name=".AppUpdateJobService"
+            android:permission="android.permission.BIND_JOB_SERVICE"
             android:exported="false" />
 
         <service
