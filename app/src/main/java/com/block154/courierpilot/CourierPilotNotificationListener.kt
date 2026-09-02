@@ -23,7 +23,10 @@ class CourierPilotNotificationListener : NotificationListenerService() {
 
     private val unlockReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == Intent.ACTION_USER_PRESENT) retryPendingOfferAfterUnlock()
+            when (intent?.action) {
+                Intent.ACTION_USER_PRESENT -> retryPendingOfferAfterUnlock()
+                OfferState.ACTION_QUEUED_OFFER_PROMOTED -> openPromotedQueuedOffer(intent)
+            }
         }
     }
 
@@ -46,10 +49,11 @@ class CourierPilotNotificationListener : NotificationListenerService() {
         if (decision.isOffer) {
             NotificationOfferProfileStore.rememberCandidate(this, sbn)
             CourierPresence.markOfferOnline(this, sbn.packageName, "offer notification")
+            val shape = notificationShapeSummary(sbn)
             CaptureEventLog.append(
                 this,
                 "notification",
-                "Offer notification matched structurally (score=${decision.score}; ${decision.reasons.joinToString(",")})",
+                "Offer notification matched structurally (score=${decision.score}; ${decision.reasons.joinToString(",")}); $shape",
                 platform,
             )
             val sourceName = resolveAppName(sbn.packageName)
@@ -65,7 +69,8 @@ class CourierPilotNotificationListener : NotificationListenerService() {
                     ArmResult.ARMED -> "New capture armed"
                     ArmResult.DUPLICATE_UPDATE -> "Duplicate/already captured notification update ignored"
                     ArmResult.REPLACED_SAME_PLATFORM -> "New notification replaced pending offer from same platform"
-                    ArmResult.QUEUED_OTHER_PLATFORM -> "Offer queued behind active capture from other platform"
+                    ArmResult.PREEMPTED_STALE_OTHER_PLATFORM -> "New offer preempted a stale capture from the other platform"
+                    ArmResult.QUEUED_OTHER_PLATFORM -> "Offer queued briefly behind active capture from other platform"
                 },
             )
 
@@ -100,6 +105,7 @@ class CourierPilotNotificationListener : NotificationListenerService() {
             message = buildString {
                 append("Courier notification not classified as offer; score=${decision.score}")
                 if (decision.reasons.isNotEmpty()) append("; evidence=${decision.reasons.joinToString(",")}")
+                append("; ${notificationShapeSummary(sbn)}")
                 val labels = CourierSignals.notificationActionLabels(notification)
                 if (labels.isNotEmpty()) append("; actions=${labels.joinToString("/").take(120)}")
                 val preview = notificationText.replace(Regex("\\s+"), " ").take(180)
@@ -132,7 +138,9 @@ class CourierPilotNotificationListener : NotificationListenerService() {
 
     private fun registerUnlockReceiver() {
         if (unlockReceiverRegistered) return
-        val filter = IntentFilter(Intent.ACTION_USER_PRESENT)
+        val filter = IntentFilter(Intent.ACTION_USER_PRESENT).apply {
+            addAction(OfferState.ACTION_QUEUED_OFFER_PROMOTED)
+        }
         if (Build.VERSION.SDK_INT >= 33) {
             registerReceiver(unlockReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
@@ -140,6 +148,61 @@ class CourierPilotNotificationListener : NotificationListenerService() {
             registerReceiver(unlockReceiver, filter)
         }
         unlockReceiverRegistered = true
+    }
+
+    private fun openPromotedQueuedOffer(intent: Intent) {
+        if (!OfferState.autoOpen(this)) return
+        val packageName = intent.getStringExtra(OfferState.EXTRA_PROMOTED_PACKAGE).orEmpty()
+        val notificationKey = intent.getStringExtra(OfferState.EXTRA_PROMOTED_NOTIFICATION_KEY).orEmpty()
+        val sourceName = intent.getStringExtra(OfferState.EXTRA_PROMOTED_SOURCE).orEmpty().ifBlank { packageName }
+        if (packageName.isBlank() || notificationKey.isBlank()) return
+
+        val pending = OfferState.pending(this) ?: return
+        if (pending.packageName != packageName || pending.notificationKey != notificationKey) return
+
+        val sbn = runCatching {
+            activeNotifications?.firstOrNull { it.packageName == packageName && it.key == notificationKey }
+        }.getOrNull()
+        if (sbn == null) {
+            CaptureEventLog.append(
+                this,
+                stage = "promoted_open_missing",
+                platform = OfferState.platformLabel(packageName),
+                message = "Queued offer was promoted but its exact notification is no longer active",
+            )
+            return
+        }
+
+        val contentIntent = sbn.notification.contentIntent
+        if (contentIntent == null) {
+            CaptureEventLog.append(
+                this,
+                stage = "promoted_open_missing_intent",
+                platform = OfferState.platformLabel(packageName),
+                message = "Queued offer was promoted but its exact notification has no content intent",
+            )
+            return
+        }
+
+        lastOfferContentIntent = contentIntent
+        lastOfferPackage = packageName
+        lastOfferNotificationKey = notificationKey
+        val platform = OfferState.platformLabel(packageName)
+        CaptureEventLog.append(
+            this,
+            stage = "promoted_open",
+            platform = platform,
+            message = "Opening exact notification for promoted queued offer",
+        )
+        if (OfferState.wakeScreen(this)) wakeScreenBriefly(platform)
+        openOriginalNotification(
+            contentIntent = contentIntent,
+            packageName = packageName,
+            notificationKey = notificationKey,
+            sourceName = sourceName,
+            platform = platform,
+            reason = "promoted",
+        )
     }
 
     private fun retryPendingOfferAfterUnlock() {
@@ -227,7 +290,12 @@ class CourierPilotNotificationListener : NotificationListenerService() {
             return
         }
 
-        if (!sendPendingIntent(contentIntent, platform, if (reason == "unlock") "open_unlock_requested" else "open_requested")) {
+        val openStage = when (reason) {
+            "unlock" -> "open_unlock_requested"
+            "promoted" -> "open_promoted_requested"
+            else -> "open_requested"
+        }
+        if (!sendPendingIntent(contentIntent, platform, openStage)) {
             requestLauncherFallback(packageName, notificationKey, requestedAt, sourceName, platform)
             return
         }
@@ -407,6 +475,20 @@ class CourierPilotNotificationListener : NotificationListenerService() {
             val message = "Could not open $sourceName: ${it.javaClass.simpleName}"
             OfferState.markError(this, message)
             CaptureEventLog.append(this, "open_launcher_failed", it.javaClass.simpleName, platform)
+        }
+    }
+
+    private fun notificationShapeSummary(sbn: StatusBarNotification): String {
+        val shape = NotificationOfferProfileStore.snapshot(sbn)
+        return buildString {
+            append("shape[channel=").append(shape.channelId.take(40))
+            append(",id=").append(shape.notificationId)
+            append(",category=").append(shape.category.take(24))
+            append(",actions=").append(shape.actionCount)
+            append(",intent=").append(shape.contentIntentKind.name)
+            append(",ongoing=").append(shape.ongoing)
+            append(",textLen=").append(CourierSignals.notificationText(sbn.notification).length.coerceAtMost(9999))
+            append(']')
         }
     }
 

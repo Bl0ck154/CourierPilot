@@ -310,7 +310,7 @@ internal object RemoteDiagnosticsPrivacy {
             return "details redacted"
         }
         return raw
-            .replace(notificationTextRegex, "$1[redacted]")
+            .replace(notificationTextRegex) { match -> "${match.groupValues[1]}[redacted]" }
             .replace(emailRegex, "[email]")
             .replace(phoneRegex, "[phone]")
             .replace(coordinatesRegex, "[coords]")

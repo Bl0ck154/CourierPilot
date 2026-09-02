@@ -1,6 +1,7 @@
 package com.block154.courierpilot
 
 import android.content.Context
+import android.content.Intent
 
 internal data class PendingOffer(
     val packageName: String,
@@ -13,6 +14,7 @@ internal enum class ArmResult {
     ARMED,
     DUPLICATE_UPDATE,
     REPLACED_SAME_PLATFORM,
+    PREEMPTED_STALE_OTHER_PLATFORM,
     QUEUED_OTHER_PLATFORM,
 }
 
@@ -38,7 +40,13 @@ internal object OfferState {
     private const val KEY_AUTO_OPEN = "auto_open"
     private const val KEY_WAKE_SCREEN = "wake_screen"
     private const val MAX_PENDING_AGE_MS = 180_000L
+    internal const val CROSS_PLATFORM_PREEMPT_AFTER_MS = 20_000L
     private const val CAPTURED_NOTIFICATION_TTL_MS = 4L * 60L * 1000L
+
+    internal const val ACTION_QUEUED_OFFER_PROMOTED = "com.block154.courierpilot.action.QUEUED_OFFER_PROMOTED"
+    internal const val EXTRA_PROMOTED_PACKAGE = "promoted_package"
+    internal const val EXTRA_PROMOTED_SOURCE = "promoted_source"
+    internal const val EXTRA_PROMOTED_NOTIFICATION_KEY = "promoted_notification_key"
 
     private fun prefs(context: Context) = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -68,9 +76,25 @@ internal object OfferState {
             return ArmResult.DUPLICATE_UPDATE
         }
 
+        val now = System.currentTimeMillis()
         if (existing.packageName == packageName) {
-            writePending(context, packageName, sourceName, notificationKey, System.currentTimeMillis())
+            writePending(context, packageName, sourceName, notificationKey, now)
             return ArmResult.REPLACED_SAME_PLATFORM
+        }
+
+        // Do not let a stale/misclassified offer from one platform block the other platform for the
+        // full 3-minute pending TTL. Real-device diagnostics showed a false Bolt capture occupying
+        // this slot for ~3 minutes while a real Wolt offer was merely queued and never auto-opened.
+        if (now - existing.armedAt >= CROSS_PLATFORM_PREEMPT_AFTER_MS) {
+            clearQueued(context)
+            writePending(context, packageName, sourceName, notificationKey, now)
+            CaptureEventLog.append(
+                context,
+                stage = "cross_platform_preempt",
+                platform = platformLabel(packageName),
+                message = "New offer preempted stale ${platformLabel(existing.packageName)} capture after ${now - existing.armedAt} ms",
+            )
+            return ArmResult.PREEMPTED_STALE_OTHER_PLATFORM
         }
 
         prefs(context).edit()
@@ -235,18 +259,22 @@ internal object OfferState {
             .apply()
     }
 
+    private fun clearQueued(context: Context) {
+        prefs(context).edit()
+            .remove(KEY_QUEUED_PACKAGE)
+            .remove(KEY_QUEUED_SOURCE)
+            .remove(KEY_QUEUED_ARMED_AT)
+            .remove(KEY_QUEUED_NOTIFICATION)
+            .apply()
+    }
+
     private fun promoteQueued(context: Context) {
         val p = prefs(context)
         val pkg = p.getString(KEY_QUEUED_PACKAGE, null) ?: return
         val armed = p.getLong(KEY_QUEUED_ARMED_AT, 0L)
         val source = p.getString(KEY_QUEUED_SOURCE, pkg) ?: pkg
         val key = p.getString(KEY_QUEUED_NOTIFICATION, "") ?: ""
-        p.edit()
-            .remove(KEY_QUEUED_PACKAGE)
-            .remove(KEY_QUEUED_SOURCE)
-            .remove(KEY_QUEUED_ARMED_AT)
-            .remove(KEY_QUEUED_NOTIFICATION)
-            .apply()
+        clearQueued(context)
         if (armed != 0L && System.currentTimeMillis() - armed <= MAX_PENDING_AGE_MS) {
             if (key.isNotBlank() && !key.startsWith("screen:") && wasCapturedNotification(context, pkg, key)) {
                 CaptureEventLog.append(
@@ -264,6 +292,15 @@ internal object OfferState {
                 platform = platformLabel(pkg),
                 message = "Queued offer promoted to active capture",
             )
+            if (key.isNotBlank() && !key.startsWith("screen:")) {
+                context.sendBroadcast(
+                    Intent(ACTION_QUEUED_OFFER_PROMOTED)
+                        .setPackage(context.packageName)
+                        .putExtra(EXTRA_PROMOTED_PACKAGE, pkg)
+                        .putExtra(EXTRA_PROMOTED_SOURCE, source)
+                        .putExtra(EXTRA_PROMOTED_NOTIFICATION_KEY, key)
+                )
+            }
         }
     }
 

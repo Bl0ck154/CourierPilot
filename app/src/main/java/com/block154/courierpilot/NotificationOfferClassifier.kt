@@ -146,6 +146,21 @@ internal object NotificationOfferClassifier {
             CourierSignals.hasDecisionActionSignal(actionLabels)
         val learnedOffer = learnedMatch >= LEARNED_PROFILE_MATCH_THRESHOLD
 
+        // Bolt reuses enough notification structure that an informational/promotional push can match
+        // a previously confirmed order profile. A learned profile therefore cannot, by itself, turn
+        // arbitrary visible Bolt copy into an auto-open. Real order wording/actions remain explicit
+        // bootstrap signals, while textless learned pushes keep compatibility with Bolt variants that
+        // expose the actual offer only after opening the app.
+        val blockBoltLearnedVisibleText =
+            structure.packageName == CourierSignals.BOLT_PACKAGE &&
+                learnedOffer &&
+                !explicitBootstrap &&
+                text.isNotBlank() &&
+                !hasTwoAppActions &&
+                !structure.hasFullScreenIntent
+        if (blockBoltLearnedVisibleText) reasons += "bolt_learned_visible_text_guard"
+        val acceptedLearnedOffer = learnedOffer && !blockBoltLearnedVisibleText
+
         // 0.15.2 intentionally removed generic score-based auto-open because Bolt reuses notification
         // channels/ids for lifecycle pushes. That was too strict for Wolt: a wording/localisation/A-B
         // change can leave a real offer with no known text even though its notification has the same
@@ -162,7 +177,7 @@ internal object NotificationOfferClassifier {
         if (structuralWoltOffer) reasons += "wolt_structural_fallback"
 
         return OfferNotificationDecision(
-            explicitBootstrap || learnedOffer || structuralWoltOffer,
+            explicitBootstrap || acceptedLearnedOffer || structuralWoltOffer,
             score,
             reasons,
             learnedMatch,
