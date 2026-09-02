@@ -33,15 +33,21 @@ import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.Card
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -49,10 +55,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.block154.courierpilot.ui.CourierPilotTheme
+import com.block154.courierpilot.ui.CourierPilotToggleRow
 import com.block154.courierpilot.ui.Success
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.delay
 
 class ReliabilityActivity : ComponentActivity() {
     private val refresh = mutableIntStateOf(0)
@@ -90,11 +98,22 @@ private fun ReliabilityScreen(onBack: () -> Unit, onRefresh: () -> Unit) {
     val error = OfferState.lastError(context)
     val events = CaptureEventLog.recent(context, 30)
     val remoteDiagnostics = RemoteDiagnostics.status(context)
+    var remoteEnabled by remember(remoteDiagnostics.enabled) { mutableStateOf(remoteDiagnostics.enabled) }
+    var manualDiagnosticsExpanded by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(remoteEnabled) {
+        if (remoteEnabled) {
+            // Give the initial diagnostics_enabled heartbeat time to leave the local queue, then
+            // refresh once so the user can see the first successful upload without reopening this screen.
+            delay(6_000L)
+            onRefresh()
+        }
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -103,16 +122,16 @@ private fun ReliabilityScreen(onBack: () -> Unit, onRefresh: () -> Unit) {
                 }
                 Column(Modifier.weight(1f)) {
                     Text("Reliability", fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
-                    Text("Android access and capture health", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                    Text("Capture health and Android access", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                 }
             }
         }
 
-        item { ReliabilitySection("Required access", "These two services power offer detection") }
+        item { ReliabilitySection("Required access", "Services used for automatic capture") }
         item {
             ReliabilityStatusCard(
                 title = "Notification access",
-                subtitle = if (notificationOk) "Connected" else "Needed to detect incoming offer notifications",
+                subtitle = if (notificationOk) "Connected" else "Needed to detect incoming offers",
                 ok = notificationOk,
                 icon = Icons.Rounded.NotificationsActive,
                 onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) },
@@ -121,18 +140,18 @@ private fun ReliabilityScreen(onBack: () -> Unit, onRefresh: () -> Unit) {
         item {
             ReliabilityStatusCard(
                 title = "Accessibility capture",
-                subtitle = if (accessibilityOk) "Connected" else "Needed to read courier screens and run OCR fallback",
+                subtitle = if (accessibilityOk) "Connected" else "Needed for screenshots and OCR",
                 ok = accessibilityOk,
                 icon = Icons.Rounded.Shield,
                 onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
             )
         }
 
-        item { ReliabilitySection("Background health", "Android can stop capture when battery restrictions are aggressive") }
+        item { ReliabilitySection("Background health", "Android restrictions that can interrupt capture") }
         item {
             ReliabilityStatusCard(
                 title = "Battery optimization",
-                subtitle = if (unrestricted) "CourierPilot is excluded from Doze optimization" else "Set battery usage to Unrestricted / Don't optimize",
+                subtitle = if (unrestricted) "Unrestricted" else "Set battery usage to Unrestricted / Don't optimize",
                 ok = unrestricted,
                 icon = Icons.Rounded.BatteryChargingFull,
                 onClick = {
@@ -144,25 +163,29 @@ private fun ReliabilityScreen(onBack: () -> Unit, onRefresh: () -> Unit) {
         item {
             ReliabilityStatusCard(
                 title = "Background restriction",
-                subtitle = if (backgroundRestricted) "Android reports background activity as restricted" else "No Android background restriction reported",
+                subtitle = if (backgroundRestricted) "Android reports background activity as restricted" else "No restriction reported",
                 ok = !backgroundRestricted,
                 icon = Icons.Rounded.PhoneAndroid,
                 onClick = { reliabilityOpenAppInfo(context) },
             )
         }
 
-        item { ReliabilitySection("Current capture", "Useful when an offer was missed") }
+        item { ReliabilitySection("Current capture", "Latest capture state") }
         item {
             Card(shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                    ReliabilityFact(
-                        "Pending offer",
-                        pending?.let { "${OfferState.platformLabel(it.packageName)} · armed ${reliabilityTime(it.armedAt)}" } ?: "None",
-                    )
-                    ReliabilityFact(
-                        "Gallery screenshots",
-                        if (CaptureStorageSettings.saveOfferScreenshots(context)) "Enabled" else "Off · OCR still works in memory",
-                    )
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth()) {
+                        ReliabilityFact(
+                            "Pending",
+                            pending?.let { "${OfferState.platformLabel(it.packageName)} · ${reliabilityTime(it.armedAt)}" } ?: "None",
+                            Modifier.weight(1f),
+                        )
+                        ReliabilityFact(
+                            "Screenshots",
+                            if (CaptureStorageSettings.saveOfferScreenshots(context)) "Enabled" else "Off",
+                            Modifier.weight(1f),
+                        )
+                    }
                     ReliabilityFact("Last capture", OfferState.lastCapture(context))
                     if (error.isNotBlank()) {
                         Surface(
@@ -180,76 +203,87 @@ private fun ReliabilityScreen(onBack: () -> Unit, onRefresh: () -> Unit) {
             }
         }
 
-        item { ReliabilitySection("Remote diagnostics", "Optional technical logs for faster debugging") }
+        item { ReliabilitySection("Diagnostics", "Automatic remote logs; manual export only when needed") }
         item {
             Card(shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Upload privacy-safe diagnostics", fontWeight = FontWeight.SemiBold)
-                            Text(
-                                "No screenshots, addresses, customer text or GPS coordinates are uploaded.",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 11.sp,
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    CourierPilotToggleRow(
+                        title = "Remote diagnostics",
+                        subtitle = "Privacy-safe technical events only. No screenshots, addresses, customer text or GPS coordinates.",
+                        checked = remoteEnabled,
+                    ) { enabled ->
+                        // Update the visible control first; persistence result is then reconciled below.
+                        remoteEnabled = enabled
+                        val persisted = RemoteDiagnostics.setEnabled(context, enabled)
+                        if (!persisted) {
+                            remoteEnabled = RemoteDiagnostics.enabled(context)
+                        } else if (enabled) {
+                            // First end-to-end heartbeat: if this reaches the server, toggle + queue + HTTPS work.
+                            CaptureEventLog.append(
+                                context,
+                                stage = "diagnostics_enabled",
+                                message = "Remote diagnostics enabled",
                             )
                         }
-                        Switch(
-                            checked = remoteDiagnostics.enabled,
-                            onCheckedChange = { enabled ->
-                                RemoteDiagnostics.setEnabled(context, enabled)
-                                onRefresh()
-                            },
-                        )
+                        onRefresh()
                     }
-                    if (remoteDiagnostics.enabled) {
-                        ReliabilityFact("Queued events", remoteDiagnostics.queued.toString())
-                        ReliabilityFact(
-                            "Last upload",
-                            remoteDiagnostics.lastUploadAt.takeIf { it > 0L }?.let(::reliabilityTime) ?: "Not uploaded yet",
-                        )
-                        if (remoteDiagnostics.lastError.isNotBlank()) {
-                            ReliabilityFact("Last upload error", remoteDiagnostics.lastError)
-                        }
-                    }
-                }
-            }
-        }
 
-        item { ReliabilitySection("Diagnostic log", "Privacy-safe capture events; no raw customer text") }
-        item {
-            Card(shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (events.isEmpty()) {
-                        Text("No diagnostic events yet.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-                    } else {
-                        events.take(12).forEach { event ->
-                            Column {
-                                Text(
-                                    "${reliabilityTime(event.timestamp)} · ${event.stage}${event.platform.takeIf(String::isNotBlank)?.let { " · $it" }.orEmpty()}",
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontWeight = FontWeight.Medium,
-                                )
-                                Text(event.message, fontSize = 12.sp)
-                            }
-                        }
+                    if (remoteEnabled) {
+                        Text(
+                            reliabilityRemoteStatus(remoteDiagnostics),
+                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                            color = if (remoteDiagnostics.lastError.isBlank()) Success else MaterialTheme.colorScheme.error,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                        )
                     }
-                    FilledTonalButton(
-                        onClick = { reliabilityShareDiagnostics(context) },
+
+                    HorizontalDivider(Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                    TextButton(
+                        onClick = { manualDiagnosticsExpanded = !manualDiagnosticsExpanded },
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Icon(Icons.Rounded.BugReport, contentDescription = null)
                         Spacer(Modifier.size(8.dp))
-                        Text("Share diagnostics")
+                        Text(if (manualDiagnosticsExpanded) "Hide manual diagnostics" else "Show manual diagnostics")
                     }
-                    TextButton(
-                        onClick = {
-                            CaptureEventLog.clear(context)
-                            onRefresh()
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text("Clear event log")
+
+                    if (manualDiagnosticsExpanded) {
+                        if (events.isEmpty()) {
+                            Text(
+                                "No diagnostic events yet.",
+                                modifier = Modifier.padding(horizontal = 8.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.sp,
+                            )
+                        } else {
+                            events.take(10).forEach { event ->
+                                Column(Modifier.padding(horizontal = 8.dp, vertical = 3.dp)) {
+                                    Text(
+                                        "${reliabilityTime(event.timestamp)} · ${event.stage}${event.platform.takeIf(String::isNotBlank)?.let { " · $it" }.orEmpty()}",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontWeight = FontWeight.Medium,
+                                    )
+                                    Text(event.message, fontSize = 12.sp)
+                                }
+                            }
+                        }
+                        FilledTonalButton(
+                            onClick = { reliabilityShareDiagnostics(context) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Share diagnostics manually")
+                        }
+                        TextButton(
+                            onClick = {
+                                CaptureEventLog.clear(context)
+                                onRefresh()
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text("Clear local event log")
+                        }
                     }
                 }
             }
@@ -271,7 +305,7 @@ private fun ReliabilityScreen(onBack: () -> Unit, onRefresh: () -> Unit) {
         item {
             Text(
                 "CourierPilot ${reliabilityVersion(context)}",
-                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 11.sp,
             )
@@ -281,9 +315,9 @@ private fun ReliabilityScreen(onBack: () -> Unit, onRefresh: () -> Unit) {
 
 @Composable
 private fun ReliabilitySection(title: String, subtitle: String) {
-    Column(Modifier.padding(top = 6.dp)) {
-        Text(title, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-        Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+    Column(Modifier.padding(top = 4.dp)) {
+        Text(title, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
+        Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
     }
 }
 
@@ -295,20 +329,20 @@ private fun ReliabilityStatusCard(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     onClick: () -> Unit,
 ) {
-    Card(onClick = onClick, shape = RoundedCornerShape(20.dp)) {
-        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+    Card(onClick = onClick, shape = RoundedCornerShape(18.dp)) {
+        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
             Surface(
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(12.dp),
                 color = if (ok) Success.copy(alpha = 0.12f) else MaterialTheme.colorScheme.errorContainer,
             ) {
                 Icon(
                     icon,
                     contentDescription = null,
-                    modifier = Modifier.padding(10.dp),
+                    modifier = Modifier.padding(9.dp),
                     tint = if (ok) Success else MaterialTheme.colorScheme.error,
                 )
             }
-            Spacer(Modifier.size(12.dp))
+            Spacer(Modifier.size(11.dp))
             Column(Modifier.weight(1f)) {
                 Text(title, fontWeight = FontWeight.SemiBold)
                 Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
@@ -319,11 +353,17 @@ private fun ReliabilityStatusCard(
 }
 
 @Composable
-private fun ReliabilityFact(label: String, value: String) {
-    Column {
+private fun ReliabilityFact(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier) {
         Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, fontWeight = FontWeight.Medium)
         Text(value, fontSize = 13.sp)
     }
+}
+
+private fun reliabilityRemoteStatus(status: RemoteDiagnosticsStatus): String = when {
+    status.lastError.isNotBlank() -> "Upload problem: ${status.lastError} · ${status.queued} queued"
+    status.lastUploadAt > 0L -> "On · last upload ${reliabilityTime(status.lastUploadAt)} · ${status.queued} queued"
+    else -> "On · waiting for first upload · ${status.queued} queued"
 }
 
 private fun reliabilityNotificationAccess(context: android.content.Context): Boolean {

@@ -56,7 +56,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
+import com.block154.courierpilot.ui.CourierPilotToggleRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -862,14 +862,13 @@ private fun SettingsSwitchRow(
     enabled: Boolean = true,
     onChecked: (Boolean) -> Unit,
 ) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text(title, fontWeight = FontWeight.Medium, color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
-        }
-        Spacer(Modifier.size(12.dp))
-        Switch(checked = checked, onCheckedChange = onChecked, enabled = enabled)
-    }
+    CourierPilotToggleRow(
+        title = title,
+        subtitle = subtitle,
+        checked = checked,
+        enabled = enabled,
+        onCheckedChange = onChecked,
+    )
 }
 
 @Composable

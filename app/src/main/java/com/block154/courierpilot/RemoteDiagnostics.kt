@@ -53,12 +53,17 @@ internal object RemoteDiagnostics {
         context.getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE)
             .getBoolean(KEY_ENABLED, false)
 
-    fun setEnabled(context: Context, enabled: Boolean) {
+    fun setEnabled(context: Context, enabled: Boolean): Boolean {
         val app = context.applicationContext
-        app.getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE)
+        // This preference backs a user-facing control, so persist it synchronously and return the
+        // actual result. That keeps the Compose switch deterministic instead of depending on a later
+        // refresh after an asynchronous SharedPreferences.apply().
+        val stored = app.getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE)
             .edit()
             .putBoolean(KEY_ENABLED, enabled)
-            .apply()
+            .commit()
+        if (!stored) return false
+
         if (enabled) {
             resume(app)
         } else {
@@ -69,6 +74,7 @@ internal object RemoteDiagnostics {
                 retryDelayMs = 30_000L
             }
         }
+        return this.enabled(app) == enabled
     }
 
     fun status(context: Context): RemoteDiagnosticsStatus {
