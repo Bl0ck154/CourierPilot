@@ -108,6 +108,20 @@ internal object DeliveryLifecycleTracking {
         DeliveryEventType.DELIVERED, DeliveryEventType.CANCELLED -> false
     }
 
+    /**
+     * Strong UI evidence that the offer card is gone and the courier is already inside the task.
+     * This is intentionally separate from [detect]: CTA labels such as "Order delivered!" are
+     * enough to dismiss the offer advisor, but are not proof that delivery has already completed.
+     */
+    internal fun hasActiveTaskSurface(text: String): Boolean {
+        val lower = text.lowercase(Locale.ROOT).replace('’', '\'')
+        if (lower.contains("dropoff to") || lower.contains("drop-off to")) return true
+        if (lower.contains("address details") && lower.contains("order details")) return true
+        if (lower.contains("order delivered!") && lower.contains("order details")) return true
+        if (lower.contains("difficulties with the delivery?") && lower.contains("order details")) return true
+        return false
+    }
+
     internal fun detect(text: String): DeliveryLifecycleEvidence? {
         val lower = text.lowercase(Locale.ROOT).replace('’', '\'')
         val ordered = listOf(
@@ -131,6 +145,8 @@ internal object DeliveryLifecycleTracking {
             ),
             DeliveryEventType.ACCEPTED to listOf(
                 "navigate to pickup", "head to pickup", "going to pickup",
+                // Bolt switches from the offer card to these task screens immediately after accept.
+                "dropoff to", "drop-off to",
                 // Real Bolt accepted pickup screen. This is not shown on the priced offer card.
                 "order is ready for pickup",
             ),
