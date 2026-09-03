@@ -18,6 +18,14 @@ class WoltCaptureRegressionV01519Test {
     }
 
     @Test
+    fun explicitSymbolKeepsPriorityOverUnrelatedIsoAmount() {
+        assertEquals(
+            MoneyAmount(418, "EUR", 2),
+            MarketCurrencyParser.parse("USD 99.00\n€4.18"),
+        )
+    }
+
+    @Test
     fun structuralReparseNeverOverwritesPersistedOfferPrice() {
         val stored = OfferRecord(
             capturedAt = 1_788_380_027_000L,
