@@ -151,4 +151,17 @@ class OfferDecisionV0153Test {
         assertEquals(5_000, decision.routeDistanceMeters)
         assertEquals(1.0, decision.euroPerKilometer!!, 0.0001)
     }
+    @Test
+    fun eurColdStartUsesTheEstablishedCourierScale() {
+        val thresholds = LiveOfferColdStartThresholds.forCurrency("EUR")!!
+        assertEquals(OfferDecisionBand.GOOD, OfferDecisionEngine.bandFor(1.10, thresholds))
+        assertEquals(OfferDecisionBand.FIRE, OfferDecisionEngine.bandFor(2.97, thresholds))
+    }
+
+    @Test
+    fun nonEuroColdStartNeverGuessesFxEquivalentThresholds() {
+        assertNull(LiveOfferColdStartThresholds.forCurrency("PLN"))
+        assertNull(LiveOfferColdStartThresholds.forCurrency(null))
+    }
+
 }

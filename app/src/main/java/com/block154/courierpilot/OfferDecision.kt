@@ -47,6 +47,18 @@ internal data class OfferDecisionThresholds(
 }
 
 /**
+ * Currency-specific cold-start bands used only by the live card until adaptive personal/city
+ * evidence exists. EUR preserves the long-standing courier baseline (>1 €/km is already good,
+ * >=1.25 €/km is fire). Unknown/non-EUR currencies deliberately have no guessed conversion.
+ */
+internal object LiveOfferColdStartThresholds {
+    private val eur = OfferDecisionThresholds(0.70, 0.85, 1.00, 1.25)
+
+    fun forCurrency(currencyCode: String?): OfferDecisionThresholds? =
+        eur.takeIf { currencyCode.equals("EUR", ignoreCase = true) }
+}
+
+/**
  * Live offer verdict based only on money per real Valhalla route kilometre.
  *
  * The courier app supplied distance and ETA are deliberately ignored for scoring. When both

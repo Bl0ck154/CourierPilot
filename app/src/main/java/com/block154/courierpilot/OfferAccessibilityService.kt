@@ -144,6 +144,21 @@ class OfferAccessibilityService : AccessibilityService() {
                 if (uiText.isNotBlank()) OfferState.saveUiText(this, uiText)
                 val parsed = OfferParser.parse(uiText)
 
+                // If the live advisor already owns this courier screen, discovery OCR would only
+                // screenshot our own card, trigger ColorOS capture UI and risk re-arming the same
+                // Wolt offer. Stay idle until the advisor confirms a stable replacement instead.
+                if (LiveAdvisorHub.isCurrentTrackedOfferScreen(visible.packageName, parsed)) {
+                    CaptureEventLog.append(
+                        this,
+                        stage = "screen_live_duplicate",
+                        platform = OfferState.platformLabel(visible.packageName),
+                        message = "Active advisor owns visible offer; skipped discovery OCR and re-arm",
+                        dedupeWindowMs = 10_000L,
+                    )
+                    scheduleAttempt(IDLE_WATCHDOG_MS)
+                    return
+                }
+
                 if (armFromVisibleOffer(visible.packageName, uiText, parsed)) {
                     pending = OfferState.pending(this)
                 } else if (shouldRunDiscoveryOcr(visible.packageName)) {

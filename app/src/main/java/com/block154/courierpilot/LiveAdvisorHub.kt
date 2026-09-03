@@ -233,11 +233,11 @@ internal object LiveAdvisorHub {
     fun isCurrentTrackedOfferScreen(packageName: String, parsed: ParsedOffer): Boolean {
         val currentAdvisor = advisor ?: return false
         if (!currentAdvisor.isTrackingOffer(packageName)) return false
-        currentOffer?.takeIf { it.record.packageName == packageName }?.let { current ->
-            return !LiveOfferResumePolicy.definitelyDifferent(current.parsed, parsed)
+        currentOffer?.takeIf { it.record.packageName == packageName }?.let {
+            return !currentAdvisor.isConfirmedDifferentOffer(packageName, parsed)
         }
-        pendingPreview?.takeIf { it.packageName == packageName }?.let { preview ->
-            return !LiveOfferResumePolicy.definitelyDifferent(preview.parsed, parsed)
+        pendingPreview?.takeIf { it.packageName == packageName }?.let {
+            return !currentAdvisor.isConfirmedDifferentOffer(packageName, parsed)
         }
         return false
     }
