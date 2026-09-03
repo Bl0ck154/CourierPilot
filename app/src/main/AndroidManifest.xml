@@ -23,12 +23,17 @@
         android:usesCleartextTraffic="false">
 
         <activity
-            android:name=".CourierPilotDashboardActivity"
+            android:name=".AppUpdateLauncherActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".CourierPilotDashboardActivity"
+            android:exported="true">
             <meta-data
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />
