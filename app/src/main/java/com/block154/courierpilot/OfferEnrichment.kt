@@ -12,6 +12,11 @@ import java.util.Locale
  * The final pass below is deliberately semantic: Accessibility can expose the same stop more than
  * once with invisible whitespace/post-code differences, so route arrays are collapsed by canonical
  * building identity before they reach dedupe, history repair, address memory or UI.
+ *
+ * Persisted money is deliberately not reparsed here. A stored offer has already passed the capture
+ * gate; raw Accessibility/OCR text is noisier and may contain extra or malformed money tokens. Using
+ * a newer parser to overwrite the saved amount while merely opening History can therefore corrupt a
+ * previously correct record.
  */
 internal fun OfferRecord.withCurrentParsedStructure(): OfferRecord {
     val parseText = when {
@@ -60,7 +65,9 @@ internal fun OfferRecord.withCurrentParsedStructure(): OfferRecord {
     }
 
     return copy(
-        priceCents = parsed?.priceCents ?: priceCents,
+        // The persisted amount/currency is capture-time truth. Structural reparsing must never
+        // replace it with a later OCR interpretation.
+        priceCents = priceCents,
         distanceMeters = parsed?.distanceMeters ?: distanceMeters,
         restaurant = parsed?.restaurant ?: normalizedMerchants.takeIf { it.isNotEmpty() }?.joinToString(", ") ?: safeStoredRestaurant,
         merchantNames = normalizedMerchants,
@@ -72,6 +79,10 @@ internal fun OfferRecord.withCurrentParsedStructure(): OfferRecord {
         estimatedMinutesMax = parsed?.estimatedMinutesMax ?: estimatedMinutesMax,
     )
 }
+
+private val gluedStreetMarkerBeforeHouse = Regex(
+    """(?iu)(?<=\p{L})(?=(?:g\.|gatv(?:ė|e)|str\.?|street|pr\.?|prospektas|ave\.?|avenue|al\.?|pl\.?|plentas|skg\.?|kel\.?|kelias)\s*\d)"""
+)
 
 private fun canonicalDistinctAddresses(values: List<String>, bolt: Boolean = false): List<String> {
     val seen = mutableSetOf<String>()
@@ -85,7 +96,12 @@ private fun canonicalDistinctAddresses(values: List<String>, bolt: Boolean = fal
             .replace(Regex("\\s+"), " ")
             .trim()
         if (cleaned.isBlank()) return@mapNotNull null
-        val key = DeliveryAddressNormalizer.key(cleaned) ?: identityToken(cleaned)
+
+        // OCR sometimes glues a street marker to the final street-name letter, e.g.
+        // "V. Šopenog. 1". Canonicalize only for identity comparison and keep the best original
+        // display text. The strong "marker + house number" lookahead avoids altering normal words.
+        val identitySource = gluedStreetMarkerBeforeHouse.replace(cleaned, " ")
+        val key = DeliveryAddressNormalizer.key(identitySource) ?: identityToken(identitySource)
         cleaned.takeIf { key.isNotBlank() && seen.add(key) }
     }
 }

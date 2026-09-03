@@ -14,8 +14,9 @@ data class MoneyAmount(val amountMinor: Long, val currencyCode: String, val frac
     fun major(): BigDecimal = BigDecimal.valueOf(amountMinor, fractionDigits)
 }
 
-/** Parses an amount only when a currency is explicit. Ambiguous bare symbols such as `$` or `kr`
- * are intentionally not guessed. */
+/** Parses an offer amount only when a currency is explicit. Ambiguous bare symbols such as `$` or
+ * `kr` are intentionally not guessed. OCR can expose several money-looking tokens, so implausible
+ * delivery amounts are skipped instead of poisoning the capture with the first noisy token. */
 object MarketCurrencyParser {
     private val symbolToCode = linkedMapOf(
         "€" to "EUR",
@@ -31,27 +32,66 @@ object MarketCurrencyParser {
     private val symbolPrefix = Regex("""(${symbolToCode.keys.joinToString("|") { Regex.escape(it) }})\s*($numberPattern)""", RegexOption.IGNORE_CASE)
     private val symbolSuffix = Regex("""($numberPattern)\s*(${symbolToCode.keys.joinToString("|") { Regex.escape(it) }})""", RegexOption.IGNORE_CASE)
 
-    fun containsMoney(text: String): Boolean = parse(text) != null
+    private data class Candidate(
+        val rawAmount: String,
+        val currencyCode: String,
+    )
+
+    /** Money-looking text must stay classified as money even when the amount itself is rejected. */
+    fun containsMoney(text: String): Boolean {
+        if (symbolPrefix.containsMatchIn(text) || symbolSuffix.containsMatchIn(text)) return true
+        if (codePrefix.findAll(text).any { match ->
+                runCatching { Currency.getInstance(match.groupValues[1].uppercase(Locale.ROOT)) }.isSuccess
+            }) return true
+        return codeSuffix.findAll(text).any { match ->
+            runCatching { Currency.getInstance(match.groupValues[2].uppercase(Locale.ROOT)) }.isSuccess
+        }
+    }
 
     fun parse(text: String, locale: Locale = Locale.getDefault()): MoneyAmount? {
-        val symbolCandidate = symbolPrefix.find(text)?.let { it.groupValues[2] to codeForSymbol(it.groupValues[1]) }
-            ?: symbolSuffix.find(text)?.let { it.groupValues[1] to codeForSymbol(it.groupValues[2]) }
-        val codeCandidate = sequenceOf(
-            codePrefix.findAll(text).map { it.groupValues[2] to it.groupValues[1].uppercase(Locale.ROOT) },
-            codeSuffix.findAll(text).map { it.groupValues[1] to it.groupValues[2].uppercase(Locale.ROOT) },
-        ).flatten().firstOrNull { (_, code) -> runCatching { Currency.getInstance(code) }.isSuccess }
-        val candidate = symbolCandidate ?: codeCandidate ?: return null
-        val code = candidate.second ?: return null
-        val currency = runCatching { Currency.getInstance(code) }.getOrNull() ?: return null
-        val digits = currency.defaultFractionDigits.takeIf { it in 0..6 } ?: return null
-        val major = parseMajor(candidate.first, digits, locale) ?: return null
-        return runCatching {
-            MoneyAmount(
-                major.movePointRight(digits).setScale(0, RoundingMode.HALF_UP).longValueExact(),
-                code,
-                digits,
-            )
-        }.getOrNull()
+        // Preserve the previous parser's symbol-before-ISO preference while allowing it to skip a
+        // noisy candidate and continue to the next explicit amount.
+        val candidates = sequenceOf(
+            symbolPrefix.findAll(text).mapNotNull { match ->
+                codeForSymbol(match.groupValues[1])?.let { Candidate(match.groupValues[2], it) }
+            },
+            symbolSuffix.findAll(text).mapNotNull { match ->
+                codeForSymbol(match.groupValues[2])?.let { Candidate(match.groupValues[1], it) }
+            },
+            codePrefix.findAll(text).map { match ->
+                Candidate(match.groupValues[2], match.groupValues[1].uppercase(Locale.ROOT))
+            },
+            codeSuffix.findAll(text).map { match ->
+                Candidate(match.groupValues[1], match.groupValues[2].uppercase(Locale.ROOT))
+            },
+        ).flatten()
+
+        candidates.forEach { candidate ->
+            val currency = runCatching { Currency.getInstance(candidate.currencyCode) }.getOrNull()
+                ?: return@forEach
+            val digits = currency.defaultFractionDigits.takeIf { it in 0..6 }
+                ?: return@forEach
+            val major = parseMajor(candidate.rawAmount, digits, locale)
+                ?: return@forEach
+            val money = runCatching {
+                MoneyAmount(
+                    major.movePointRight(digits).setScale(0, RoundingMode.HALF_UP).longValueExact(),
+                    candidate.currencyCode,
+                    digits,
+                )
+            }.getOrNull() ?: return@forEach
+            if (isPlausibleOfferAmount(money)) return money
+        }
+        return null
+    }
+
+    private fun isPlausibleOfferAmount(money: MoneyAmount): Boolean {
+        if (money.amountMinor <= 0L) return false
+        // CourierPilot historically guarded EUR offers to €0.20..€100. The currency-aware parser
+        // accidentally dropped that safeguard, allowing OCR such as "€200" to replace a normal
+        // Wolt fee. Keep the proven EUR bound while leaving native non-EUR markets uncapped here;
+        // their scales differ too much to impose an invented FX-based threshold.
+        return money.currencyCode != "EUR" || money.amountMinor in MIN_EUR_OFFER_MINOR..MAX_EUR_OFFER_MINOR
     }
 
     private fun codeForSymbol(symbol: String): String? = symbolToCode.entries
@@ -87,4 +127,7 @@ object MarketCurrencyParser {
         val localeSeparator = java.text.DecimalFormatSymbols.getInstance(locale).decimalSeparator
         return if (after in 1..fractionDigits && value[index] == localeSeparator) index else if (after in 1..fractionDigits) index else -1
     }
+
+    private const val MIN_EUR_OFFER_MINOR = 20L
+    private const val MAX_EUR_OFFER_MINOR = 10_000L
 }
