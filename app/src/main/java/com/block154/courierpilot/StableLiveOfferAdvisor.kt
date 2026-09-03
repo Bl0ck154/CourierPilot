@@ -62,6 +62,7 @@ internal class StableLiveOfferAdvisor(
     private var cachedRouteVisible = true
     private var cachedPedestrianRoute: RouteResult? = null
     private var cachedCyclewayRoute: RouteResult? = null
+    private val differentOfferConfirmation = OfferDifferenceConfirmation()
 
     private var gestureDownX = 0f
     private var gestureDownY = 0f
@@ -111,6 +112,7 @@ internal class StableLiveOfferAdvisor(
         }
         previewMode = true
         currentParsed = parsed
+        differentOfferConfirmation.reset()
         renderProgressiveDecision(parsed)
         if (cachedRouteLine.isBlank()) {
             setRouteContent(if (LiveAdvisorSettings.routeEnabled(service, platform)) "⚡ Valhalla · preparing route…" else "Route off")
@@ -142,6 +144,7 @@ internal class StableLiveOfferAdvisor(
             currentPlatform = platform
             currentParsed = parsed
             previewMode = false
+            differentOfferConfirmation.reset()
             renderProgressiveDecision(parsed)
             if (cachedRouteLine.isBlank()) renderRouteLoadingState()
             if (!temporarilyHidden) {
@@ -209,6 +212,20 @@ internal class StableLiveOfferAdvisor(
 
     fun isTrackingOffer(packageName: String): Boolean =
         !dismissed && currentParsed != null && expectedPackageName == packageName
+
+    /**
+     * Wolt Compose briefly exposes contradictory merchant/address snapshots while the same offer is
+     * recomposing. A single such frame must never destroy/re-arm the live card. Notifications still
+     * arm truly new offers immediately; screen-only replacement needs stable conflict evidence.
+     */
+    fun isConfirmedDifferentOffer(packageName: String, parsed: ParsedOffer): Boolean {
+        if (!isTrackingOffer(packageName)) return true
+        val expected = currentParsed ?: return true
+        return differentOfferConfirmation.observe(
+            different = LiveOfferResumePolicy.definitelyDifferent(expected, parsed),
+            nowElapsedMs = SystemClock.elapsedRealtime(),
+        )
+    }
 
     fun updateRoute(comparison: RouteComparison, waypointCount: Int) {
         if (dismissed || !LiveAdvisorSettings.enabled(service)) return
@@ -328,7 +345,7 @@ internal class StableLiveOfferAdvisor(
             !hasPrice -> setDecisionPlaceholder("⏳  Waiting for Wolt price…")
             hasRoute -> renderProfitability(parsed, cachedPedestrianRoute, cachedCyclewayRoute)
             LiveAdvisorSettings.routeEnabled(service, currentPlatform) ->
-                setDecisionPlaceholder("✓  Price ready · finishing route…")
+                setDecisionPlaceholder("⏳  Calculating offer…")
             else -> setDecisionPlaceholder("Route off · score unavailable")
         }
     }
@@ -347,13 +364,29 @@ internal class StableLiveOfferAdvisor(
         pedestrianRoute: RouteResult?,
         cyclewayRoute: RouteResult?,
     ) {
+        val currencyCode = parsed.money?.currencyCode
+        val adaptiveThresholds = currencyCode?.let { code ->
+            MarketIntelligence.thresholdsFor(service, currentPlatform, code)
+        }
+        val coldStartThresholds = currencyCode?.let(LiveOfferColdStartThresholds::forCurrency)
+        val thresholdSource = when {
+            adaptiveThresholds != null -> "adaptive"
+            coldStartThresholds != null -> "currency_cold_start"
+            else -> "none"
+        }
         val decision = OfferDecisionEngine.evaluate(
             parsed,
             pedestrianRoute,
             cyclewayRoute,
-            thresholds = parsed.money?.currencyCode?.let { currencyCode ->
-                MarketIntelligence.thresholdsFor(service, currentPlatform, currencyCode)
-            },
+            thresholds = adaptiveThresholds ?: coldStartThresholds,
+        )
+        CaptureEventLog.append(
+            service,
+            stage = "score_model",
+            platform = currentPlatform,
+            message = "source=$thresholdSource; currency=${currencyCode ?: "none"}; band=${decision.band.name}; " +
+                "rate=${decision.moneyPerKilometer?.let { "%.2f".format(Locale.US, it) } ?: "none"}",
+            dedupeWindowMs = 5_000L,
         )
         val platformEconomics = PlatformOfferEconomicsCalculator.calculate(parsed)
         cachedDecisionLine = LiveAdvisorPresentation.profitabilityLine(decision, platformEconomics)
@@ -541,8 +574,22 @@ internal class StableLiveOfferAdvisor(
             .start()
     }
 
-    /** Temporarily make the accessibility overlay invisible to display-level screenshots. */
+    /**
+     * Keep Wolt visible during display fallback captures. Before price the card contains no money
+     * token, and after price the final proof capture is not reparsed; hiding it was pure user-visible
+     * flicker on Realme/ColorOS. Bolt keeps the conservative suppression path because its OCR is more
+     * spatially fragile.
+     */
     fun setCaptureSuppressed(suppressed: Boolean) {
+        if (!LiveAdvisorCapturePolicy.shouldSuppressOverlay(currentPlatform)) {
+            captureSuppressed = false
+            root?.apply {
+                animate().cancel()
+                translationY = 0f
+                alpha = 1f
+            }
+            return
+        }
         if (captureSuppressed == suppressed) return
         captureSuppressed = suppressed
         val view = root ?: return
@@ -606,6 +653,7 @@ internal class StableLiveOfferAdvisor(
         cachedRouteVisible = true
         cachedPedestrianRoute = null
         cachedCyclewayRoute = null
+        differentOfferConfirmation.reset()
     }
 
     private fun refreshControls() {
@@ -648,6 +696,10 @@ internal class StableLiveOfferAdvisor(
         }
 
         if (courierRoot == null) {
+            if (isTransientSystemOverlayPackage(activePackage)) {
+                resetMissingEvidence()
+                return
+            }
             if (registerMissingEvidence()) {
                 temporarilyHide("courier window temporarily unavailable; active=$activePackage")
             }
@@ -663,8 +715,8 @@ internal class StableLiveOfferAdvisor(
         // the same Wolt screen. In particular, Wolt can expose "Go offline" while an incoming
         // offer is still fully visible. Never end the card before checking the offer UI itself.
         if (hasOfferUi) {
-            if (LiveOfferResumePolicy.definitelyDifferent(expectedOffer, parsed)) {
-                suppressCurrentOffer("different offer is now visible")
+            if (isConfirmedDifferentOffer(expected, parsed)) {
+                suppressCurrentOffer("different offer is now stably visible")
                 return
             }
             resetMissingEvidence()
