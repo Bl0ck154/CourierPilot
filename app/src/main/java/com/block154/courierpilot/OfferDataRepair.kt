@@ -12,9 +12,9 @@ import android.net.Uri
 internal object OfferDataRepair {
     private const val PREFS = "courier_offer_repairs"
     private const val KEY_REVISION = "parser_repair_revision"
-    // Revision 11 removes short Wolt same-route recaptures even when one transient frame stored a
-    // different price, keeps the richer/credible row, and removes orphan market observations too.
-    private const val CURRENT_REVISION = 11
+    // Revision 12 reparses historical Wolt rows so percentage completion/status banners can no
+    // longer remain stored as merchant names. It also includes all earlier duplicate repairs.
+    private const val CURRENT_REVISION = 12
     private const val LIST_SEPARATOR = "\u001F"
 
     @Synchronized
