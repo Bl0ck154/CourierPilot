@@ -40,6 +40,7 @@ internal object OfferParser {
     private val singleMinuteRegex = Regex("(?i)~?\\s*(\\d{1,3})\\s*min\\b")
     private val stackedHeaderRegex = Regex("(?i)^\\s*(\\d+)\\s+deliver(?:y|ies)\\s+from\\s*$")
     private val minuteOnlyRegex = Regex("(?i)^~?\\s*\\d{1,3}\\s*min$")
+    private val progressStatusRegex = Regex("(?i)^\\s*\\d{1,3}\\s*%\\s*(?:complete|completed)\\s*$")
     private val boltDropoffCountRegex = Regex("(?i)^\\s*drop[- ]?off\\s+points?\\s*:\\s*(\\d+)\\s*$")
     private val boltBranchNameRegex = Regex(
         "(?i).*\\([^)]*(?:\\bstr\\.?|\\bstreet|\\bg\\.?|\\bgatv(?:ė|e)?|\\bpr\\.?|\\bprospektas|\\bave\\.?|\\bavenue|\\brd\\.?|\\broad)[^)]*\\)\\s*$"
@@ -328,7 +329,7 @@ internal object OfferParser {
         val lower = line.lowercase(Locale.ROOT)
         if (line.length !in 2..140) return false
         if (MarketCurrencyParser.containsMoney(line) || distanceRegex.matches(line) || estimateRegex.containsMatchIn(line)) return false
-        if (minuteOnlyRegex.matches(line) || looksLikeAddress(line)) return false
+        if (minuteOnlyRegex.matches(line) || progressStatusRegex.matches(line) || looksLikeAddress(line)) return false
         if (boltDropoffCountRegex.matches(line)) return false
         if (lower in GENERIC_LINES) return false
         if (lower.startsWith("pickup ") || lower.startsWith("delivery ")) return false
