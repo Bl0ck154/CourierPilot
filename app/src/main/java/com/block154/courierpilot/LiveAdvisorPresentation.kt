@@ -5,11 +5,16 @@ import kotlin.math.abs
 
 internal object LiveAdvisorPresentation {
     fun profitabilityLine(decision: OfferDecision, economics: PlatformOfferEconomics): String {
-        val code = decision.currencyCode ?: economics.currencyCode
-        val km = decision.moneyPerKilometer
-            ?.let { "${formatMoneyRate(it, code)}/km" }
-            ?: "${code ?: "money"}/km —"
-        val hour = hourText(economics)
+        val rawCode = decision.currencyCode ?: economics.currencyCode
+        val code = rawCode?.takeIf(MarketCurrencyParser::isSupportedCurrencyCode)
+        val km = if (code == null) {
+            "—/km"
+        } else {
+            decision.moneyPerKilometer
+                ?.let { "${formatMoneyRate(it, code)}/km" }
+                ?: "$code/km —"
+        }
+        val hour = if (code == null) "—/h" else hourText(economics, code)
         return "${decision.band.emoji}  $km  •  $hour"
     }
 
@@ -21,14 +26,13 @@ internal object LiveAdvisorPresentation {
         return listOfNotNull("🚶 $walk", "🚲 $cycle", average).joinToString("   ")
     }
 
-    private fun hourText(economics: PlatformOfferEconomics): String {
+    private fun hourText(economics: PlatformOfferEconomics, currencyCode: String): String {
         val lo = economics.moneyPerHourMin
         val hi = economics.moneyPerHourMax
-        val code = economics.currencyCode
         return when {
-            lo != null && hi != null && abs(lo - hi) < 0.05 -> "${formatMoneyRate(lo, code, 1)}/h"
-            lo != null && hi != null -> "${formatMoneyRate(lo, code, 1)}–${formatMoneyRate(hi, code, 1)}/h"
-            else -> "${code ?: "money"}/h —"
+            lo != null && hi != null && abs(lo - hi) < 0.05 -> "${formatMoneyRate(lo, currencyCode, 1)}/h"
+            lo != null && hi != null -> "${formatMoneyRate(lo, currencyCode, 1)}–${formatMoneyRate(hi, currencyCode, 1)}/h"
+            else -> "$currencyCode/h —"
         }
     }
 
