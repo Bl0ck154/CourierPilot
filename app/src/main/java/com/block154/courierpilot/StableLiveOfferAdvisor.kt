@@ -25,7 +25,7 @@ import java.util.Locale
 import kotlin.math.abs
 
 /**
- * Stable live card: the shell appears first with profitability data, then Valhalla updates the same
+ * Stable live card: the shell appears first with profitability data, then routing updates the same
  * card in place. Route work never owns card lifetime and a route callback cannot create a new card.
  */
 internal class StableLiveOfferAdvisor(
@@ -115,7 +115,7 @@ internal class StableLiveOfferAdvisor(
         differentOfferConfirmation.reset()
         renderProgressiveDecision(parsed)
         if (cachedRouteLine.isBlank()) {
-            setRouteContent(if (LiveAdvisorSettings.routeEnabled(service, platform)) "⚡ Valhalla · preparing route…" else "Route off")
+            setRouteContent(if (LiveAdvisorSettings.routeEnabled(service, platform)) "⚡ Route preparing…" else "Route off")
         }
         if (!temporarilyHidden) {
             ensureView()
@@ -214,8 +214,8 @@ internal class StableLiveOfferAdvisor(
         !dismissed && currentParsed != null && expectedPackageName == packageName
 
     /**
-     * Wolt Compose briefly exposes contradictory merchant/address snapshots while the same offer is
-     * recomposing. A single such frame must never destroy/re-arm the live card. Notifications still
+     * Courier UIs can briefly expose contradictory merchant/address snapshots while the same offer
+     * recomposes. A single such frame must never destroy/re-arm the live card. Notifications still
      * arm truly new offers immediately; screen-only replacement needs stable conflict evidence.
      */
     fun isConfirmedDifferentOffer(packageName: String, parsed: ParsedOffer): Boolean {
@@ -241,7 +241,7 @@ internal class StableLiveOfferAdvisor(
                 service,
                 stage = "route_ready",
                 platform = currentPlatform,
-                message = "Valhalla updated cached card; points=$waypointCount; visible=${root != null}; card_age_ms=${(SystemClock.elapsedRealtime() - offerVisualStartedAtElapsed).coerceAtLeast(0L)}",
+                message = "Route updated cached card; points=$waypointCount; visible=${root != null}; card_age_ms=${(SystemClock.elapsedRealtime() - offerVisualStartedAtElapsed).coerceAtLeast(0L)}",
             )
         }
     }
@@ -252,7 +252,8 @@ internal class StableLiveOfferAdvisor(
             if (dismissed) return@post
             val comparison = outcome.comparison
             if (comparison == null) {
-                setRouteContent("⚠️ Valhalla · unavailable")
+                setDecisionPlaceholder("Route unavailable · score unavailable")
+                setRouteContent("⚠️ Route unavailable")
                 CaptureEventLog.append(
                     service,
                     stage = "bolt_route_failed",
@@ -264,14 +265,12 @@ internal class StableLiveOfferAdvisor(
 
             val walking = comparison.pedestrian.getOrNull()
             val cycling = comparison.cycleway.getOrNull()
-            // Pickup-only Bolt routing is incomplete, so it must not distort whole-order €/km/score.
-            if (outcome.scope == BoltRouteScope.FULL) {
-                currentParsed?.let { parsed -> renderProfitability(parsed, walking, cycling) }
-            }
-            val routes = LiveAdvisorPresentation.routeLine(walking, cycling)
-            setRouteContent(
-                if (outcome.scope == BoltRouteScope.PICKUP_ONLY) "Pickup · $routes" else routes,
-            )
+            cachedPedestrianRoute = walking
+            cachedCyclewayRoute = cycling
+            // Pickup-only evidence is still useful for the courier right now. Render it immediately,
+            // but LiveAdvisorHub continues to exclude PICKUP_ONLY routes from market-model training.
+            currentParsed?.let { parsed -> renderProfitability(parsed, walking, cycling) }
+            setRouteContent(LiveAdvisorPresentation.routeLine(walking, cycling))
             CaptureEventLog.append(
                 service,
                 stage = "bolt_route_ready",
@@ -285,7 +284,8 @@ internal class StableLiveOfferAdvisor(
         if (dismissed || !LiveAdvisorSettings.enabled(service)) return
         handler.post {
             if (dismissed) return@post
-            setRouteContent("⚠️ Valhalla · unavailable")
+            setDecisionPlaceholder("Route unavailable · score unavailable")
+            setRouteContent("⚠️ Route unavailable")
             CaptureEventLog.append(service, "route_failed", reason, currentPlatform)
         }
     }
@@ -342,7 +342,7 @@ internal class StableLiveOfferAdvisor(
         val hasPrice = parsed.priceCents != null && parsed.money != null
         val hasRoute = cachedPedestrianRoute != null || cachedCyclewayRoute != null
         when {
-            !hasPrice -> setDecisionPlaceholder("⏳  Waiting for Wolt price…")
+            !hasPrice -> setDecisionPlaceholder("⏳  Waiting for price…")
             hasRoute -> renderProfitability(parsed, cachedPedestrianRoute, cachedCyclewayRoute)
             LiveAdvisorSettings.routeEnabled(service, currentPlatform) ->
                 setDecisionPlaceholder("⏳  Calculating offer…")
@@ -399,7 +399,7 @@ internal class StableLiveOfferAdvisor(
 
     private fun renderRouteLoadingState() {
         val enabled = LiveAdvisorSettings.routeEnabled(service, currentPlatform)
-        setRouteContent(if (enabled) "⏳ Valhalla · calculating…" else "Route off")
+        setRouteContent(if (enabled) "⏳ Route calculating…" else "Route off")
     }
 
     private fun setRouteContent(text: String, visible: Boolean = true) {
@@ -578,7 +578,7 @@ internal class StableLiveOfferAdvisor(
      * Keep Wolt visible during display fallback captures. Before price the card contains no money
      * token, and after price the final proof capture is not reparsed; hiding it was pure user-visible
      * flicker on Realme/ColorOS. Bolt keeps the conservative suppression path because its OCR is more
-     * spatially fragile.
+     * spatially fragile on Android versions that cannot capture a single app window.
      */
     fun setCaptureSuppressed(suppressed: Boolean) {
         if (!LiveAdvisorCapturePolicy.shouldSuppressOverlay(currentPlatform)) {
@@ -711,6 +711,14 @@ internal class StableLiveOfferAdvisor(
         val parsed = OfferParser.parse(visibleText)
         val hasOfferUi = CourierSignals.looksLikeOfferScreen(visibleText, parsed) || hasDecisionPair(visibleText)
 
+        // Strong accepted/in-progress task surfaces always beat stale offer identity. Bolt can keep
+        // merchant/address nodes around after Accept, so waiting for generic surface change was able
+        // to pin the card over Dropoff/Address details screens indefinitely.
+        if (DeliveryLifecycleTracking.hasActiveTaskSurface(visibleText)) {
+            suppressCurrentOffer("offer accepted; active delivery screen visible")
+            return
+        }
+
         // A live offer is stronger evidence than generic background/presence strings rendered on
         // the same Wolt screen. In particular, Wolt can expose "Go offline" while an incoming
         // offer is still fully visible. Never end the card before checking the offer UI itself.
@@ -720,21 +728,12 @@ internal class StableLiveOfferAdvisor(
                 return
             }
             resetMissingEvidence()
-            if (currentPlatform.equals("Bolt", ignoreCase = true) && boltBaselineSurface == null) {
+            if (currentPlatform.equals("Bolt", ignoreCase = true)) {
+                // Adopt the latest confirmed same-offer surface after map zoom/recomposition instead
+                // of treating the old geometry snapshot as immutable proof that the offer vanished.
                 boltBaselineSurface = inspection.snapshot
             }
             if (temporarilyHidden) restoreFromCache("same offer returned to foreground")
-            return
-        }
-
-        // Some Wolt Compose recompositions temporarily drop the Accept/Decline semantics while the
-        // price/merchant/address remains visible. A matching identity keeps the card alive.
-        if (
-            currentPlatform.equals("Wolt", ignoreCase = true) &&
-            LiveOfferResumePolicy.hasMatchingIdentity(expectedOffer, parsed)
-        ) {
-            resetMissingEvidence()
-            if (temporarilyHidden) restoreFromCache("same Wolt offer identity returned without controls")
             return
         }
 
@@ -745,6 +744,15 @@ internal class StableLiveOfferAdvisor(
         val presence = CourierSignals.detectPresence(visibleText)
         if (presence != PresenceSignal.UNKNOWN) {
             suppressCurrentOffer("offer replaced by presence=$presence")
+            return
+        }
+
+        // Compose/map recompositions can temporarily remove Accept/Decline while retaining the same
+        // price, merchant or address. This identity is stronger than window geometry on both apps.
+        if (LiveOfferResumePolicy.hasMatchingIdentity(expectedOffer, parsed)) {
+            resetMissingEvidence()
+            if (currentPlatform.equals("Bolt", ignoreCase = true)) boltBaselineSurface = inspection.snapshot
+            if (temporarilyHidden) restoreFromCache("same offer identity returned without controls")
             return
         }
 
@@ -763,8 +771,11 @@ internal class StableLiveOfferAdvisor(
                 if (temporarilyHidden) restoreFromCache("same sparse Bolt offer surface returned")
                 return
             }
+            // Zooming/panning the live map changes a large part of Bolt's Accessibility geometry even
+            // though the bottom offer card is exactly the same. Geometry alone therefore gets a long
+            // grace period; explicit task/presence/different-offer evidence above still hides at once.
             if (registerMissingEvidence(graceMs = BOLT_GONE_GRACE_MS, minChecks = BOLT_MIN_MISSING_CHECKS)) {
-                temporarilyHide("Bolt offer surface is no longer visible")
+                temporarilyHide("Bolt offer surface remained unconfirmed")
             }
             return
         }
@@ -999,13 +1010,13 @@ internal class StableLiveOfferAdvisor(
         const val HIDDEN_VISIBILITY_CHECK_MS = 1_500L
         const val GONE_GRACE_MS = 1_500L
         const val MIN_MISSING_CHECKS = 3
-        const val BOLT_GONE_GRACE_MS = 700L
-        const val BOLT_MIN_MISSING_CHECKS = 2
+        const val BOLT_GONE_GRACE_MS = 8_000L
+        const val BOLT_MIN_MISSING_CHECKS = 5
         const val WOLT_UNCERTAIN_GRACE_MS = 5_000L
         const val WOLT_UNCERTAIN_MIN_CHECKS = 5
-        const val FADE_IN_MS = 220L
-        const val FADE_OUT_MS = 160L
-        const val FADE_OFFSET_DP = 6
+        const val FADE_IN_MS = 380L
+        const val FADE_OUT_MS = 280L
+        const val FADE_OFFSET_DP = 10
         const val DEFAULT_Y_DP = 48
         const val MIN_Y_DP = 12
         const val BOTTOM_MARGIN_DP = 16
