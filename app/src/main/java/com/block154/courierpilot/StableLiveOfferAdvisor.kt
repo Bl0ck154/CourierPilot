@@ -265,11 +265,17 @@ internal class StableLiveOfferAdvisor(
 
             val walking = comparison.pedestrian.getOrNull()
             val cycling = comparison.cycleway.getOrNull()
-            cachedPedestrianRoute = walking
-            cachedCyclewayRoute = cycling
-            // Pickup-only evidence is still useful for the courier right now. Render it immediately,
-            // but LiveAdvisorHub continues to exclude PICKUP_ONLY routes from market-model training.
-            currentParsed?.let { parsed -> renderProfitability(parsed, walking, cycling) }
+            if (outcome.scope == BoltRouteScope.FULL) {
+                cachedPedestrianRoute = walking
+                cachedCyclewayRoute = cycling
+                currentParsed?.let { parsed -> renderProfitability(parsed, walking, cycling) }
+            } else {
+                // A pickup-only route is useful context, but it is not the full paid delivery.
+                // Never turn that partial distance into a misleading €/km verdict.
+                cachedPedestrianRoute = null
+                cachedCyclewayRoute = null
+                currentParsed?.let { parsed -> renderProfitability(parsed, null, null) }
+            }
             setRouteContent(LiveAdvisorPresentation.routeLine(walking, cycling))
             CaptureEventLog.append(
                 service,
