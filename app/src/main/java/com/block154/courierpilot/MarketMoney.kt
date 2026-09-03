@@ -42,12 +42,12 @@ object MarketCurrencyParser {
     /** Money-looking text must stay classified as money even when the amount itself is rejected. */
     fun containsMoney(text: String): Boolean {
         if (symbolPrefix.containsMatchIn(text) || symbolSuffix.containsMatchIn(text)) return true
-        return sequenceOf(codePrefix.findAll(text), codeSuffix.findAll(text))
-            .flatten()
-            .any { match ->
-                val code = if (match.pattern == codePrefix) match.groupValues[1] else match.groupValues[2]
-                runCatching { Currency.getInstance(code.uppercase(Locale.ROOT)) }.isSuccess
-            }
+        if (codePrefix.findAll(text).any { match ->
+                runCatching { Currency.getInstance(match.groupValues[1].uppercase(Locale.ROOT)) }.isSuccess
+            }) return true
+        return codeSuffix.findAll(text).any { match ->
+            runCatching { Currency.getInstance(match.groupValues[2].uppercase(Locale.ROOT)) }.isSuccess
+        }
     }
 
     fun parse(text: String, locale: Locale = Locale.getDefault()): MoneyAmount? {
