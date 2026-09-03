@@ -7,10 +7,11 @@ internal object LiveAdvisorPresentation {
     fun profitabilityLine(decision: OfferDecision, economics: PlatformOfferEconomics): String {
         val rawCode = decision.currencyCode ?: economics.currencyCode
         val code = rawCode?.takeIf(MarketCurrencyParser::isSupportedCurrencyCode)
-        val km = if (code == null || decision.moneyPerKilometer == null) {
+        val moneyPerKilometer = decision.moneyPerKilometer
+        val km = if (code == null || moneyPerKilometer == null) {
             "—/km"
         } else {
-            "${formatMoneyRate(decision.moneyPerKilometer, code)}/km"
+            "${formatMoneyRate(moneyPerKilometer, code)}/km"
         }
         val hour = if (code == null) "—/h" else hourText(economics, code)
         return "${decision.band.emoji}  $km  •  $hour"
