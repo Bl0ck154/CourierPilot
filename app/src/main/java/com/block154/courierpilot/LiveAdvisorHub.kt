@@ -63,6 +63,14 @@ internal object LiveAdvisorHub {
         val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
         pendingPreview = PendingAdvisorOffer(key, pending.packageName, pending.armedAt, parsed)
         advisor?.showPending(platform, parsed)
+
+        // Bolt address geocoding is independent from price persistence. Start it as soon as the
+        // offer card exposes pickup addresses so the live route can usually hit the in-memory cache
+        // once the priced offer is committed.
+        if (pending.packageName == CourierSignals.BOLT_PACKAGE && parsed.pickupAddresses.isNotEmpty()) {
+            RouteResearchGeocoder.prewarm(service, parsed.pickupAddresses)
+        }
+
         if (pending.packageName == CourierSignals.WOLT_PACKAGE) {
             val started = AutomaticWoltRouteCoordinator.prepare(service, key, parsed) { prepared ->
                 val active = pendingPreview
@@ -141,7 +149,7 @@ internal object LiveAdvisorHub {
 
         DeliveryLifecycleTracking.onOfferCaptured(service, record.packageName, offerId, record.capturedAt)
 
-        // The card shell is rendered synchronously before any route/geocoder work starts. Valhalla
+        // The card shell is rendered synchronously before any route/geocoder work starts. Routing
         // only updates rows inside this already-visible card; it never controls whether the card exists.
         currentAdvisor.showBase(record.platform, parsed)
         startRouteForOffer(service, current, preparedKey)

@@ -1,6 +1,7 @@
 package com.block154.courierpilot
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -54,6 +55,10 @@ class LiveAdvisorV010Test {
                 "Order is ready for pickup\nArrive in 7 min\nVynoteka (Kapsų str.)\nKapsų g. 3-43, Vilnius",
             )?.type,
         )
+        assertEquals(
+            DeliveryEventType.ACCEPTED,
+            DeliveryLifecycleTracking.detect("Dropoff to\nTomas Prochorenko\nEglių g. 33, Vilnius")?.type,
+        )
         assertNull(DeliveryLifecycleTracking.detect("Restaurant · Customer · 2.4 km"))
         assertNull(DeliveryLifecycleTracking.detect("Accept · Decline · €7.20"))
 
@@ -62,6 +67,23 @@ class LiveAdvisorV010Test {
         assertTrue(DeliveryLifecycleTracking.canAdvance(DeliveryEventType.PICKED_UP, DeliveryEventType.DELIVERED))
         assertEquals(false, DeliveryLifecycleTracking.canAdvance(DeliveryEventType.OFFER_CAPTURED, DeliveryEventType.DELIVERED))
         assertEquals(false, DeliveryLifecycleTracking.canAdvance(DeliveryEventType.DELIVERED, DeliveryEventType.ACCEPTED))
+    }
+
+    @Test
+    fun activeBoltTaskSurfacesDismissOfferAdvisorWithoutPretendingCtaIsCompleted() {
+        assertTrue(
+            DeliveryLifecycleTracking.hasActiveTaskSurface(
+                "Dropoff to\nTomas Prochorenko\nEglių g. 33, 03144 Vilnius",
+            )
+        )
+        assertTrue(
+            DeliveryLifecycleTracking.hasActiveTaskSurface(
+                "Address details\nNotes\nOrder details\nDifficulties with the delivery?\nOrder delivered!",
+            )
+        )
+        assertFalse(DeliveryLifecycleTracking.hasActiveTaskSurface("Accept\nDecline\n€2.52"))
+        // The final button is a CTA, not proof that the order is already delivered.
+        assertNull(DeliveryLifecycleTracking.detect("Address details\nOrder details\nOrder delivered!"))
     }
 
     @Test

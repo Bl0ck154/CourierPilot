@@ -477,10 +477,12 @@ internal object AutomaticBoltRouteCoordinator {
 
         val initialSemanticMarkers = captureMapMarkers(context, parsed)?.takeIf(::hasUsefulMarkers)
 
-        RouteResearchLocation.requestCurrent(app) { locationResult ->
+        // Bolt keeps location hot while a courier is online. Reuse a very fresh accurate fix instead
+        // of waiting up to eight seconds for a new GPS callback on every incoming offer.
+        RouteResearchLocation.requestForLiveOffer(app) { locationResult ->
             val fix = locationResult.getOrElse {
                 completeFailure(app, offerId, platform, parsed, emptyList(), null, "current location unavailable", onComplete)
-                return@requestCurrent
+                return@requestForLiveOffer
             }
             resolvePickups(app, parsed, supplementalPickupAddresses) { knownPickups ->
                 if (knownPickups.isEmpty()) {
@@ -521,7 +523,14 @@ internal object AutomaticBoltRouteCoordinator {
                     }
 
                     val currentWaypoint = currentOnly(fix).first()
-                    val routedPickups = recovery?.orderedPickups ?: knownPickups
+                    val canHaveExtraPickup = (parsed.deliveryCount ?: 1) > 1 || supplementalPickupAddresses.isNotEmpty()
+                    // A normal single Bolt offer already has a trusted textual pickup address. Do not
+                    // let map zoom/POI marker noise invent a second pickup and inflate the distance.
+                    val routedPickups = if (canHaveExtraPickup) {
+                        recovery?.orderedPickups ?: knownPickups
+                    } else {
+                        knownPickups
+                    }
                     val waypoints = buildList {
                         add(currentWaypoint)
                         addAll(routedPickups)

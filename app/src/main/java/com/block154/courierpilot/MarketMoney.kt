@@ -32,19 +32,30 @@ object MarketCurrencyParser {
     private val symbolPrefix = Regex("""(${symbolToCode.keys.joinToString("|") { Regex.escape(it) }})\s*($numberPattern)""", RegexOption.IGNORE_CASE)
     private val symbolSuffix = Regex("""($numberPattern)\s*(${symbolToCode.keys.joinToString("|") { Regex.escape(it) }})""", RegexOption.IGNORE_CASE)
 
+    // Courier cards contain short UI labels next to numbers. Android's currency table is permissive
+    // on some builds, so strings such as "11 min" must be rejected before they can become a fake
+    // three-letter currency (the live card previously displayed values such as "MIN 10.87/km").
+    private val nonCurrencyUiCodes = setOf("MIN", "MAX", "ETA", "HRS", "KMH", "KMS")
+
     private data class Candidate(
         val rawAmount: String,
         val currencyCode: String,
     )
 
+    internal fun isSupportedCurrencyCode(rawCode: String?): Boolean {
+        val code = rawCode?.trim()?.uppercase(Locale.ROOT) ?: return false
+        if (code in nonCurrencyUiCodes) return false
+        return runCatching { Currency.getInstance(code) }.isSuccess
+    }
+
     /** Money-looking text must stay classified as money even when the amount itself is rejected. */
     fun containsMoney(text: String): Boolean {
         if (symbolPrefix.containsMatchIn(text) || symbolSuffix.containsMatchIn(text)) return true
         if (codePrefix.findAll(text).any { match ->
-                runCatching { Currency.getInstance(match.groupValues[1].uppercase(Locale.ROOT)) }.isSuccess
+                isSupportedCurrencyCode(match.groupValues[1])
             }) return true
         return codeSuffix.findAll(text).any { match ->
-            runCatching { Currency.getInstance(match.groupValues[2].uppercase(Locale.ROOT)) }.isSuccess
+            isSupportedCurrencyCode(match.groupValues[2])
         }
     }
 
@@ -67,6 +78,7 @@ object MarketCurrencyParser {
         ).flatten()
 
         candidates.forEach { candidate ->
+            if (!isSupportedCurrencyCode(candidate.currencyCode)) return@forEach
             val currency = runCatching { Currency.getInstance(candidate.currencyCode) }.getOrNull()
                 ?: return@forEach
             val digits = currency.defaultFractionDigits.takeIf { it in 0..6 }
