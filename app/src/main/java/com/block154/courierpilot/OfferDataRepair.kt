@@ -12,8 +12,9 @@ import android.net.Uri
 internal object OfferDataRepair {
     private const val PREFS = "courier_offer_repairs"
     private const val KEY_REVISION = "parser_repair_revision"
-    // Revision 10 also strips the recurring Bolt map-marker OCR prefix (4/Y4/У4) from stored addresses while retaining revision 9 visual duplicate repair.
-    private const val CURRENT_REVISION = 10
+    // Revision 11 removes short Wolt same-route recaptures even when one transient frame stored a
+    // different price, keeps the richer/credible row, and removes orphan market observations too.
+    private const val CURRENT_REVISION = 11
     private const val LIST_SEPARATOR = "\u001F"
 
     @Synchronized
@@ -32,7 +33,7 @@ internal object OfferDataRepair {
             .filter { it.id in visualBackfillIds && it.visualFingerprint.isBlank() && it.screenshotUri.isNotBlank() }
             .mapNotNull { record -> readVisualFingerprint(appContext, record.screenshotUri)?.let { record.id to it } }
             .toMap()
-        val recentSurvivors = ArrayDeque<OfferRecord>()
+        val recentSurvivors = mutableListOf<OfferRecord>()
         val duplicateScreenshotUris = mutableListOf<String>()
 
         sqlite.beginTransaction()
@@ -56,20 +57,33 @@ internal object OfferDataRepair {
                 }
                 sqlite.update("offers", values, "id = ?", arrayOf(original.id.toString()))
 
-                while (recentSurvivors.isNotEmpty() &&
-                    repaired.capturedAt - recentSurvivors.first().capturedAt > OfferDedupeIdentity.PERSIST_DEDUPE_WINDOW_MS
-                ) {
-                    recentSurvivors.removeFirst()
+                recentSurvivors.removeAll { previous ->
+                    repaired.capturedAt - previous.capturedAt > OfferDedupeIdentity.PERSIST_DEDUPE_WINDOW_MS
                 }
 
-                val duplicate = recentSurvivors.any { previous ->
+                val matches = recentSurvivors.filter { previous ->
                     OfferDedupeIdentity.isSameLiveOffer(previous, repaired)
                 }
-                if (duplicate) {
-                    sqlite.delete("offers", "id = ?", arrayOf(original.id.toString()))
-                    if (original.screenshotUri.isNotBlank()) duplicateScreenshotUris += original.screenshotUri
+                if (matches.isEmpty()) {
+                    recentSurvivors += repaired
+                    return@forEach
+                }
+
+                val winner = (matches + repaired).reduce { best, candidate ->
+                    OfferDedupeIdentity.preferredHistoricalRecord(best, candidate)
+                }
+
+                matches.filter { it.id != winner.id }.forEach { duplicate ->
+                    deleteDuplicateRow(sqlite, duplicate.id)
+                    recentSurvivors.removeAll { it.id == duplicate.id }
+                    duplicate.screenshotUri.takeIf(String::isNotBlank)?.let(duplicateScreenshotUris::add)
+                }
+
+                if (winner.id == repaired.id) {
+                    recentSurvivors += repaired
                 } else {
-                    recentSurvivors.addLast(repaired)
+                    deleteDuplicateRow(sqlite, repaired.id)
+                    repaired.screenshotUri.takeIf(String::isNotBlank)?.let(duplicateScreenshotUris::add)
                 }
             }
             sqlite.setTransactionSuccessful()
@@ -85,6 +99,12 @@ internal object OfferDataRepair {
         }
     }
 
+    private fun deleteDuplicateRow(sqlite: android.database.sqlite.SQLiteDatabase, offerId: Long) {
+        // market_observations has no FK cascade; remove the derived sample explicitly so a deleted
+        // bad capture cannot keep influencing Market scoring.
+        sqlite.delete("market_observations", "offer_id = ?", arrayOf(offerId.toString()))
+        sqlite.delete("offers", "id = ?", arrayOf(offerId.toString()))
+    }
 
     private fun suspiciousBoltVisualCandidates(records: List<OfferRecord>): Set<Long> {
         val ids = mutableSetOf<Long>()
