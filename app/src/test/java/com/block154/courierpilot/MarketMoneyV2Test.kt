@@ -14,8 +14,10 @@ class MarketMoneyV2Test {
     @Test fun minuteLabelsCanNeverBecomeCurrency() {
         assertNull(MarketCurrencyParser.parse("Estimated 5 - 11 min"))
         assertNull(MarketCurrencyParser.parse("MIN 10.87"))
+        assertNull(MarketCurrencyParser.parse("7.00 MIR"))
         assertFalse(MarketCurrencyParser.containsMoney("Estimated 5 - 11 min"))
         assertFalse(MarketCurrencyParser.isSupportedCurrencyCode("MIN"))
+        assertFalse(MarketCurrencyParser.isSupportedCurrencyCode("MIR"))
     }
 
     @Test fun offerParserDoesNotUseEtaAsBoltPrice() {

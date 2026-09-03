@@ -35,7 +35,7 @@ object MarketCurrencyParser {
     // Courier cards contain short UI labels next to numbers. Android's currency table is permissive
     // on some builds, so strings such as "11 min" must be rejected before they can become a fake
     // three-letter currency (the live card previously displayed values such as "MIN 10.87/km").
-    private val nonCurrencyUiCodes = setOf("MIN", "MAX", "ETA", "HRS", "KMH", "KMS")
+    private val nonCurrencyUiCodes = setOf("MIN", "MIR", "MAX", "ETA", "HRS", "KMH", "KMS")
 
     private data class Candidate(
         val rawAmount: String,

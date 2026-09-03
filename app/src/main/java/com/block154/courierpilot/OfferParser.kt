@@ -349,14 +349,22 @@ internal object OfferParser {
     }
 
     private fun parseMoney(text: String, lines: List<String>): MoneyAmount? {
-        val earningsIndex = lines.indexOfFirst {
-            it.contains("expected earnings for the full delivery", ignoreCase = true)
+        val earningsIndexes = lines.indices.filter { index ->
+            lines[index].contains("expected earnings for the full delivery", ignoreCase = true)
         }
-        if (earningsIndex >= 0) {
-            for (offset in listOf(-1, 0, 1, -2, 2)) {
-                val candidate = lines.getOrNull(earningsIndex + offset) ?: continue
-                MarketCurrencyParser.parse(candidate)?.let { return it }
+        if (earningsIndexes.isNotEmpty()) {
+            // Accessibility text and OCR text are concatenated, so the same Wolt label can appear
+            // twice. Search every anchored neighbourhood; the first Accessibility copy may still be
+            // missing the amount while the later OCR copy already contains it.
+            earningsIndexes.forEach { earningsIndex ->
+                for (offset in listOf(-1, 0, 1, -2, 2)) {
+                    val candidate = lines.getOrNull(earningsIndex + offset) ?: continue
+                    MarketCurrencyParser.parse(candidate)?.let { return it }
+                }
             }
+            // Wolt's earnings label is authoritative. During loading, full-screen OCR can also see
+            // unrelated balances/map/UI amounts; wait instead of accepting arbitrary money elsewhere.
+            return null
         }
         return MarketCurrencyParser.parse(text)
     }

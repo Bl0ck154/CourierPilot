@@ -347,6 +347,14 @@ internal object CourierSignals {
             (parsed.merchantNames.isNotEmpty() && parsed.distanceMeters != null)
     }
 
+    /** Full-screen Wolt OCR is only a fallback; require both its canonical earnings anchor and
+     * enough route identity to prove that the detected money belongs to the offer card. */
+    fun isTrustedWoltOcrOffer(text: String, parsed: ParsedOffer): Boolean {
+        if (parsed.money == null || parsed.priceCents == null) return false
+        if (!text.contains("expected earnings for the full delivery", ignoreCase = true)) return false
+        return looksLikeOfferScreen(text, parsed) && hasStrongOfferIdentity(parsed, text)
+    }
+
     private fun shortHash(value: String): String {
         val digest = MessageDigest.getInstance("SHA-256")
             .digest(value.toByteArray(Charsets.UTF_8))

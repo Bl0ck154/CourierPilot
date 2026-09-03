@@ -371,10 +371,23 @@ class OfferAccessibilityService : AccessibilityService() {
                             val parsed = OfferParser.parse(combined)
                             val armed = armFromVisibleOffer(window.packageName, combined, parsed)
                             val pending = if (armed) OfferState.pending(this@OfferAccessibilityService) else null
+                            val trustedPrice = parsed.priceCents != null && (
+                                window.packageName != CourierSignals.WOLT_PACKAGE ||
+                                    CourierSignals.isTrustedWoltOcrOffer(combined, parsed)
+                                )
                             finishCapture(captureToken)
-                            if (pending != null && parsed.priceCents != null) {
+                            if (pending != null && trustedPrice) {
                                 persistOffer(bitmap, pending, combined, parsed)
                             } else {
+                                if (pending != null && parsed.priceCents != null && !trustedPrice) {
+                                    CaptureEventLog.append(
+                                        this@OfferAccessibilityService,
+                                        "price_ocr_untrusted",
+                                        "Ignored Wolt OCR money without a complete offer identity; retrying",
+                                        platform,
+                                        3_000L,
+                                    )
+                                }
                                 bitmap.recycle()
                                 scheduleAttempt(if (pending != null) 250L else IDLE_WATCHDOG_MS)
                             }
@@ -439,14 +452,29 @@ class OfferAccessibilityService : AccessibilityService() {
                             observeCourierScreen(pending.packageName, combined, ScreenTextSource.OCR_AUGMENTED)
                             if (combined.isNotBlank()) OfferState.saveUiText(this@OfferAccessibilityService, combined)
                             val parsed = OfferParser.parse(combined)
-                            if (CourierSignals.looksLikeOfferScreen(combined, parsed)) {
+                            val trustedPrice = parsed.priceCents != null && (
+                                pending.packageName != CourierSignals.WOLT_PACKAGE ||
+                                    CourierSignals.isTrustedWoltOcrOffer(combined, parsed)
+                                )
+                            if (CourierSignals.looksLikeOfferScreen(combined, parsed) &&
+                                (parsed.priceCents == null || trustedPrice)
+                            ) {
                                 LiveAdvisorHub.showPendingOffer(this@OfferAccessibilityService, pending, parsed)
                             }
                             finishCapture(captureToken)
-                            if (parsed.priceCents != null) {
+                            if (parsed.priceCents != null && trustedPrice) {
                                 CaptureEventLog.append(this@OfferAccessibilityService, "price_ocr", "Price detected by OCR fallback", platform)
                                 persistOffer(bitmap, pending, combined, parsed)
                             } else {
+                                if (parsed.priceCents != null && !trustedPrice) {
+                                    CaptureEventLog.append(
+                                        this@OfferAccessibilityService,
+                                        "price_ocr_untrusted",
+                                        "Ignored Wolt OCR money without a complete offer identity; retrying",
+                                        platform,
+                                        3_000L,
+                                    )
+                                }
                                 bitmap.recycle()
                                 scheduleAttempt(adaptiveOcrDelay(pending))
                             }
