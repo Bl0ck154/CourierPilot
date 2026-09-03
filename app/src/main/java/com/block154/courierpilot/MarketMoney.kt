@@ -15,9 +15,8 @@ data class MoneyAmount(val amountMinor: Long, val currencyCode: String, val frac
 }
 
 /** Parses an offer amount only when a currency is explicit. Ambiguous bare symbols such as `$` or
- * `kr` are intentionally not guessed. OCR can expose several money-looking tokens, so candidates
- * are considered in visual text order and implausible delivery amounts are skipped rather than
- * poisoning the captured offer with the first noisy token. */
+ * `kr` are intentionally not guessed. OCR can expose several money-looking tokens, so implausible
+ * delivery amounts are skipped instead of poisoning the capture with the first noisy token. */
 object MarketCurrencyParser {
     private val symbolToCode = linkedMapOf(
         "€" to "EUR",
@@ -34,7 +33,6 @@ object MarketCurrencyParser {
     private val symbolSuffix = Regex("""($numberPattern)\s*(${symbolToCode.keys.joinToString("|") { Regex.escape(it) }})""", RegexOption.IGNORE_CASE)
 
     private data class Candidate(
-        val index: Int,
         val rawAmount: String,
         val currencyCode: String,
     )
@@ -51,24 +49,22 @@ object MarketCurrencyParser {
     }
 
     fun parse(text: String, locale: Locale = Locale.getDefault()): MoneyAmount? {
-        val candidates = buildList {
-            symbolPrefix.findAll(text).forEach { match ->
-                codeForSymbol(match.groupValues[1])?.let { code ->
-                    add(Candidate(match.range.first, match.groupValues[2], code))
-                }
-            }
-            symbolSuffix.findAll(text).forEach { match ->
-                codeForSymbol(match.groupValues[2])?.let { code ->
-                    add(Candidate(match.range.first, match.groupValues[1], code))
-                }
-            }
-            codePrefix.findAll(text).forEach { match ->
-                add(Candidate(match.range.first, match.groupValues[2], match.groupValues[1].uppercase(Locale.ROOT)))
-            }
-            codeSuffix.findAll(text).forEach { match ->
-                add(Candidate(match.range.first, match.groupValues[1], match.groupValues[2].uppercase(Locale.ROOT)))
-            }
-        }.sortedBy(Candidate::index)
+        // Preserve the previous parser's symbol-before-ISO preference while allowing it to skip a
+        // noisy candidate and continue to the next explicit amount.
+        val candidates = sequenceOf(
+            symbolPrefix.findAll(text).mapNotNull { match ->
+                codeForSymbol(match.groupValues[1])?.let { Candidate(match.groupValues[2], it) }
+            },
+            symbolSuffix.findAll(text).mapNotNull { match ->
+                codeForSymbol(match.groupValues[2])?.let { Candidate(match.groupValues[1], it) }
+            },
+            codePrefix.findAll(text).map { match ->
+                Candidate(match.groupValues[2], match.groupValues[1].uppercase(Locale.ROOT))
+            },
+            codeSuffix.findAll(text).map { match ->
+                Candidate(match.groupValues[1], match.groupValues[2].uppercase(Locale.ROOT))
+            },
+        ).flatten()
 
         candidates.forEach { candidate ->
             val currency = runCatching { Currency.getInstance(candidate.currencyCode) }.getOrNull()
