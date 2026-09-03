@@ -318,4 +318,47 @@ class OfferParserTest {
         assertEquals(listOf("KFC"), parsed.merchantNames)
         assertEquals(listOf("Gedimino pr. 5, Vilnius"), parsed.pickupAddresses)
     }
+    @Test
+    fun ignoresUnanchoredMoneyWhileWoltEarningsAreStillLoading() {
+        val parsed = OfferParser.parse(
+            """
+            Expected earnings for the full delivery
+            Delivery from
+            Fresh Mesh
+            Route distance
+            1.0 km
+            Estimated
+            5 - 11 min
+            Accept
+            Account
+            €28.00
+            """.trimIndent()
+        )
+
+        assertNull(parsed.money)
+        assertNull(parsed.priceCents)
+        assertEquals(1000, parsed.distanceMeters)
+    }
+
+    @Test
+    fun findsPriceAtLaterOcrCopyOfWoltEarningsAnchor() {
+        val parsed = OfferParser.parse(
+            """
+            Expected earnings for the full delivery
+            Delivery from
+            Fresh Mesh
+            Route distance
+            1.0 km
+            Accept
+            €1.76
+            Expected earnings for the full delivery
+            Delivery from
+            Fresh Mesh
+            """.trimIndent()
+        )
+
+        assertEquals(MoneyAmount(176, "EUR", 2), parsed.money)
+        assertEquals(176, parsed.priceCents)
+    }
+
 }

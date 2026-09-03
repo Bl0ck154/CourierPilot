@@ -95,4 +95,36 @@ class CourierSignalsTest {
         assertEquals(apartmentDash?.first, english?.first)
     }
 
+    @Test
+    fun woltOcrPriceRequiresCanonicalOfferIdentity() {
+        val weak = """
+            €28.00
+            Expected earnings for the full delivery
+            Delivery from
+            Accept
+            Decline
+        """.trimIndent()
+        val weakParsed = OfferParser.parse(weak)
+        assertTrue(CourierSignals.looksLikeOfferScreen(weak, weakParsed))
+        assertFalse(CourierSignals.isTrustedWoltOcrOffer(weak, weakParsed))
+
+        val strong = """
+            €1.76
+            Expected earnings for the full delivery
+            Delivery from
+            Fresh Mesh
+            Route distance
+            1.0 km
+            Timeline
+            Fresh Mesh
+            Mindaugo gatvė 12a, 03224 Vilnius
+            Customer
+            Švitrigailos g. 8, Vilnius
+            Accept
+            Decline
+        """.trimIndent()
+        val strongParsed = OfferParser.parse(strong)
+        assertTrue(CourierSignals.isTrustedWoltOcrOffer(strong, strongParsed))
+    }
+
 }

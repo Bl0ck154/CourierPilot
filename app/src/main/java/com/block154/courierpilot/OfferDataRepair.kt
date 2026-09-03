@@ -12,9 +12,9 @@ import android.net.Uri
 internal object OfferDataRepair {
     private const val PREFS = "courier_offer_repairs"
     private const val KEY_REVISION = "parser_repair_revision"
-    // Revision 12 reparses historical Wolt rows so percentage completion/status banners can no
-    // longer remain stored as merchant names. It also includes all earlier duplicate repairs.
-    private const val CURRENT_REVISION = 12
+    // Revision 13 also removes Wolt rows produced by the old full-screen OCR fallback when it
+    // archived a fake MIN/MIR currency or an unanchored amount with no merchant/route identity.
+    private const val CURRENT_REVISION = 13
     private const val LIST_SEPARATOR = "\u001F"
 
     @Synchronized
@@ -39,6 +39,12 @@ internal object OfferDataRepair {
         sqlite.beginTransaction()
         try {
             records.forEach { original ->
+                if (shouldDiscardUntrustedWoltCapture(original)) {
+                    deleteDuplicateRow(sqlite, original.id)
+                    original.screenshotUri.takeIf(String::isNotBlank)?.let(duplicateScreenshotUris::add)
+                    return@forEach
+                }
+
                 val reparsed = original.withCurrentParsedStructure()
                 val visualFingerprint = original.visualFingerprint.ifBlank { visualBackfills[original.id].orEmpty() }
                 val repaired = reparsed.copy(visualFingerprint = visualFingerprint)
@@ -97,6 +103,30 @@ internal object OfferDataRepair {
         duplicateScreenshotUris.distinct().forEach { uri ->
             runCatching { appContext.contentResolver.delete(Uri.parse(uri), null, null) }
         }
+    }
+
+
+    internal fun shouldDiscardUntrustedWoltCapture(record: OfferRecord): Boolean {
+        if (record.packageName != CourierSignals.WOLT_PACKAGE || record.rawText.isBlank()) return false
+
+        // Real-device telemetry captured "MIR" when OCR misread Wolt's minute label (MIN) as an ISO
+        // currency. Wolt never pays in this UI token, so these rows are safe to remove.
+        if (record.currencyCode.equals("MIR", ignoreCase = true) ||
+            record.currencyCode.equals("MIN", ignoreCase = true)
+        ) return true
+
+        val rawParsed = OfferParser.parse(record.rawText)
+        if (rawParsed.money != null) return false
+        if (!record.rawText.contains("expected earnings for the full delivery", ignoreCase = true)) return false
+
+        // Keep historical records that still have a meaningful venue or destination even if an old
+        // Accessibility ordering no longer reproduces the amount. The bad €28 capture had neither:
+        // it was just an unrelated full-screen OCR amount saved while Wolt was still loading.
+        val structural = record.withCurrentParsedStructure()
+        val hasMerchant = !structural.restaurant.isNullOrBlank() || structural.merchantNames.isNotEmpty()
+        val hasRoute = structural.pickupAddresses.isNotEmpty() || structural.dropoffAddresses.isNotEmpty() ||
+            structural.distanceMeters != null
+        return !hasMerchant && !hasRoute
     }
 
     private fun deleteDuplicateRow(sqlite: android.database.sqlite.SQLiteDatabase, offerId: Long) {
