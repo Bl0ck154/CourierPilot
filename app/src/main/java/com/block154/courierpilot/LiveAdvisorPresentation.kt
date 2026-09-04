@@ -1,20 +1,18 @@
 package com.block154.courierpilot
 
 import java.util.Locale
-import kotlin.math.abs
 
 internal object LiveAdvisorPresentation {
-    fun profitabilityLine(decision: OfferDecision, economics: PlatformOfferEconomics): String {
-        val rawCode = decision.currencyCode ?: economics.currencyCode
-        val code = rawCode?.takeIf(MarketCurrencyParser::isSupportedCurrencyCode)
-        val moneyPerKilometer = decision.moneyPerKilometer
-        val km = if (code == null || moneyPerKilometer == null) {
-            "—/km"
+    /** Primary live-card value. Hourly projections deliberately do not belong on the offer overlay. */
+    fun rateLine(decision: OfferDecision): String {
+        val code = decision.currencyCode?.takeIf(MarketCurrencyParser::isSupportedCurrencyCode)
+        val moneyPerKilometer = decision.moneyPerKilometer ?: return "—/km"
+        val rate = if (code == null) {
+            "${"%.2f".format(Locale.US, moneyPerKilometer)}/km"
         } else {
             "${formatMoneyRate(moneyPerKilometer, code)}/km"
         }
-        val hour = if (code == null) "—/h" else hourText(economics, code)
-        return "${decision.band.emoji}  $km  •  $hour"
+        return "$rate  ${decision.band.emoji}"
     }
 
     fun routeLine(walking: RouteResult?, cycling: RouteResult?): String {
@@ -23,16 +21,6 @@ internal object LiveAdvisorPresentation {
         val average = OfferDecisionEngine.averageValhallaDistanceMeters(walking, cycling)
             ?.let { "≈ ${formatKm(it)}" }
         return listOfNotNull("🚶 $walk", "🚲 $cycle", average).joinToString("   ")
-    }
-
-    private fun hourText(economics: PlatformOfferEconomics, currencyCode: String): String {
-        val lo = economics.moneyPerHourMin
-        val hi = economics.moneyPerHourMax
-        return when {
-            lo != null && hi != null && abs(lo - hi) < 0.05 -> "${formatMoneyRate(lo, currencyCode, 1)}/h"
-            lo != null && hi != null -> "${formatMoneyRate(lo, currencyCode, 1)}–${formatMoneyRate(hi, currencyCode, 1)}/h"
-            else -> "$currencyCode/h —"
-        }
     }
 
     private fun formatMoneyRate(value: Double, currencyCode: String?, decimals: Int = 2): String {

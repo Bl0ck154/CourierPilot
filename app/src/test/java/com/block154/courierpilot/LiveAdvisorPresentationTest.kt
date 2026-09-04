@@ -7,32 +7,25 @@ import org.junit.Test
 
 class LiveAdvisorPresentationTest {
     @Test
-    fun profitabilityLineShowsKilometerRateOnlyOnce() {
+    fun rateLineShowsOnlyPrimaryEuroPerKilometerAndEmoji() {
         val decision = OfferDecision(
-            rating = 4,
-            band = OfferDecisionBand.GOOD,
-            euroPerKilometer = 1.14,
-            routeDistanceMeters = 4300,
+            rating = 5,
+            band = OfferDecisionBand.FIRE,
+            euroPerKilometer = 2.97,
+            routeDistanceMeters = 1744,
             routeVerifiedKilometerRate = true,
             currencyCode = "EUR",
         )
-        val economics = PlatformOfferEconomics(
-            euroPerKilometer = 0.88,
-            euroPerHourMin = 12.0,
-            euroPerHourMax = 12.0,
-            currencyCode = "EUR",
-        )
 
-        val line = LiveAdvisorPresentation.profitabilityLine(decision, economics)
+        val line = LiveAdvisorPresentation.rateLine(decision)
 
+        assertEquals("€2.97/km  🔥", line)
         assertEquals(1, Regex("/km").findAll(line).count())
-        assertTrue(line.contains("€1.14/km"))
-        assertTrue(line.contains("€12.0/h"))
-        assertFalse(line.contains("avg", ignoreCase = true))
+        assertFalse(line.contains("/h"))
     }
 
     @Test
-    fun profitabilityLineUsesExplicitNonEuroCurrency() {
+    fun rateLineUsesExplicitNonEuroCurrencyWithoutInventingEuro() {
         val decision = OfferDecision(
             rating = 4,
             band = OfferDecisionBand.GOOD,
@@ -41,18 +34,12 @@ class LiveAdvisorPresentationTest {
             routeVerifiedKilometerRate = true,
             currencyCode = "PLN",
         )
-        val economics = PlatformOfferEconomics(
-            euroPerKilometer = 5.25,
-            euroPerHourMin = 42.0,
-            euroPerHourMax = 42.0,
-            currencyCode = "PLN",
-        )
 
-        val line = LiveAdvisorPresentation.profitabilityLine(decision, economics)
+        val line = LiveAdvisorPresentation.rateLine(decision)
 
-        assertTrue(line.contains("PLN 5.25/km"))
-        assertTrue(line.contains("PLN 42.0/h"))
+        assertEquals("PLN 5.25/km  👍", line)
         assertFalse(line.contains("€"))
+        assertFalse(line.contains("/h"))
     }
 
     @Test

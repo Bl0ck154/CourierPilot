@@ -2,6 +2,7 @@ package com.block154.courierpilot
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Rect
 import android.graphics.Typeface
@@ -18,7 +19,9 @@ import android.view.WindowManager
 import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
 import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import java.util.ArrayDeque
 import java.util.Locale
@@ -30,7 +33,6 @@ import kotlin.math.abs
  */
 internal class StableLiveOfferAdvisor(
     private val service: AccessibilityService,
-    private val onRouteToggleChanged: ((platform: String, enabled: Boolean) -> Unit)? = null,
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private val windowManager = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -38,10 +40,10 @@ internal class StableLiveOfferAdvisor(
 
     private var root: LinearLayout? = null
     private var windowParams: WindowManager.LayoutParams? = null
+    private var decisionContainer: FrameLayout? = null
     private var decisionText: TextView? = null
+    private var decisionSpinner: ProgressBar? = null
     private var routeText: TextView? = null
-    private var routeToggle: TextView? = null
-    private var voiceToggle: TextView? = null
 
     private var currentPlatform = ""
     private var currentParsed: ParsedOffer? = null
@@ -58,6 +60,7 @@ internal class StableLiveOfferAdvisor(
 
     private var cachedDecisionLine = ""
     private var cachedDecisionBand = OfferDecisionBand.UNKNOWN
+    private var cachedDecisionLoading = true
     private var cachedRouteLine = ""
     private var cachedRouteVisible = true
     private var cachedPedestrianRoute: RouteResult? = null
@@ -101,6 +104,7 @@ internal class StableLiveOfferAdvisor(
             temporarilyHidden = false
             cachedDecisionLine = ""
             cachedDecisionBand = OfferDecisionBand.UNKNOWN
+            cachedDecisionLoading = true
             cachedRouteLine = ""
             cachedRouteVisible = true
             cachedPedestrianRoute = null
@@ -114,12 +118,9 @@ internal class StableLiveOfferAdvisor(
         currentParsed = parsed
         differentOfferConfirmation.reset()
         renderProgressiveDecision(parsed)
-        if (cachedRouteLine.isBlank()) {
-            setRouteContent(if (LiveAdvisorSettings.routeEnabled(service, platform)) "⚡ Route preparing…" else "Route off")
-        }
+        if (cachedRouteLine.isBlank()) renderRouteLoadingState()
         if (!temporarilyHidden) {
             ensureView()
-            refreshControls()
             applyCachedPresentation()
             if (createdSurface && root != null) {
                 CaptureEventLog.append(
@@ -149,7 +150,6 @@ internal class StableLiveOfferAdvisor(
             if (cachedRouteLine.isBlank()) renderRouteLoadingState()
             if (!temporarilyHidden) {
                 ensureView()
-                refreshControls()
                 applyCachedPresentation()
             }
             CaptureEventLog.append(
@@ -175,6 +175,7 @@ internal class StableLiveOfferAdvisor(
         previewMode = false
         cachedDecisionLine = ""
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
+        cachedDecisionLoading = true
         cachedRouteLine = ""
         cachedRouteVisible = true
         cachedPedestrianRoute = null
@@ -195,7 +196,6 @@ internal class StableLiveOfferAdvisor(
             if (!temporarilyHidden) {
                 ensureView()
                 if (root != null) {
-                    refreshControls()
                     applyCachedPresentation()
                     CaptureEventLog.append(
                         service,
@@ -252,7 +252,7 @@ internal class StableLiveOfferAdvisor(
             if (dismissed) return@post
             val comparison = outcome.comparison
             if (comparison == null) {
-                setDecisionPlaceholder("Route unavailable · score unavailable")
+                setDecisionUnavailable()
                 setRouteContent("⚠️ Route unavailable")
                 CaptureEventLog.append(
                     service,
@@ -290,7 +290,7 @@ internal class StableLiveOfferAdvisor(
         if (dismissed || !LiveAdvisorSettings.enabled(service)) return
         handler.post {
             if (dismissed) return@post
-            setDecisionPlaceholder("Route unavailable · score unavailable")
+            setDecisionUnavailable()
             setRouteContent("⚠️ Route unavailable")
             CaptureEventLog.append(service, "route_failed", reason, currentPlatform)
         }
@@ -343,26 +343,34 @@ internal class StableLiveOfferAdvisor(
         pendingSpeech = null
     }
 
-    /** Keep intermediate economics atomic: never show an €/h-only or €/km-only half-state. */
+    /**
+     * The live card has one primary number: native money per real route kilometre. Until both
+     * money and a full route exist, the right side stays as a spinner instead of exposing internal
+     * capture states such as "price ready" or "calculating".
+     */
     private fun renderProgressiveDecision(parsed: ParsedOffer) {
         val hasPrice = parsed.priceCents != null && parsed.money != null
         val hasRoute = cachedPedestrianRoute != null || cachedCyclewayRoute != null
         when {
-            !hasPrice -> setDecisionPlaceholder("⏳  Waiting for price…")
+            !hasPrice -> setDecisionLoading()
             hasRoute -> renderProfitability(parsed, cachedPedestrianRoute, cachedCyclewayRoute)
-            LiveAdvisorSettings.routeEnabled(service, currentPlatform) ->
-                setDecisionPlaceholder("⏳  Calculating offer…")
-            else -> setDecisionPlaceholder("Route off · score unavailable")
+            LiveAdvisorSettings.routeEnabled(service, currentPlatform) -> setDecisionLoading()
+            else -> setDecisionUnavailable()
         }
     }
 
-    private fun setDecisionPlaceholder(value: String) {
-        cachedDecisionLine = value
+    private fun setDecisionLoading() {
+        cachedDecisionLine = ""
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
-        decisionText?.apply {
-            text = value
-            setTextColor(decisionColor(OfferDecisionBand.UNKNOWN))
-        }
+        cachedDecisionLoading = true
+        applyDecisionPresentation()
+    }
+
+    private fun setDecisionUnavailable() {
+        cachedDecisionLine = "—/km"
+        cachedDecisionBand = OfferDecisionBand.UNKNOWN
+        cachedDecisionLoading = false
+        applyDecisionPresentation()
     }
 
     private fun renderProfitability(
@@ -394,38 +402,53 @@ internal class StableLiveOfferAdvisor(
                 "rate=${decision.moneyPerKilometer?.let { "%.2f".format(Locale.US, it) } ?: "none"}",
             dedupeWindowMs = 5_000L,
         )
-        val platformEconomics = PlatformOfferEconomicsCalculator.calculate(parsed)
-        cachedDecisionLine = LiveAdvisorPresentation.profitabilityLine(decision, platformEconomics)
-        cachedDecisionBand = decision.band
-        decisionText?.apply {
-            text = cachedDecisionLine
-            setTextColor(decisionColor(cachedDecisionBand))
+        if (decision.moneyPerKilometer == null) {
+            setDecisionLoading()
+            return
         }
+        cachedDecisionLine = LiveAdvisorPresentation.rateLine(decision)
+        cachedDecisionBand = decision.band
+        cachedDecisionLoading = false
+        applyDecisionPresentation()
     }
 
     private fun renderRouteLoadingState() {
-        val enabled = LiveAdvisorSettings.routeEnabled(service, currentPlatform)
-        setRouteContent(if (enabled) "⏳ Route calculating…" else "Route off")
+        // The spinner on the primary €/km field is enough feedback; keep the left side uncluttered.
+        setRouteContent("", visible = false)
     }
 
     private fun setRouteContent(text: String, visible: Boolean = true) {
         cachedRouteLine = text
         cachedRouteVisible = visible
         routeText?.apply {
-            visibility = if (visible) View.VISIBLE else View.GONE
+            visibility = if (visible) View.VISIBLE else View.INVISIBLE
             this.text = text
         }
     }
 
     private fun applyCachedPresentation() {
-        decisionText?.apply {
-            text = cachedDecisionLine
-            setTextColor(decisionColor(cachedDecisionBand))
-        }
+        applyDecisionPresentation()
         routeText?.apply {
-            visibility = if (cachedRouteVisible) View.VISIBLE else View.GONE
+            visibility = if (cachedRouteVisible) View.VISIBLE else View.INVISIBLE
             text = cachedRouteLine
         }
+    }
+
+    private fun applyDecisionPresentation() {
+        val loading = cachedDecisionLoading
+        decisionSpinner?.visibility = if (loading) View.VISIBLE else View.GONE
+        decisionText?.apply {
+            visibility = if (loading) View.INVISIBLE else View.VISIBLE
+            text = cachedDecisionLine
+            setTextColor(decisionColor(cachedDecisionBand))
+            when (cachedDecisionBand) {
+                OfferDecisionBand.FIRE -> setShadowLayer(dp(5).toFloat(), 0f, 0f, Color.argb(210, 255, 112, 38))
+                OfferDecisionBand.GOOD -> setShadowLayer(dp(3).toFloat(), 0f, 0f, Color.argb(120, 52, 211, 153))
+                OfferDecisionBand.OK -> setShadowLayer(dp(2).toFloat(), 0f, 0f, Color.argb(75, 245, 158, 11))
+                else -> setShadowLayer(0f, 0f, 0f, Color.TRANSPARENT)
+            }
+        }
+        decisionContainer?.background = decisionBackground(cachedDecisionBand, loading)
     }
 
     private fun ensureView() {
@@ -433,14 +456,14 @@ internal class StableLiveOfferAdvisor(
 
         val container = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(8), dp(14), dp(11))
+            setPadding(dp(10), dp(5), dp(10), dp(7))
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(14).toFloat()
-                setColor(Color.argb(244, 17, 24, 39))
-                setStroke(dp(1), Color.argb(150, 75, 85, 99))
+                cornerRadius = dp(12).toFloat()
+                setColor(Color.argb(246, 15, 23, 36))
+                setStroke(dp(1), Color.argb(125, 71, 85, 105))
             }
-            elevation = dp(10).toFloat()
+            elevation = dp(9).toFloat()
         }
         installGestureSurface(container)
 
@@ -451,64 +474,92 @@ internal class StableLiveOfferAdvisor(
         installGestureSurface(topRow)
 
         val title = TextView(service).apply {
-            text = "CourierPilot ${BuildConfig.VERSION_NAME}"
-            setTextColor(Color.rgb(229, 231, 235))
-            textSize = 12.5f
+            text = "CourierPilot · ${BuildConfig.VERSION_NAME}"
+            setTextColor(Color.rgb(148, 163, 184))
+            textSize = 9.5f
+            includeFontPadding = false
             typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
         }
         installGestureSurface(title)
         topRow.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
 
-        routeToggle = controlText(dp(7)).apply {
-            setOnClickListener {
-                if (currentPlatform.isBlank()) return@setOnClickListener
-                val enabled = !LiveAdvisorSettings.routeEnabled(service, currentPlatform)
-                LiveAdvisorSettings.setRouteEnabled(service, currentPlatform, enabled)
-                refreshControls()
-                renderRouteLoadingState()
-                onRouteToggleChanged?.invoke(currentPlatform, enabled)
-            }
-        }
-        topRow.addView(routeToggle)
-
-        voiceToggle = controlText(dp(6)).apply {
-            setOnClickListener {
-                val enabled = !LiveAdvisorSettings.voiceEnabled(service)
-                LiveAdvisorSettings.setVoiceEnabled(service, enabled)
-                if (!enabled) tts?.stop()
-                refreshControls()
-            }
-        }
-        topRow.addView(voiceToggle)
-
         topRow.addView(TextView(service).apply {
             text = "×"
-            setTextColor(Color.LTGRAY)
-            textSize = 21f
+            setTextColor(Color.rgb(148, 163, 184))
+            textSize = 17f
+            includeFontPadding = false
             gravity = Gravity.CENTER
-            setPadding(dp(7), 0, 0, 0)
+            setPadding(dp(8), 0, 0, 0)
             setOnClickListener { suppressCurrentOffer("closed by user") }
         })
         container.addView(topRow)
 
-        decisionText = TextView(service).apply {
-            textSize = 16f
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            setPadding(0, dp(6), 0, 0)
-        }.also {
-            installGestureSurface(it)
-            container.addView(it)
+        val mainRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(2), 0, 0)
         }
+        installGestureSurface(mainRow)
 
         routeText = TextView(service).apply {
-            setTextColor(Color.rgb(226, 232, 240))
-            textSize = 13.5f
+            setTextColor(Color.rgb(190, 200, 214))
+            textSize = 11.5f
+            includeFontPadding = false
             typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-            setPadding(0, dp(6), 0, 0)
-        }.also {
-            installGestureSurface(it)
-            container.addView(it)
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            maxLines = 2
+        }.also { view ->
+            installGestureSurface(view)
+            mainRow.addView(
+                view,
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginEnd = dp(8)
+                },
+            )
         }
+
+        val rateFrame = FrameLayout(service).apply {
+            minimumWidth = dp(RATE_MIN_WIDTH_DP)
+            minimumHeight = dp(RATE_MIN_HEIGHT_DP)
+            background = decisionBackground(OfferDecisionBand.UNKNOWN, loading = true)
+        }
+        installGestureSurface(rateFrame)
+        decisionContainer = rateFrame
+
+        decisionText = TextView(service).apply {
+            textSize = 24f
+            includeFontPadding = false
+            typeface = Typeface.create("monospace", Typeface.BOLD)
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            setPadding(dp(9), dp(3), dp(9), dp(3))
+            maxLines = 1
+        }.also { view ->
+            installGestureSurface(view)
+            rateFrame.addView(
+                view,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    Gravity.END or Gravity.CENTER_VERTICAL,
+                ),
+            )
+        }
+
+        decisionSpinner = ProgressBar(service, null, android.R.attr.progressBarStyleSmall).apply {
+            isIndeterminate = true
+            indeterminateTintList = ColorStateList.valueOf(Color.rgb(148, 163, 184))
+        }.also { spinner ->
+            rateFrame.addView(
+                spinner,
+                FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER),
+            )
+        }
+
+        mainRow.addView(
+            rateFrame,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(RATE_MIN_HEIGHT_DP)),
+        )
+        container.addView(mainRow)
 
         val screenWidth = service.resources.displayMetrics.widthPixels
         val params = WindowManager.LayoutParams(
@@ -545,6 +596,10 @@ internal class StableLiveOfferAdvisor(
                 }
             }
             .onFailure { error ->
+                decisionContainer = null
+                decisionText = null
+                decisionSpinner = null
+                routeText = null
                 windowParams = null
                 CaptureEventLog.append(
                     service,
@@ -559,10 +614,10 @@ internal class StableLiveOfferAdvisor(
         val view = root
         root = null
         windowParams = null
+        decisionContainer = null
         decisionText = null
+        decisionSpinner = null
         routeText = null
-        routeToggle = null
-        voiceToggle = null
         gestureMode = GESTURE_NONE
         captureSuppressed = false
         if (view == null) return
@@ -631,7 +686,6 @@ internal class StableLiveOfferAdvisor(
         ensureView()
         if (root == null) return
         temporarilyHidden = false
-        refreshControls()
         applyCachedPresentation()
         resetMissingEvidence()
         CaptureEventLog.append(
@@ -655,6 +709,7 @@ internal class StableLiveOfferAdvisor(
         expectedPackageName = ""
         cachedDecisionLine = ""
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
+        cachedDecisionLoading = true
         cachedRouteLine = ""
         cachedRouteVisible = true
         cachedPedestrianRoute = null
@@ -662,21 +717,41 @@ internal class StableLiveOfferAdvisor(
         differentOfferConfirmation.reset()
     }
 
-    private fun refreshControls() {
-        routeToggle?.apply {
-            visibility = if (currentPlatform.equals("Wolt", true) || currentPlatform.equals("Bolt", true)) View.VISIBLE else View.GONE
-            text = "Route ${if (LiveAdvisorSettings.routeEnabled(service, currentPlatform)) "ON" else "OFF"}"
-        }
-        voiceToggle?.text = if (LiveAdvisorSettings.voiceEnabled(service)) "🔊" else "🔇"
-    }
 
     private fun decisionColor(band: OfferDecisionBand): Int = when (band) {
-        OfferDecisionBand.FIRE -> Color.rgb(134, 239, 172)
-        OfferDecisionBand.GOOD -> Color.rgb(167, 243, 208)
-        OfferDecisionBand.OK -> Color.rgb(253, 224, 71)
-        OfferDecisionBand.BAD -> Color.rgb(253, 186, 116)
-        OfferDecisionBand.TERRIBLE -> Color.rgb(252, 165, 165)
-        OfferDecisionBand.UNKNOWN -> Color.rgb(203, 213, 225)
+        OfferDecisionBand.FIRE -> Color.rgb(255, 139, 61)
+        OfferDecisionBand.GOOD -> Color.rgb(110, 231, 183)
+        OfferDecisionBand.OK -> Color.rgb(245, 190, 72)
+        OfferDecisionBand.BAD -> Color.rgb(177, 143, 128)
+        OfferDecisionBand.TERRIBLE -> Color.rgb(121, 132, 148)
+        OfferDecisionBand.UNKNOWN -> Color.rgb(190, 200, 214)
+    }
+
+    private fun decisionBackground(band: OfferDecisionBand, loading: Boolean): GradientDrawable {
+        val accent = if (loading) Color.rgb(100, 116, 139) else decisionColor(band)
+        val fillAlpha = when {
+            loading -> 10
+            band == OfferDecisionBand.FIRE -> 30
+            band == OfferDecisionBand.GOOD -> 20
+            band == OfferDecisionBand.OK -> 15
+            else -> 9
+        }
+        val strokeAlpha = when {
+            loading -> 30
+            band == OfferDecisionBand.FIRE -> 150
+            band == OfferDecisionBand.GOOD -> 95
+            band == OfferDecisionBand.OK -> 70
+            else -> 38
+        }
+        return GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(10).toFloat()
+            setColor(Color.argb(fillAlpha, Color.red(accent), Color.green(accent), Color.blue(accent)))
+            setStroke(
+                dp(1),
+                Color.argb(strokeAlpha, Color.red(accent), Color.green(accent), Color.blue(accent)),
+            )
+        }
     }
 
     private fun startVisibilityWatchdog() {
@@ -968,12 +1043,6 @@ internal class StableLiveOfferAdvisor(
         return targetY.coerceIn(min, max)
     }
 
-    private fun controlText(horizontalPadding: Int) = TextView(service).apply {
-        setTextColor(Color.rgb(147, 197, 253))
-        textSize = 10.5f
-        setPadding(horizontalPadding, 3, horizontalPadding, 3)
-        gravity = Gravity.CENTER
-    }
 
     private fun baseSpeech(platform: String, parsed: ParsedOffer): String {
         val price = parsed.money?.let { "${it.major().toPlainString()} ${it.currencyCode}" }
@@ -1027,6 +1096,8 @@ internal class StableLiveOfferAdvisor(
         const val MIN_Y_DP = 12
         const val BOTTOM_MARGIN_DP = 16
         const val HORIZONTAL_MARGIN_DP = 12
+        const val RATE_MIN_WIDTH_DP = 176
+        const val RATE_MIN_HEIGHT_DP = 44
         const val SWIPE_MIN_DP = 44
         const val SWIPE_FRACTION = 0.16f
         const val SNAP_BACK_MS = 140L

@@ -34,12 +34,7 @@ internal object LiveAdvisorHub {
         if (serviceRef.get() === service && advisor != null) return
         advisor?.destroy()
         serviceRef = WeakReference(service)
-        advisor = StableLiveOfferAdvisor(service, routeToggle@ { platform, enabled ->
-            if (!enabled) return@routeToggle
-            val current = currentOffer ?: return@routeToggle
-            if (!current.record.platform.equals(platform, ignoreCase = true)) return@routeToggle
-            startRouteForOffer(service, current, preparedKey = null)
-        })
+        advisor = StableLiveOfferAdvisor(service)
     }
 
     /**
