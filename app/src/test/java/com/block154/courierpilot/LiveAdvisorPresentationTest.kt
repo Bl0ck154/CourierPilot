@@ -19,7 +19,7 @@ class LiveAdvisorPresentationTest {
 
         val line = LiveAdvisorPresentation.rateLine(decision)
 
-        assertEquals("€2.97/km  🔥", line)
+        assertEquals("≈ €2.97/km  🔥", line)
         assertEquals(1, Regex("/km").findAll(line).count())
         assertFalse(line.contains("/h"))
     }
@@ -37,13 +37,13 @@ class LiveAdvisorPresentationTest {
 
         val line = LiveAdvisorPresentation.rateLine(decision)
 
-        assertEquals("PLN 5.25/km  👍", line)
+        assertEquals("≈ PLN 5.25/km  👍", line)
         assertFalse(line.contains("€"))
         assertFalse(line.contains("/h"))
     }
 
     @Test
-    fun routeLineShowsBothProfilesAndPlainAverageSymbol() {
+    fun routeLineShowsOnlyWalkingAndCyclingProfiles() {
         val walking = RouteResult(
             provider = "test",
             profile = RouteProfile.PEDESTRIAN_SHORTCUT,
@@ -63,7 +63,8 @@ class LiveAdvisorPresentationTest {
 
         assertTrue(line.contains("🚶 4.10 km"))
         assertTrue(line.contains("🚲 4.50 km"))
-        assertTrue(line.contains("≈ 4.30 km"))
+        assertFalse(line.contains("≈"))
+        assertFalse(line.contains("4.30 km"))
         assertFalse(line.contains("avg", ignoreCase = true))
     }
 }
