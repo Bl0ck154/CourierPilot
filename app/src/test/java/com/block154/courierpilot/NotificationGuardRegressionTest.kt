@@ -33,7 +33,7 @@ class NotificationGuardRegressionTest {
         )
 
         assertTrue(decision.learnedMatchScore >= NotificationOfferClassifier.LEARNED_PROFILE_MATCH_THRESHOLD)
-        assertTrue(decision.reasons.contains("bolt_learned_visible_text_guard"))
+        assertTrue(decision.reasons.contains("learned_profile_diagnostic_only"))
         assertFalse(decision.isOffer)
     }
 
@@ -63,5 +63,76 @@ class NotificationGuardRegressionTest {
 
         assertFalse(decision.isOffer)
         assertTrue(decision.reasons.contains("negative_delivery_state"))
+    }
+
+    @Test
+    fun learnedWoltShapeCannotAutoOpenUnrelatedVisiblePush() {
+        val learned = NotificationStructure(
+            packageName = CourierSignals.WOLT_PACKAGE,
+            channelId = "orders",
+            category = Notification.CATEGORY_SERVICE,
+            flags = 0,
+            contentIntentPresent = true,
+            contentIntentCreatorPackage = CourierSignals.WOLT_PACKAGE,
+            contentIntentKind = PendingIntentKind.ACTIVITY,
+            actionCount = 2,
+            actionIntentCount = 2,
+            sameCreatorActionIntentCount = 2,
+            notificationId = 10,
+        )
+        val decision = NotificationOfferClassifier.classify(
+            structure = learned.copy(),
+            text = "Courier updates are available",
+            actionLabels = listOf("Open", "Later"),
+            learnedProfiles = listOf(learned),
+        )
+
+        assertTrue(decision.learnedMatchScore >= NotificationOfferClassifier.LEARNED_PROFILE_MATCH_THRESHOLD)
+        assertFalse(decision.isOffer)
+        assertTrue(decision.reasons.contains("learned_profile_diagnostic_only"))
+    }
+
+    @Test
+    fun explicitAcceptDeclinePairCanIdentifyIncomingOrderWithoutKnownBodyText() {
+        val decision = NotificationOfferClassifier.classify(
+            structure = learnedBoltProfile().copy(
+                actionCount = 2,
+                actionIntentCount = 2,
+                sameCreatorActionIntentCount = 2,
+            ),
+            text = "Completely changed incoming screen copy",
+            actionLabels = listOf("Accept", "Decline"),
+        )
+
+        assertTrue(decision.isOffer)
+        assertTrue(decision.reasons.contains("decision_pair"))
+    }
+
+    @Test
+    fun singleAcceptActionIsNotEnoughToAutoOpen() {
+        val decision = NotificationOfferClassifier.classify(
+            structure = learnedBoltProfile().copy(
+                actionCount = 1,
+                actionIntentCount = 1,
+                sameCreatorActionIntentCount = 1,
+            ),
+            text = "Courier update",
+            actionLabels = listOf("Accept"),
+        )
+
+        assertFalse(decision.isOffer)
+        assertTrue(decision.reasons.contains("single_decision_action"))
+    }
+
+    @Test
+    fun ongoingNotificationNeverAutoOpensEvenWithNewOrderText() {
+        val decision = NotificationOfferClassifier.classify(
+            structure = learnedBoltProfile().copy(flags = Notification.FLAG_ONGOING_EVENT),
+            text = "New request",
+            actionLabels = emptyList(),
+        )
+
+        assertFalse(decision.isOffer)
+        assertTrue(decision.reasons.contains("ongoing_guard"))
     }
 }

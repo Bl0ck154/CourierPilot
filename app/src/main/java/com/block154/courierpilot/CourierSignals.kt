@@ -31,7 +31,6 @@ internal object CourierSignals {
         "new task",
         "new order",
         "new delivery",
-        "new offer",
         "new request",
         "incoming order",
         "incoming request",
@@ -72,6 +71,11 @@ internal object CourierSignals {
         "weekly summary",
         "new feature",
         "schedule",
+        "special offer",
+        "discount",
+        "earn more",
+        "extra earnings",
+        "reward",
         "customer message",
         "message from customer",
         // Lifecycle/status pushes are not new offers, even when Bolt reuses the same channel/id.
@@ -91,17 +95,22 @@ internal object CourierSignals {
         "готове до видачі",
     )
 
-    private val decisionPhrases = listOf(
+    private val acceptDecisionPhrases = listOf(
         "accept",
+        "priimti",
+        "принять",
+        "прийняти",
+    )
+
+    private val rejectDecisionPhrases = listOf(
         "decline",
         "reject",
-        "priimti",
         "atmesti",
-        "принять",
         "отклонить",
-        "прийняти",
         "відхилити",
     )
+
+    private val decisionPhrases = acceptDecisionPhrases + rejectDecisionPhrases
 
     private val onlinePhrases = listOf(
         "you're online",
@@ -197,13 +206,21 @@ internal object CourierSignals {
         return decisionPhrases.any(actions::contains)
     }
 
+    fun hasOfferDecisionPair(actionLabels: List<String>): Boolean {
+        if (actionLabels.size < 2) return false
+        val normalized = actionLabels.map { it.lowercase(Locale.ROOT) }
+        val hasAccept = normalized.any { label -> acceptDecisionPhrases.any(label::contains) }
+        val hasReject = normalized.any { label -> rejectDecisionPhrases.any(label::contains) }
+        return hasAccept && hasReject
+    }
+
     fun isOfferNotificationText(text: String, actionLabels: List<String> = emptyList()): Boolean {
         if (hasNegativeNotificationSignal(text)) return false
         if (hasStrongOfferSignal(text)) return true
 
-        // Text-only helper retained for tests/legacy callers. The notification listener itself uses
-        // NotificationOfferClassifier, which also evaluates PendingIntent/channel/action structure.
-        return hasDecisionActionSignal(actionLabels)
+        // For notifications, a single generic action such as "Accept" is not enough. Require the
+        // distinctive accept + decline/reject pair used by incoming-order prompts.
+        return hasOfferDecisionPair(actionLabels)
     }
 
     fun isOngoingPresenceNotification(notification: Notification): Boolean =

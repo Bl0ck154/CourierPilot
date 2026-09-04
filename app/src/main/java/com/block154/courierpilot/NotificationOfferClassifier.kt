@@ -55,12 +55,11 @@ internal data class OfferNotificationDecision(
 /**
  * Offer classification is deliberately evidence-based instead of title-based.
  *
- * Strong text/action wording is still useful as bootstrap evidence, but a confirmed offer teaches a
- * structural profile (channel, PendingIntent type/creator, action shape, flags, extras shape, etc.).
- * Future pushes can then be recognised even if Bolt/Wolt completely change the visible wording.
+ * Automatic opening is fail-closed: only explicit incoming-order wording or the distinctive
+ * accept + decline/reject action pair may classify a notification as an offer. Confirmed structural
+ * profiles are retained for diagnostics/telemetry, but can never auto-open a notification alone.
  */
 internal object NotificationOfferClassifier {
-    private const val WOLT_STRUCTURAL_FALLBACK_THRESHOLD = 8
     internal const val LEARNED_PROFILE_MATCH_THRESHOLD = 7
 
     fun classify(context: Context, sbn: StatusBarNotification): OfferNotificationDecision {
@@ -88,19 +87,26 @@ internal object NotificationOfferClassifier {
             return OfferNotificationDecision(false, -100, listOf("negative_delivery_state"))
         }
 
+        val strongOfferText = CourierSignals.hasStrongOfferSignal(text)
+        val decisionPair = CourierSignals.hasOfferDecisionPair(actionLabels)
+        val anyDecisionAction = CourierSignals.hasDecisionActionSignal(actionLabels)
+
         var score = 0
         val reasons = mutableListOf<String>()
 
-        if (CourierSignals.hasStrongOfferSignal(text)) {
+        if (strongOfferText) {
             score += 8
             reasons += "strong_offer_text"
         }
-        if (CourierSignals.hasDecisionActionSignal(actionLabels)) {
+        if (decisionPair) {
             score += 8
-            reasons += "decision_actions"
+            reasons += "decision_pair"
+        } else if (anyDecisionAction) {
+            reasons += "single_decision_action"
         }
 
-        // Structural evidence. None of these fields depend on the human-readable notification name.
+        // Structural fields are still scored and logged because they are useful diagnostics, but they
+        // are no longer allowed to auto-open anything by themselves.
         if (!structure.ongoing) {
             score += 1
             reasons += "transient"
@@ -130,54 +136,32 @@ internal object NotificationOfferClassifier {
         if (learnedMatch >= LEARNED_PROFILE_MATCH_THRESHOLD) {
             score += 7
             reasons += "learned_profile:$learnedMatch"
+            if (!strongOfferText && !decisionPair) reasons += "learned_profile_diagnostic_only"
         }
 
-        // Explicit online/offline/presence wording should never bootstrap an offer by structure only.
-        // A previously confirmed structural profile or explicit offer/action evidence can override it.
-        val presenceOnly = CourierSignals.detectPresence(text) != PresenceSignal.UNKNOWN &&
-            !CourierSignals.hasStrongOfferSignal(text) &&
-            !CourierSignals.hasDecisionActionSignal(actionLabels) &&
-            learnedMatch < LEARNED_PROFILE_MATCH_THRESHOLD
-        if (presenceOnly) {
+        if (CourierSignals.detectPresence(text) != PresenceSignal.UNKNOWN && !strongOfferText && !decisionPair) {
             return OfferNotificationDecision(false, score, reasons + "presence_notification", learnedMatch)
         }
 
-        val explicitBootstrap = CourierSignals.hasStrongOfferSignal(text) ||
-            CourierSignals.hasDecisionActionSignal(actionLabels)
-        val learnedOffer = learnedMatch >= LEARNED_PROFILE_MATCH_THRESHOLD
-
-        // Bolt reuses enough notification structure that an informational/promotional push can match
-        // a previously confirmed order profile. A learned profile therefore cannot, by itself, turn
-        // arbitrary visible Bolt copy into an auto-open. Real order wording/actions remain explicit
-        // bootstrap signals, while textless learned pushes keep compatibility with Bolt variants that
-        // expose the actual offer only after opening the app.
-        val blockBoltLearnedVisibleText =
-            structure.packageName == CourierSignals.BOLT_PACKAGE &&
-                learnedOffer &&
-                !explicitBootstrap &&
-                text.isNotBlank() &&
-                !hasTwoAppActions &&
-                !structure.hasFullScreenIntent
-        if (blockBoltLearnedVisibleText) reasons += "bolt_learned_visible_text_guard"
-        val acceptedLearnedOffer = learnedOffer && !blockBoltLearnedVisibleText
-
-        // 0.15.2 intentionally removed generic score-based auto-open because Bolt reuses notification
-        // channels/ids for lifecycle pushes. That was too strict for Wolt: a wording/localisation/A-B
-        // change can leave a real offer with no known text even though its notification has the same
-        // high-confidence interactive shape. Restore only the narrow Wolt fallback that existed before
-        // 0.15.2: transient app-owned Activity intent + two app-owned actions, score >= 8. Bolt remains
-        // explicit/learned-only so status notifications cannot bootstrap an offer from structure alone.
-        val structuralWoltOffer =
-            structure.packageName == CourierSignals.WOLT_PACKAGE &&
-                score >= WOLT_STRUCTURAL_FALLBACK_THRESHOLD &&
-                !structure.ongoing &&
+        // Fail closed: automatic opening is permitted only for an explicit incoming-order signal.
+        // Learned channel/id/tag similarity, a two-action shape, or a Wolt structural fallback can
+        // never turn an unrelated courier push into an auto-open. Also reject group summaries,
+        // ongoing status notifications, and notifications whose tap intent is not owned by the app.
+        val strictOffer =
+            !structure.ongoing &&
+                !structure.groupSummary &&
                 structure.contentCreatorMatchesApp &&
-                structure.contentIntentKind == PendingIntentKind.ACTIVITY &&
-                hasTwoAppActions
-        if (structuralWoltOffer) reasons += "wolt_structural_fallback"
+                (strongOfferText || decisionPair)
+
+        if (!strictOffer) {
+            if (hasTwoAppActions && !strongOfferText && !decisionPair) reasons += "structure_diagnostic_only"
+            if (structure.ongoing) reasons += "ongoing_guard"
+            if (structure.groupSummary) reasons += "group_summary_guard"
+            if (!structure.contentCreatorMatchesApp) reasons += "app_content_intent_guard"
+        }
 
         return OfferNotificationDecision(
-            explicitBootstrap || acceptedLearnedOffer || structuralWoltOffer,
+            strictOffer,
             score,
             reasons,
             learnedMatch,

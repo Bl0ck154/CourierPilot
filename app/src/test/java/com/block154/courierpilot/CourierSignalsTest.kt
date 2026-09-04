@@ -16,6 +16,13 @@ class CourierSignalsTest {
     }
 
     @Test
+    fun promotionalOfferCopyIsNeverTreatedAsANewOrder() {
+        assertFalse(CourierSignals.isOfferNotificationText("New offer: earn more this weekend"))
+        assertFalse(CourierSignals.isOfferNotificationText("Special offer for couriers"))
+        assertFalse(CourierSignals.isOfferNotificationText("Courier reward available"))
+    }
+
+    @Test
     fun readyForPickupStatusIsNeverANewOfferEvenWithDecisionLikeActions() {
         assertFalse(CourierSignals.isOfferNotificationText("Order is ready for pickup", listOf("Accept", "Decline")))
         assertFalse(CourierSignals.isOfferNotificationText("Užsakymas paruoštas", listOf("Priimti", "Atmesti")))
