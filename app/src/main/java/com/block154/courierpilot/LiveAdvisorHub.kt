@@ -19,6 +19,7 @@ internal object LiveAdvisorHub {
     private data class PendingAdvisorOffer(
         val key: String,
         val packageName: String,
+        val notificationKey: String,
         val armedAt: Long,
         val parsed: ParsedOffer,
     )
@@ -56,8 +57,8 @@ internal object LiveAdvisorHub {
         val service = serviceRef.get() ?: return
         val platform = OfferState.platformLabel(pending.packageName)
         val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
-        pendingPreview = PendingAdvisorOffer(key, pending.packageName, pending.armedAt, parsed)
-        advisor?.showPending(platform, parsed)
+        pendingPreview = PendingAdvisorOffer(key, pending.packageName, pending.notificationKey, pending.armedAt, parsed)
+        advisor?.showPending(platform, parsed, pending.notificationKey)
 
         // Bolt address geocoding is independent from price persistence. Start it as soon as the
         // offer card exposes pickup addresses so the live route can usually hit the in-memory cache
@@ -146,7 +147,7 @@ internal object LiveAdvisorHub {
 
         // The card shell is rendered synchronously before any route/geocoder work starts. Routing
         // only updates rows inside this already-visible card; it never controls whether the card exists.
-        currentAdvisor.showBase(record.platform, parsed)
+        currentAdvisor.showBase(record.platform, parsed, record.captureKey)
         startRouteForOffer(service, current, preparedKey)
     }
 
@@ -253,6 +254,16 @@ internal object LiveAdvisorHub {
     fun onCourierWindowEvent(context: Context, packageName: String) {
         attach(context)
         advisor?.onCourierWindowEvent(packageName)
+    }
+
+    fun onOfferNotificationRemoved(packageName: String, notificationKey: String) {
+        val pendingMatches = pendingPreview?.let {
+            it.packageName == packageName && it.notificationKey == notificationKey
+        } == true
+        val currentMatches = currentOffer?.record?.let {
+            it.packageName == packageName && it.captureKey == notificationKey
+        } == true
+        if (pendingMatches || currentMatches) advisor?.onOfferNotificationRemoved(notificationKey)
     }
 
     fun observeScreen(context: Context, packageName: String, text: String) {

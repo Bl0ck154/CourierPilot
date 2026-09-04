@@ -34,8 +34,11 @@ class OfferAccessibilityService : AccessibilityService() {
     private var screenshotFailureKey = ""
     private var screenshotFailureCount = 0
     private var lastFastAccessibilityPriceKey = ""
+    private var woltPricePollKey = ""
+    private var lastWoltPriceProbeAtElapsed = 0L
 
     private val attemptRunnable = Runnable { attemptCapture() }
+    private val woltPricePollRunnable = Runnable { pollPendingWoltAccessibilityPrice() }
     private val captureWatchdogRunnable = Runnable {
         if (recoverTimedOutCaptureIfNeeded()) scheduleAttempt(100L)
     }
@@ -84,6 +87,11 @@ class OfferAccessibilityService : AccessibilityService() {
         }
         if (CourierSignals.isCourierPackage(eventPackage)) {
             LiveAdvisorHub.onCourierWindowEvent(this, eventPackage)
+            if (eventPackage == CourierSignals.WOLT_PACKAGE) {
+                OfferState.pending(this)?.takeIf { it.packageName == CourierSignals.WOLT_PACKAGE }?.let { pending ->
+                    ensureWoltPricePolling(pending, expedite = true)
+                }
+            }
             if (OfferOpenState.markWindowVisible(this, eventPackage)) {
                 CaptureEventLog.append(
                     this,
@@ -135,7 +143,7 @@ class OfferAccessibilityService : AccessibilityService() {
 
     private fun attemptCapture() {
         if (captureInFlight && !recoverTimedOutCaptureIfNeeded()) {
-            val priceReady = probeWoltAccessibilityPriceWhileCaptureBusy()
+            val priceReady = probeWoltAccessibilityPrice()
             val pending = OfferState.pending(this)
             if (!priceReady && pending?.packageName == CourierSignals.WOLT_PACKAGE) {
                 scheduleAttempt(WOLT_FAST_PRICE_POLL_MS)
@@ -181,6 +189,7 @@ class OfferAccessibilityService : AccessibilityService() {
         }
 
         val platform = OfferState.platformLabel(pending.packageName)
+        if (pending.packageName == CourierSignals.WOLT_PACKAGE) ensureWoltPricePolling(pending)
         if (pending.armedAt != lastHandledArmedAt) {
             lastHandledArmedAt = pending.armedAt
             OfferState.markError(this, "")
@@ -230,7 +239,7 @@ class OfferAccessibilityService : AccessibilityService() {
      * optional capture: read the lightweight tree and update the already-visible advisor at once.
      * Persistence remains serialized by the normal capture loop.
      */
-    private fun probeWoltAccessibilityPriceWhileCaptureBusy(): Boolean {
+    private fun probeWoltAccessibilityPrice(): Boolean {
         val pending = OfferState.pending(this) ?: return false
         if (pending.packageName != CourierSignals.WOLT_PACKAGE) return false
         val target = findCourierWindow(pending) ?: return false
@@ -249,10 +258,50 @@ class OfferAccessibilityService : AccessibilityService() {
             this,
             stage = "price_accessibility_fast",
             platform = "Wolt",
-            message = "Price reached the live card while screenshot/OCR capture was still in flight",
+            message = "Hot Accessibility price watcher pushed price directly into the live card",
             dedupeWindowMs = 3_000L,
         )
         return true
+    }
+
+    private fun ensureWoltPricePolling(pending: PendingOffer, expedite: Boolean = false) {
+        if (pending.packageName != CourierSignals.WOLT_PACKAGE) return
+        val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
+        if (key != woltPricePollKey) {
+            woltPricePollKey = key
+            handler.removeCallbacks(woltPricePollRunnable)
+            handler.post(woltPricePollRunnable)
+            return
+        }
+        if (expedite) {
+            handler.removeCallbacks(woltPricePollRunnable)
+            handler.post(woltPricePollRunnable)
+        }
+    }
+
+    private fun pollPendingWoltAccessibilityPrice() {
+        val pending = OfferState.pending(this)
+        if (pending == null || pending.packageName != CourierSignals.WOLT_PACKAGE) {
+            woltPricePollKey = ""
+            return
+        }
+        val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
+        if (woltPricePollKey != key) {
+            woltPricePollKey = key
+        }
+
+        val now = SystemClock.elapsedRealtime()
+        val sinceLast = now - lastWoltPriceProbeAtElapsed
+        if (sinceLast >= 0L && sinceLast < WOLT_PRICE_EVENT_THROTTLE_MS) {
+            handler.postDelayed(woltPricePollRunnable, WOLT_PRICE_EVENT_THROTTLE_MS - sinceLast)
+            return
+        }
+        lastWoltPriceProbeAtElapsed = now
+        if (probeWoltAccessibilityPrice()) {
+            woltPricePollKey = ""
+            return
+        }
+        handler.postDelayed(woltPricePollRunnable, WOLT_HOT_PRICE_POLL_MS)
     }
 
     private data class CourierWindow(val root: AccessibilityNodeInfo, val windowId: Int, val packageName: String)
@@ -1022,6 +1071,8 @@ class OfferAccessibilityService : AccessibilityService() {
     companion object {
         private const val IDLE_WATCHDOG_MS = 8_000L
         private const val WOLT_FAST_PRICE_POLL_MS = 350L
+        private const val WOLT_HOT_PRICE_POLL_MS = 220L
+        private const val WOLT_PRICE_EVENT_THROTTLE_MS = 90L
         private const val DISCOVERY_EVENT_WINDOW_MS = 1_500L
         private const val DISCOVERY_OCR_MIN_INTERVAL_MS = 1_800L
         private const val DISCOVERY_SCREENSHOT_RETRY_MS = 1_200L
