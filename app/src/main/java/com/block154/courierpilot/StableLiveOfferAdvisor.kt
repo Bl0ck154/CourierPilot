@@ -50,6 +50,7 @@ internal class StableLiveOfferAdvisor(
     private var expectedPackageName = ""
     private var dismissed = false
     private var temporarilyHidden = false
+    private var temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
     private var generation = 0L
     private var missingSince = 0L
     private var missingChecks = 0
@@ -102,6 +103,7 @@ internal class StableLiveOfferAdvisor(
             expectedPackageName = packageName
             dismissed = false
             temporarilyHidden = false
+            temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
             cachedDecisionLine = ""
             cachedDecisionBand = OfferDecisionBand.UNKNOWN
             cachedDecisionLoading = true
@@ -172,6 +174,7 @@ internal class StableLiveOfferAdvisor(
         expectedPackageName = packageForPlatform(platform)
         dismissed = false
         temporarilyHidden = false
+        temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
         previewMode = false
         cachedDecisionLine = ""
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
@@ -665,7 +668,8 @@ internal class StableLiveOfferAdvisor(
 
     private fun temporarilyHide(reason: String) {
         if (dismissed || currentParsed == null) return
-        if (!temporarilyHidden || root != null) {
+        val firstHide = !temporarilyHidden
+        if (firstHide || root != null) {
             CaptureEventLog.append(
                 service,
                 stage = "overlay_suspend",
@@ -674,6 +678,15 @@ internal class StableLiveOfferAdvisor(
                 dedupeWindowMs = 750L,
             )
         }
+        if (firstHide) {
+            val now = SystemClock.elapsedRealtime()
+            temporaryRestoreDeadlineElapsed = LiveAdvisorRestorePolicy.recoveryWindowMs(currentPlatform, reason)
+                ?.let { now + it }
+                ?: Long.MAX_VALUE
+        } else if (reason.startsWith("foreground")) {
+            // Deliberately leaving the courier app is not evidence that the offer expired.
+            temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
+        }
         temporarilyHidden = true
         detachView()
         resetMissingEvidence()
@@ -681,11 +694,18 @@ internal class StableLiveOfferAdvisor(
 
     private fun restoreFromCache(reason: String) {
         if (dismissed || currentParsed == null || !temporarilyHidden) return
+        if (SystemClock.elapsedRealtime() > temporaryRestoreDeadlineElapsed) {
+            // A short Compose gap may recover, but a Wolt card that resurfaces tens of seconds after
+            // becoming unconfirmed is stale Accessibility state, not a live offer.
+            suppressCurrentOffer("stale Wolt offer resurfaced after suspension", animate = false)
+            return
+        }
         val pending = OfferState.pending(service)
         if (pending != null && pending.packageName == expectedPackageName && !previewMode) return
         ensureView()
         if (root == null) return
         temporarilyHidden = false
+        temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
         applyCachedPresentation()
         resetMissingEvidence()
         CaptureEventLog.append(
@@ -704,6 +724,7 @@ internal class StableLiveOfferAdvisor(
         boltBaselineSurface = null
         previewMode = false
         captureSuppressed = false
+        temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
         offerVisualStartedAtElapsed = 0L
         currentParsed = null
         expectedPackageName = ""

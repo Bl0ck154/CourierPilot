@@ -32,3 +32,19 @@ internal class OfferDifferenceConfirmation(
         const val DEFAULT_MIN_CHECKS = 3
     }
 }
+
+
+internal object LiveAdvisorRestorePolicy {
+    const val WOLT_UNCONFIRMED_RECOVERY_MS = 6_000L
+    const val WOLT_DIFFERENT_RECOVERY_MS = 4_000L
+
+    /** null means the hidden card may be restored later (for example after switching apps). */
+    fun recoveryWindowMs(platform: String, reason: String): Long? {
+        if (!platform.equals("Wolt", ignoreCase = true)) return null
+        return when {
+            reason == "Wolt offer surface remained unconfirmed" -> WOLT_UNCONFIRMED_RECOVERY_MS
+            reason.startsWith("possible different offer detected") -> WOLT_DIFFERENT_RECOVERY_MS
+            else -> null
+        }
+    }
+}

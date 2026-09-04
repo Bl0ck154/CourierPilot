@@ -28,4 +28,24 @@ class LiveAdvisorStabilityPolicyTest {
         assertFalse(confirmation.observe(true, 1_800L))
         assertTrue(confirmation.observe(true, 2_500L))
     }
+
+    @Test
+    fun staleWoltUnconfirmedSurfaceGetsShortRecoveryWindow() {
+        assertTrue(
+            LiveAdvisorRestorePolicy.recoveryWindowMs(
+                "Wolt",
+                "Wolt offer surface remained unconfirmed",
+            ) == 6_000L,
+        )
+    }
+
+    @Test
+    fun foregroundSwitchDoesNotExpireHiddenOfferByTimer() {
+        assertTrue(
+            LiveAdvisorRestorePolicy.recoveryWindowMs(
+                "Wolt",
+                "foreground changed to com.example.maps",
+            ) == null,
+        )
+    }
 }
