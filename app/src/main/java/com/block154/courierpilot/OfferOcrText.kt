@@ -1,6 +1,63 @@
 package com.block154.courierpilot
 
 import com.google.mlkit.vision.text.Text
+import kotlin.math.abs
+
+
+internal data class OcrSpatialLine(
+    val top: Int,
+    val bottom: Int,
+    val left: Int,
+    val right: Int,
+    val text: String,
+) {
+    val centerY: Int get() = (top + bottom) / 2
+}
+
+/**
+ * Wolt's authoritative earnings amount is rendered next to the "Expected earnings for the full
+ * delivery" label. ML Kit does not guarantee that `Text.text` preserves visual line order, so a
+ * price that is visibly present can be flattened far away from its label and then rejected by the
+ * text parser. Pair the money line with that label by screen geometry instead.
+ */
+internal object WoltEarningsSpatialOcr {
+    private const val EARNINGS_LABEL = "expected earnings for the full delivery"
+    private const val MAX_VERTICAL_DISTANCE_FRACTION = 0.16
+
+    fun findMoney(
+        lines: List<OcrSpatialLine>,
+        imageHeight: Int,
+        extraAnchors: List<OcrSpatialLine> = emptyList(),
+    ): MoneyAmount? {
+        if (imageHeight <= 0) return null
+        val anchors = (lines + extraAnchors).filter {
+            normalize(it.text).contains(EARNINGS_LABEL)
+        }
+        if (anchors.isEmpty()) return null
+
+        data class Candidate(val money: MoneyAmount, val score: Int)
+        val maxVertical = (imageHeight * MAX_VERTICAL_DISTANCE_FRACTION).toInt().coerceAtLeast(1)
+        val candidates = mutableListOf<Candidate>()
+        lines.forEach { line ->
+            val money = MarketCurrencyParser.parse(line.text) ?: return@forEach
+            anchors.forEach { anchor ->
+                val vertical = abs(line.centerY - anchor.centerY)
+                if (vertical <= maxVertical) {
+                    // Wolt normally renders the amount above the explanatory label. Penalise lower
+                    // candidates, but keep them eligible for layouts/locales that place it alongside.
+                    val belowPenalty = if (line.centerY > anchor.centerY) imageHeight / 25 else 0
+                    candidates += Candidate(money, vertical + belowPenalty)
+                }
+            }
+        }
+        return candidates.minByOrNull { it.score }?.money
+    }
+
+    private fun normalize(value: String): String = value
+        .lowercase()
+        .replace(Regex("\\s+"), " ")
+        .trim()
+}
 
 /**
  * Builds parser input from OCR without letting Bolt's live map labels leak into the offer card.
@@ -25,6 +82,38 @@ internal object OfferOcrText {
     private val priceRegex = Regex(
         "(?i)(?:€\\s*|EUR\\s*)(\\d+(?:[.,]\\d{1,2})?)|(\\d+(?:[.,]\\d{1,2})?)\\s*(?:€|EUR)"
     )
+
+    fun woltEarningsMoney(ocr: Text, imageHeight: Int): MoneyAmount? {
+        val lines = ocr.textBlocks
+            .flatMap { it.lines }
+            .mapNotNull { line ->
+                val bounds = line.boundingBox ?: return@mapNotNull null
+                val value = line.text.trim().replace(Regex("\\s+"), " ")
+                if (value.isBlank()) null else OcrSpatialLine(
+                    top = bounds.top,
+                    bottom = bounds.bottom,
+                    left = bounds.left,
+                    right = bounds.right,
+                    text = value,
+                )
+            }
+
+        // Some ML Kit layouts split the earnings label across several lines while the containing
+        // text block still preserves the full phrase. Use those blocks only as anchors; money still
+        // has to come from an actual nearby OCR line.
+        val blockAnchors = ocr.textBlocks.mapNotNull { block ->
+            val bounds = block.boundingBox ?: return@mapNotNull null
+            val value = block.text.trim().replace(Regex("\\s+"), " ")
+            if (value.isBlank()) null else OcrSpatialLine(
+                top = bounds.top,
+                bottom = bounds.bottom,
+                left = bounds.left,
+                right = bounds.right,
+                text = value,
+            )
+        }
+        return WoltEarningsSpatialOcr.findMoney(lines, imageHeight, blockAnchors)
+    }
 
     fun combine(
         packageName: String,

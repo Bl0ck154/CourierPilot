@@ -507,6 +507,7 @@ class OfferAccessibilityService : AccessibilityService() {
 
     private fun captureCurrentFrameForOcr(pending: PendingOffer, windowId: Int, accessibilityText: String) {
         val platform = OfferState.platformLabel(pending.packageName)
+        val probeStartedAt = SystemClock.elapsedRealtime()
         val captureToken = beginCapture("offer screenshot/OCR", platform)
         takeTargetScreenshot(
             windowId,
@@ -530,6 +531,7 @@ class OfferAccessibilityService : AccessibilityService() {
                         LiveAdvisorHub.showPendingOffer(this@OfferAccessibilityService, pending, earlyParsed)
                     }
 
+                    val ocrStartedAt = SystemClock.elapsedRealtime()
                     recognizer.process(InputImage.fromBitmap(bitmap, 0))
                         .addOnSuccessListener { result ->
                             if (!isCaptureCurrent(captureToken)) {
@@ -539,11 +541,40 @@ class OfferAccessibilityService : AccessibilityService() {
                             val combined = OfferOcrText.combine(pending.packageName, accessibilityText, result, bitmap.height)
                             observeCourierScreen(pending.packageName, combined, ScreenTextSource.OCR_AUGMENTED)
                             if (combined.isNotBlank()) OfferState.saveUiText(this@OfferAccessibilityService, combined)
-                            val parsed = OfferParser.parse(combined)
+                            val parsedText = OfferParser.parse(combined)
+                            val spatialWoltMoney = if (pending.packageName == CourierSignals.WOLT_PACKAGE) {
+                                OfferOcrText.woltEarningsMoney(result, bitmap.height)
+                            } else null
+                            val parsed = if (spatialWoltMoney != null) {
+                                parsedText.copy(
+                                    priceCents = spatialWoltMoney.amountMinor
+                                        .takeIf { it in Int.MIN_VALUE..Int.MAX_VALUE }
+                                        ?.toInt(),
+                                    money = spatialWoltMoney,
+                                )
+                            } else parsedText
                             val trustedPrice = parsed.priceCents != null && (
                                 pending.packageName != CourierSignals.WOLT_PACKAGE ||
                                     CourierSignals.isTrustedWoltOcrOffer(combined, parsed)
                                 )
+                            CaptureEventLog.append(
+                                this@OfferAccessibilityService,
+                                stage = "ocr_price_probe",
+                                platform = platform,
+                                message = "capture_ms=${(ocrStartedAt - probeStartedAt).coerceAtLeast(0L)}; " +
+                                    "ocr_ms=${(SystemClock.elapsedRealtime() - ocrStartedAt).coerceAtLeast(0L)}; " +
+                                    "spatial=${spatialWoltMoney != null}; price=${parsed.priceCents != null}; trusted=$trustedPrice",
+                                dedupeWindowMs = 1_500L,
+                            )
+                            if (spatialWoltMoney != null && trustedPrice) {
+                                CaptureEventLog.append(
+                                    this@OfferAccessibilityService,
+                                    stage = "price_ocr_spatial",
+                                    platform = platform,
+                                    message = "Spatial Wolt earnings OCR matched the visible amount to its label",
+                                    dedupeWindowMs = 3_000L,
+                                )
+                            }
                             if (CourierSignals.looksLikeOfferScreen(combined, parsed) &&
                                 (parsed.priceCents == null || trustedPrice)
                             ) {
@@ -1012,6 +1043,16 @@ class OfferAccessibilityService : AccessibilityService() {
 
     private fun adaptiveOcrDelay(pending: PendingOffer): Long {
         val age = System.currentTimeMillis() - pending.armedAt
+        if (pending.packageName == CourierSignals.WOLT_PACKAGE) {
+            // Accessibility can lag the pixels by many seconds on Wolt. Keep screenshot/OCR as an
+            // active visual-price sensor instead of backing off to multi-second sleeps while the
+            // courier is deciding whether to accept the offer.
+            return when {
+                age < 30_000L -> 650L
+                age < 90_000L -> 900L
+                else -> 1_200L
+            }
+        }
         return when {
             age < 15_000L -> 1_200L
             age < 60_000L -> 2_500L
