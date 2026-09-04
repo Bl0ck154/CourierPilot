@@ -150,6 +150,7 @@ internal object AppUpdateManager {
     private val inFlight = AtomicBoolean(false)
 
     fun snapshot(context: Context): AppUpdateStatus {
+        cleanupUpdateCache(context)
         val prefs = prefs(context)
         val readyVersion = prefs.getString(KEY_READY_VERSION, null)
         val readyPath = prefs.getString(KEY_READY_PATH, null)
@@ -195,8 +196,10 @@ internal object AppUpdateManager {
     }
 
     fun checkNow(context: Context, onStatus: (AppUpdateStatus) -> Unit) {
+        val app = context.applicationContext
+        cleanupUpdateCache(app)
         startCheck(
-            context = context.applicationContext,
+            context = app,
             manual = true,
             onStatus = onStatus,
             onComplete = null,
@@ -205,6 +208,7 @@ internal object AppUpdateManager {
 
     fun checkIfDue(context: Context, onComplete: (() -> Unit)? = null) {
         val app = context.applicationContext
+        cleanupUpdateCache(app)
         val lastCheckAt = prefs(app).getLong(KEY_LAST_CHECK_AT, 0L)
         if (lastCheckAt > 0L && System.currentTimeMillis() - lastCheckAt < BackgroundAppUpdateScheduler.CHECK_INTERVAL_MS) {
             onComplete?.invoke()
@@ -215,6 +219,7 @@ internal object AppUpdateManager {
 
     fun requestInstall(context: Context): InstallLaunchResult {
         val app = context.applicationContext
+        cleanupUpdateCache(app)
         val prefs = prefs(app)
         val readyVersion = prefs.getString(KEY_READY_VERSION, null)
         val readyPath = prefs.getString(KEY_READY_PATH, null)
@@ -576,6 +581,39 @@ internal object AppUpdateManager {
         MessageDigest.getInstance("SHA-256").digest(bytes).toHex()
 
     private fun ByteArray.toHex(): String = joinToString(separator = "") { byte -> "%02x".format(byte) }
+
+    private fun cleanupUpdateCache(context: Context) {
+        if (inFlight.get()) return
+
+        val app = context.applicationContext
+        val prefs = prefs(app)
+        val updateDir = File(app.cacheDir, "updates")
+        val readyVersion = prefs.getString(KEY_READY_VERSION, null)
+        val readyPath = prefs.getString(KEY_READY_PATH, null)
+        val readyFile = readyPath?.let(::File)
+        val keepReady =
+            AppUpdateVersion.isNewer(readyVersion, BuildConfig.VERSION_NAME) &&
+                readyFile?.isFile == true &&
+                readyFile.parentFile?.absolutePath == updateDir.absolutePath
+        val keepPath = readyFile?.absolutePath?.takeIf { keepReady }
+
+        updateDir.listFiles()?.forEach { file ->
+            if (file.absolutePath != keepPath) {
+                runCatching {
+                    if (file.isDirectory) file.deleteRecursively() else file.delete()
+                }
+            }
+        }
+
+        if (!keepReady && (!readyVersion.isNullOrBlank() || !readyPath.isNullOrBlank())) {
+            prefs.edit()
+                .remove(KEY_READY_VERSION)
+                .remove(KEY_READY_PATH)
+                .remove(KEY_DISMISSED_VERSION)
+                .apply()
+            cancelNotification(app)
+        }
+    }
 
     private fun clearReadyUpdate(context: Context) {
         val prefs = prefs(context)
