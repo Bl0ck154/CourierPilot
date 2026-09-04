@@ -15,6 +15,8 @@ internal object CaptureEventLog {
     private const val PREFS = "courierpilot_capture_events"
     private const val KEY_EVENTS = "events_json"
     private const val MAX_EVENTS = 160
+    private const val MAX_DEDUPE_KEYS = 256
+    private val lastDedupeAt = LinkedHashMap<String, Long>(MAX_DEDUPE_KEYS, 0.75f, true)
 
     @Synchronized
     fun append(
@@ -24,27 +26,31 @@ internal object CaptureEventLog {
         platform: String = "",
         dedupeWindowMs: Long = 0L,
     ) {
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val events = readArray(prefs.getString(KEY_EVENTS, null))
         val now = System.currentTimeMillis()
-
-        if (dedupeWindowMs > 0L && events.length() > 0) {
-            val last = events.optJSONObject(events.length() - 1)
-            if (last != null &&
-                last.optString("stage") == stage &&
-                last.optString("platform") == platform &&
-                last.optString("message") == message &&
-                now - last.optLong("timestamp") < dedupeWindowMs
-            ) {
-                return
+        val normalizedStage = stage.take(48)
+        val normalizedPlatform = platform.take(24)
+        val normalizedMessage = message.take(320)
+        if (dedupeWindowMs > 0L) {
+            val dedupeKey = "$normalizedStage\u0000$normalizedPlatform\u0000$normalizedMessage"
+            val previousAt = lastDedupeAt[dedupeKey]
+            if (previousAt != null && now - previousAt < dedupeWindowMs) return
+            lastDedupeAt[dedupeKey] = now
+            while (lastDedupeAt.size > MAX_DEDUPE_KEYS) {
+                val oldest = lastDedupeAt.entries.iterator()
+                if (oldest.hasNext()) {
+                    oldest.next()
+                    oldest.remove()
+                }
             }
         }
 
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val events = readArray(prefs.getString(KEY_EVENTS, null))
         val event = CaptureEvent(
             timestamp = now,
-            stage = stage.take(48),
-            platform = platform.take(24),
-            message = message.take(320),
+            stage = normalizedStage,
+            platform = normalizedPlatform,
+            message = normalizedMessage,
         )
         events.put(
             JSONObject()

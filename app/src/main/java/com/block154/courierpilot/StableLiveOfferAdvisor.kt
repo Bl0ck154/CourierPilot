@@ -804,10 +804,19 @@ internal class StableLiveOfferAdvisor(
         // the same Wolt screen. In particular, Wolt can expose "Go offline" while an incoming
         // offer is still fully visible. Never end the card before checking the offer UI itself.
         if (hasOfferUi) {
-            if (isConfirmedDifferentOffer(expected, parsed)) {
-                suppressCurrentOffer("different offer is now stably visible")
+            val differentNow = LiveOfferResumePolicy.definitelyDifferent(expectedOffer, parsed)
+            if (differentNow) {
+                if (isConfirmedDifferentOffer(expected, parsed)) {
+                    suppressCurrentOffer("different offer is now stably visible")
+                } else {
+                    // A contradictory first frame is not enough to permanently replace the offer,
+                    // but it is enough to keep the OLD card off-screen while confirmation runs.
+                    // Otherwise a newly arrived offer briefly resurrects the previous €/km card.
+                    temporarilyHide("possible different offer detected; awaiting confirmation")
+                }
                 return
             }
+            differentOfferConfirmation.reset()
             resetMissingEvidence()
             if (currentPlatform.equals("Bolt", ignoreCase = true)) {
                 // Adopt the latest confirmed same-offer surface after map zoom/recomposition instead
@@ -1087,8 +1096,8 @@ internal class StableLiveOfferAdvisor(
         const val MIN_MISSING_CHECKS = 3
         const val BOLT_GONE_GRACE_MS = 8_000L
         const val BOLT_MIN_MISSING_CHECKS = 5
-        const val WOLT_UNCERTAIN_GRACE_MS = 5_000L
-        const val WOLT_UNCERTAIN_MIN_CHECKS = 5
+        const val WOLT_UNCERTAIN_GRACE_MS = 2_000L
+        const val WOLT_UNCERTAIN_MIN_CHECKS = 3
         const val FADE_IN_MS = 380L
         const val FADE_OUT_MS = 280L
         const val FADE_OFFSET_DP = 10

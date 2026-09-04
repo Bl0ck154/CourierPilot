@@ -33,6 +33,7 @@ class OfferAccessibilityService : AccessibilityService() {
     private var lastDiscoveryOcrAtElapsed = 0L
     private var screenshotFailureKey = ""
     private var screenshotFailureCount = 0
+    private var lastFastAccessibilityPriceKey = ""
 
     private val attemptRunnable = Runnable { attemptCapture() }
     private val captureWatchdogRunnable = Runnable {
@@ -133,7 +134,14 @@ class OfferAccessibilityService : AccessibilityService() {
     }
 
     private fun attemptCapture() {
-        if (captureInFlight && !recoverTimedOutCaptureIfNeeded()) return
+        if (captureInFlight && !recoverTimedOutCaptureIfNeeded()) {
+            val priceReady = probeWoltAccessibilityPriceWhileCaptureBusy()
+            val pending = OfferState.pending(this)
+            if (!priceReady && pending?.packageName == CourierSignals.WOLT_PACKAGE) {
+                scheduleAttempt(WOLT_FAST_PRICE_POLL_MS)
+            }
+            return
+        }
         var pending = OfferState.pending(this)
 
         if (pending == null) {
@@ -214,6 +222,37 @@ class OfferAccessibilityService : AccessibilityService() {
             CaptureEventLog.append(this, "price_wait", "Price not exposed yet; checking current frame with OCR", platform, 5_000L)
             captureCurrentFrameForOcr(pending, target.windowId, uiText)
         }
+    }
+
+    /**
+     * Wolt can expose the final price through Accessibility while a screenshot/OCR request that
+     * started a moment earlier is still running. Do not make the live €/km card wait for that
+     * optional capture: read the lightweight tree and update the already-visible advisor at once.
+     * Persistence remains serialized by the normal capture loop.
+     */
+    private fun probeWoltAccessibilityPriceWhileCaptureBusy(): Boolean {
+        val pending = OfferState.pending(this) ?: return false
+        if (pending.packageName != CourierSignals.WOLT_PACKAGE) return false
+        val target = findCourierWindow(pending) ?: return false
+        val uiText = collectVisibleText(target.root)
+        if (uiText.isBlank()) return false
+        val parsed = OfferParser.parse(uiText)
+        val price = parsed.priceCents ?: return false
+        val money = parsed.money ?: return false
+
+        val key = "${pending.packageName}|${pending.armedAt}|$price|${money.currencyCode}"
+        if (key == lastFastAccessibilityPriceKey) return true
+        lastFastAccessibilityPriceKey = key
+        OfferState.saveUiText(this, uiText)
+        LiveAdvisorHub.showPendingOffer(this, pending, parsed)
+        CaptureEventLog.append(
+            this,
+            stage = "price_accessibility_fast",
+            platform = "Wolt",
+            message = "Price reached the live card while screenshot/OCR capture was still in flight",
+            dedupeWindowMs = 3_000L,
+        )
+        return true
     }
 
     private data class CourierWindow(val root: AccessibilityNodeInfo, val windowId: Int, val packageName: String)
@@ -982,6 +1021,7 @@ class OfferAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val IDLE_WATCHDOG_MS = 8_000L
+        private const val WOLT_FAST_PRICE_POLL_MS = 350L
         private const val DISCOVERY_EVENT_WINDOW_MS = 1_500L
         private const val DISCOVERY_OCR_MIN_INTERVAL_MS = 1_800L
         private const val DISCOVERY_SCREENSHOT_RETRY_MS = 1_200L

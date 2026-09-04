@@ -94,9 +94,11 @@ internal object AutomaticWoltRouteCoordinator {
         }
         ready?.let {
             app.mainExecutor.execute { onReady(it) }
-            return true
+            return false
         }
-        val state = startNew ?: return true
+        // Existing in-flight/prepared work is reuse, not a new route start. Returning false keeps
+        // diagnostics truthful and avoids repeated "route_prepare_start" churn on every UI refresh.
+        val state = startNew ?: return false
         computeRoute(app, parsed, config) { prepared ->
             val callbacks = synchronized(preparationLock) {
                 val current = preparations[key]

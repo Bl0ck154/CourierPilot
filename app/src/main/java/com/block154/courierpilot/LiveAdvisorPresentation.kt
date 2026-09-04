@@ -12,15 +12,13 @@ internal object LiveAdvisorPresentation {
         } else {
             "${formatMoneyRate(moneyPerKilometer, code)}/km"
         }
-        return "$rate  ${decision.band.emoji}"
+        return "≈ $rate  ${decision.band.emoji}"
     }
 
     fun routeLine(walking: RouteResult?, cycling: RouteResult?): String {
         val walk = walking?.let { formatKm(it.distanceMeters) } ?: "—"
         val cycle = cycling?.let { formatKm(it.distanceMeters) } ?: "—"
-        val average = OfferDecisionEngine.averageValhallaDistanceMeters(walking, cycling)
-            ?.let { "≈ ${formatKm(it)}" }
-        return listOfNotNull("🚶 $walk", "🚲 $cycle", average).joinToString("   ")
+        return listOf("🚶 $walk", "🚲 $cycle").joinToString("   ")
     }
 
     private fun formatMoneyRate(value: Double, currencyCode: String?, decimals: Int = 2): String {
