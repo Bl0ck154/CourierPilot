@@ -55,9 +55,10 @@ internal data class OfferNotificationDecision(
 /**
  * Offer classification is deliberately evidence-based instead of title-based.
  *
- * Automatic opening is fail-closed: only explicit incoming-order wording or the distinctive
- * accept + decline/reject action pair may classify a notification as an offer. Confirmed structural
- * profiles are retained for diagnostics/telemetry, but can never auto-open a notification alone.
+ * Automatic opening stays fail-closed for visible copy: explicit incoming-order wording or the
+ * distinctive accept + decline/reject action pair is required. The one narrow adaptive exception is
+ * a completely textless transient notification that exactly matches a previously screen-confirmed
+ * offer profile; this recovers real Bolt/Wolt pushes whose visible text intermittently disappears.
  */
 internal object NotificationOfferClassifier {
     internal const val LEARNED_PROFILE_MATCH_THRESHOLD = 7
@@ -87,6 +88,13 @@ internal object NotificationOfferClassifier {
             return OfferNotificationDecision(false, -100, listOf("negative_delivery_state"))
         }
 
+        // Presence/status notifications are a hard negative, not merely a weak hint. Real-device
+        // Bolt uses the persistent "Bolt Courier app is running" notification while online. It must
+        // never auto-open the app even if an OEM mutates its flags/actions to resemble an order push.
+        if (CourierSignals.detectPresence(text) != PresenceSignal.UNKNOWN) {
+            return OfferNotificationDecision(false, -100, listOf("presence_notification"))
+        }
+
         val strongOfferText = CourierSignals.hasStrongOfferSignal(text)
         val decisionPair = CourierSignals.hasOfferDecisionPair(actionLabels)
         val anyDecisionAction = CourierSignals.hasDecisionActionSignal(actionLabels)
@@ -106,7 +114,7 @@ internal object NotificationOfferClassifier {
         }
 
         // Structural fields are still scored and logged because they are useful diagnostics, but they
-        // are no longer allowed to auto-open anything by themselves.
+        // are never enough for visible unrelated copy.
         if (!structure.ongoing) {
             score += 1
             reasons += "transient"
@@ -133,25 +141,30 @@ internal object NotificationOfferClassifier {
         }
 
         val learnedMatch = learnedProfiles.maxOfOrNull { profileMatchScore(structure, it) } ?: 0
-        if (learnedMatch >= LEARNED_PROFILE_MATCH_THRESHOLD) {
+        val learnedProfileMatched = learnedMatch >= LEARNED_PROFILE_MATCH_THRESHOLD
+        if (learnedProfileMatched) {
             score += 7
             reasons += "learned_profile:$learnedMatch"
-            if (!strongOfferText && !decisionPair) reasons += "learned_profile_diagnostic_only"
         }
 
-        if (CourierSignals.detectPresence(text) != PresenceSignal.UNKNOWN && !strongOfferText && !decisionPair) {
-            return OfferNotificationDecision(false, score, reasons + "presence_notification", learnedMatch)
+        val learnedTextlessOffer =
+            learnedProfileMatched &&
+                text.isBlank() &&
+                structure.contentIntentKind == PendingIntentKind.ACTIVITY
+        if (learnedTextlessOffer) {
+            reasons += "learned_textless_offer"
+        } else if (learnedProfileMatched && !strongOfferText && !decisionPair) {
+            reasons += "learned_profile_diagnostic_only"
         }
 
-        // Fail closed: automatic opening is permitted only for an explicit incoming-order signal.
-        // Learned channel/id/tag similarity, a two-action shape, or a Wolt structural fallback can
-        // never turn an unrelated courier push into an auto-open. Also reject group summaries,
-        // ongoing status notifications, and notifications whose tap intent is not owned by the app.
+        // Fail closed for everything except explicit order evidence or the narrow textless learned
+        // profile above. Also reject group summaries, ongoing status notifications, and notifications
+        // whose tap intent is not owned by the courier app.
         val strictOffer =
             !structure.ongoing &&
                 !structure.groupSummary &&
                 structure.contentCreatorMatchesApp &&
-                (strongOfferText || decisionPair)
+                (strongOfferText || decisionPair || learnedTextlessOffer)
 
         if (!strictOffer) {
             if (hasTwoAppActions && !strongOfferText && !decisionPair) reasons += "structure_diagnostic_only"
