@@ -34,6 +34,33 @@ class OfferParserTest {
     }
 
     @Test
+    fun prefersCompleteOcrCopyWhenAccessibilityCopyOmitsModernWoltAddresses() {
+        val parsed = OfferParser.parse(
+            """
+            €6.56
+            2 stops (5.4 km) • 15–22 min
+            Jammi (Tauro kalnas)
+            Customer drop-off
+            Estimated earnings for the full delivery
+            Accept
+            €6.56
+            2 stops (5.4 km) • 15–22 min
+            Jammi (Tauro kalnas)
+            Tauro g. 3, Vilnius, LT-03106
+            Customer drop-off
+            Vilkpėdės gatvė 2A, Vilnius, 03151
+            Estimated earnings for the full delivery
+            Accept
+            """.trimIndent()
+        )
+
+        assertEquals(listOf("Tauro g. 3, Vilnius, LT-03106"), parsed.pickupAddresses)
+        assertEquals(listOf("Vilkpėdės gatvė 2A, Vilnius, 03151"), parsed.dropoffAddresses)
+        assertEquals(1, parsed.deliveryCount)
+        assertTrue(AutomaticWoltRouteCoordinator.routeFingerprint(parsed) != null)
+    }
+
+    @Test
     fun parsesRedesignedWoltCollapsedStackedOfferWithoutInventingDropoffs() {
         val parsed = OfferParser.parse(
             """

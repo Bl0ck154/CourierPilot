@@ -165,22 +165,32 @@ internal object OfferParser {
      * sheet, its text is accumulated with the card frame and this parser reconstructs the full route.
      */
     private fun parseModernWoltLayout(lines: List<String>): ModernWoltLayout? {
-        val summaryIndex = lines.indexOfFirst(WoltOfferUiText.modernRouteSummaryRegex::matches)
-        val singleDropoffIndex = lines.indexOfFirst(WoltOfferUiText.singleCustomerDropoffRegex::matches)
+        val summaryIndexes = lines.indices.filter { index ->
+            WoltOfferUiText.modernRouteSummaryRegex.matches(lines[index])
+        }
+        // Accessibility and OCR are intentionally concatenated. The redesigned Wolt card can
+        // expose price/summary through Accessibility while omitting the visible stop addresses;
+        // the OCR copy that follows then contains the complete card. Prefer the last summary so
+        // that richer OCR frame wins instead of the first incomplete copy ending at its label.
+        val summaryIndex = summaryIndexes.lastOrNull() ?: -1
+        val contentStart = (summaryIndex + 1).coerceAtLeast(0)
+        val singleDropoffIndex = lines.indices.firstOrNull { index ->
+            index >= contentStart && WoltOfferUiText.singleCustomerDropoffRegex.matches(lines[index])
+        } ?: -1
         val collapsedDropoffIndexes = lines.indices.filter { index ->
-            WoltOfferUiText.collapsedMultipleDropoffsRegex.matches(lines[index])
+            index >= contentStart && WoltOfferUiText.collapsedMultipleDropoffsRegex.matches(lines[index])
         }
         val expandedDropoffIndexes = lines.indices.filter { index ->
             WoltOfferUiText.standaloneMultipleDropoffsRegex.matches(lines[index])
         }
-        val modern = summaryIndex >= 0 ||
+        val modern = summaryIndexes.isNotEmpty() ||
             lines.any(WoltOfferUiText::isModernEarningsLabel) ||
             singleDropoffIndex >= 0 ||
             collapsedDropoffIndexes.isNotEmpty() ||
             expandedDropoffIndexes.isNotEmpty()
         if (!modern) return null
 
-        val pickupStart = (summaryIndex + 1).coerceAtLeast(0)
+        val pickupStart = contentStart
         val pickupEndCandidates = buildList {
             singleDropoffIndex.takeIf { it >= pickupStart }?.let(::add)
             collapsedDropoffIndexes.firstOrNull { it >= pickupStart }?.let(::add)

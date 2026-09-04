@@ -42,6 +42,7 @@ class OfferAccessibilityService : AccessibilityService() {
     private var woltDropoffProbeKey = ""
     private var woltDropoffProbeAttempts = 0
     private var woltDropoffSheetSettleAttempts = 0
+    private var woltRouteOcrRecoveryAttempts = 0
 
     private val attemptRunnable = Runnable { attemptCapture() }
     private val woltPricePollRunnable = Runnable { pollPendingWoltAccessibilityPrice() }
@@ -230,7 +231,23 @@ class OfferAccessibilityService : AccessibilityService() {
             // The preview already owns the overlay. Update its priced state immediately instead of
             // waiting for the optional proof screenshot + DB insert to finish.
             LiveAdvisorHub.showPendingOffer(this, pending, parsed)
-            if (CaptureStorageSettings.saveOfferScreenshots(this)) {
+
+            val needsWoltRouteTextRecovery = target.packageName == CourierSignals.WOLT_PACKAGE &&
+                LiveAdvisorSettings.automaticWoltRouting(this) &&
+                AutomaticWoltRouteCoordinator.routeFingerprint(parsed) == null
+            if (needsWoltRouteTextRecovery) {
+                // Real 0.15.34 telemetry proved the redesigned card can expose the price through
+                // Accessibility while withholding one or both visible stop addresses. Do not archive
+                // that incomplete tree and immediately fail Valhalla: OCR the same visible frame first.
+                CaptureEventLog.append(
+                    this,
+                    stage = "route_text_ocr_recovery",
+                    platform = platform,
+                    message = "Price is ready but Wolt route text is incomplete; augmenting visible card with OCR",
+                    dedupeWindowMs = 1_500L,
+                )
+                captureCurrentFrameForOcr(pending, target.windowId, currentUiText)
+            } else if (CaptureStorageSettings.saveOfferScreenshots(this)) {
                 captureCurrentFrameAndPersist(pending, target.windowId, uiText, parsed)
             } else {
                 persistOffer(null, pending, uiText, parsed)
@@ -323,6 +340,7 @@ class OfferAccessibilityService : AccessibilityService() {
             woltDropoffProbeKey = key
             woltDropoffProbeAttempts = 0
             woltDropoffSheetSettleAttempts = 0
+            woltRouteOcrRecoveryAttempts = 0
         }
 
         val clean = currentText.trim()
@@ -751,6 +769,29 @@ class OfferAccessibilityService : AccessibilityService() {
                             ) {
                                 LiveAdvisorHub.showPendingOffer(this@OfferAccessibilityService, pending, parsed)
                             }
+
+                            val routeStillIncomplete = pending.packageName == CourierSignals.WOLT_PACKAGE &&
+                                LiveAdvisorSettings.automaticWoltRouting(this@OfferAccessibilityService) &&
+                                AutomaticWoltRouteCoordinator.routeFingerprint(parsed) == null
+                            if (routeStillIncomplete &&
+                                woltRouteOcrRecoveryAttempts < WOLT_ROUTE_OCR_RECOVERY_RETRIES
+                            ) {
+                                woltRouteOcrRecoveryAttempts += 1
+                                CaptureEventLog.append(
+                                    this@OfferAccessibilityService,
+                                    stage = "route_text_ocr_retry",
+                                    platform = platform,
+                                    message = "OCR still lacks a complete Wolt route; retry=${woltRouteOcrRecoveryAttempts}; " +
+                                        "pickups=${parsed.pickupAddresses.size}; dropoffs=${parsed.dropoffAddresses.size}; " +
+                                        "deliveries=${parsed.deliveryCount ?: 0}",
+                                    dedupeWindowMs = 500L,
+                                )
+                                finishCapture(captureToken)
+                                bitmap.recycle()
+                                scheduleAttempt(WOLT_ROUTE_OCR_RECOVERY_DELAY_MS)
+                                return@addOnSuccessListener
+                            }
+                            if (!routeStillIncomplete) woltRouteOcrRecoveryAttempts = 0
                             finishCapture(captureToken)
                             if (parsed.priceCents != null && trustedPrice) {
                                 CaptureEventLog.append(this@OfferAccessibilityService, "price_ocr", "Price detected by OCR fallback", platform)
@@ -1288,6 +1329,8 @@ class OfferAccessibilityService : AccessibilityService() {
         private const val WOLT_DROPOFF_SHEET_SETTLE_MS = 180L
         private const val WOLT_DROPOFF_SHEET_MAX_SETTLE_ATTEMPTS = 4
         private const val WOLT_DROPOFF_PROBE_MAX_ATTEMPTS = 2
+        private const val WOLT_ROUTE_OCR_RECOVERY_DELAY_MS = 220L
+        private const val WOLT_ROUTE_OCR_RECOVERY_RETRIES = 2
         private const val DISCOVERY_EVENT_WINDOW_MS = 1_500L
         private const val DISCOVERY_OCR_MIN_INTERVAL_MS = 1_800L
         private const val DISCOVERY_SCREENSHOT_RETRY_MS = 1_200L

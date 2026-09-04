@@ -136,7 +136,19 @@ internal object AutomaticWoltRouteCoordinator {
 
         val fingerprint = routeFingerprint(parsed)
         if (fingerprint == null) {
-            completeFailure(app, offerId, platform, parsed, emptyList(), null, null, null, "incomplete textual Wolt route", onComplete)
+            completeFailure(
+                app,
+                offerId,
+                platform,
+                parsed,
+                emptyList(),
+                null,
+                null,
+                null,
+                "incomplete textual Wolt route; pickups=${parsed.pickupAddresses.size}; " +
+                    "dropoffs=${parsed.dropoffAddresses.size}; deliveries=${parsed.deliveryCount ?: 0}",
+                onComplete,
+            )
             return
         }
 
