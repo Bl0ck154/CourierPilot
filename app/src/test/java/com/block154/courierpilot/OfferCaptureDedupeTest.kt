@@ -204,6 +204,95 @@ class OfferCaptureDedupeTest {
     }
 
     @Test
+    fun boltPriceOcrDriftKeepsOneHongKongOffer() {
+        val real = OfferRecord(
+            id = 101L,
+            capturedAt = 6_000_000L,
+            platform = "Bolt",
+            packageName = CourierSignals.BOLT_PACKAGE,
+            priceCents = 684,
+            distanceMeters = null,
+            restaurant = "Hong Kong (Basanavičiaus)",
+            screenshotUri = "content://hong-kong-real",
+            screenshotFilename = "hong-kong-real.png",
+            rawText = "",
+            merchantNames = listOf("Hong Kong (Basanavičiaus)"),
+            pickupAddresses = listOf("Basanavičiaus 19, Vilnius"),
+            deliveryCount = 1,
+            estimatedMinutesMin = 18,
+            estimatedMinutesMax = 18,
+        )
+        val badOcrDuplicate = real.copy(
+            id = 102L,
+            capturedAt = real.capturedAt + 5_000L,
+            priceCents = 8_400,
+            screenshotUri = "content://hong-kong-bad",
+            screenshotFilename = "hong-kong-bad.png",
+        )
+        val differentRoute = badOcrDuplicate.copy(
+            id = 103L,
+            pickupAddresses = listOf("Vokiečių g. 9, Vilnius"),
+        )
+
+        assertEquals(true, OfferDedupeIdentity.isSameLiveOffer(real, badOcrDuplicate))
+        assertEquals(false, OfferDedupeIdentity.isSameLiveOffer(real, differentRoute))
+        assertEquals(real.id, OfferDedupeIdentity.preferredHistoricalRecord(real, badOcrDuplicate).id)
+
+        val realParsed = ParsedOffer(
+            priceCents = 684,
+            distanceMeters = null,
+            restaurant = real.restaurant,
+            merchantNames = real.merchantNames,
+            pickupAddresses = real.pickupAddresses,
+            deliveryCount = 1,
+            estimatedMinutesMin = 18,
+            estimatedMinutesMax = 18,
+        )
+        assertEquals(
+            OfferDedupeIdentity.burstFingerprint(CourierSignals.BOLT_PACKAGE, realParsed),
+            OfferDedupeIdentity.burstFingerprint(
+                CourierSignals.BOLT_PACKAGE,
+                realParsed.copy(priceCents = 8_400),
+            ),
+        )
+    }
+
+    @Test
+    fun databaseDedupeComparesBoltCandidatesEvenWhenOcrPriceDiffers() {
+        val database = OfferDatabase.get(context)
+        val baseTime = 9_876_543_210L
+        val real = OfferRecord(
+            capturedAt = baseTime,
+            platform = "Bolt",
+            packageName = CourierSignals.BOLT_PACKAGE,
+            priceCents = 684,
+            distanceMeters = null,
+            restaurant = "Hong Kong (Basanavičiaus)",
+            screenshotUri = "content://db-hong-kong-real",
+            screenshotFilename = "db-hong-kong-real.png",
+            rawText = "",
+            merchantNames = listOf("Hong Kong (Basanavičiaus)"),
+            pickupAddresses = listOf("Basanavičiaus 19, Vilnius"),
+            deliveryCount = 1,
+            estimatedMinutesMin = 18,
+            estimatedMinutesMax = 18,
+        )
+        val badOcrDuplicate = real.copy(
+            capturedAt = baseTime + 4_000L,
+            priceCents = 8_400,
+            screenshotUri = "content://db-hong-kong-bad",
+            screenshotFilename = "db-hong-kong-bad.png",
+        )
+
+        val first = database.insertDeduplicated(real)
+        val second = database.insertDeduplicated(badOcrDuplicate)
+
+        assertEquals(true, first.inserted)
+        assertEquals(false, second.inserted)
+        assertEquals(first.rowId, second.rowId)
+    }
+
+    @Test
     fun strongSameRouteCanDeduplicateBeyondThreeMinutes() {
         val first = OfferRecord(
             capturedAt = 3_000_000L,

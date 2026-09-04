@@ -17,9 +17,6 @@ class CourierPilotNotificationListener : NotificationListenerService() {
 
     private val handler = Handler(Looper.getMainLooper())
     private var unlockReceiverRegistered = false
-    private var lastOfferContentIntent: PendingIntent? = null
-    private var lastOfferPackage = ""
-    private var lastOfferNotificationKey = ""
 
     private val unlockReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -59,9 +56,6 @@ class CourierPilotNotificationListener : NotificationListenerService() {
                 platform,
             )
             val sourceName = resolveAppName(sbn.packageName)
-            lastOfferContentIntent = notification.contentIntent
-            lastOfferPackage = sbn.packageName
-            lastOfferNotificationKey = sbn.key
             val armResult = OfferState.arm(this, sbn.packageName, sourceName, sbn.key)
             CaptureEventLog.append(
                 this,
@@ -219,9 +213,6 @@ class CourierPilotNotificationListener : NotificationListenerService() {
             return
         }
 
-        lastOfferContentIntent = contentIntent
-        lastOfferPackage = packageName
-        lastOfferNotificationKey = notificationKey
         val platform = OfferState.platformLabel(packageName)
         CaptureEventLog.append(
             this,
@@ -245,38 +236,45 @@ class CourierPilotNotificationListener : NotificationListenerService() {
         val pending = OfferState.pending(this) ?: return
         if (pending.notificationKey.isBlank() || pending.notificationKey.startsWith("screen:")) return
 
-        val active = runCatching { activeNotifications?.toList().orEmpty() }.getOrDefault(emptyList())
-        val sbn = active.firstOrNull {
-            it.packageName == pending.packageName && it.key == pending.notificationKey
-        }
-        if (sbn != null) {
-            val refreshedDecision = NotificationOfferClassifier.classify(this, sbn)
-            if (!refreshedDecision.isOffer) {
-                CaptureEventLog.append(
-                    this,
-                    stage = "unlock_retry_blocked",
-                    platform = OfferState.platformLabel(pending.packageName),
-                    message = "Active notification changed and no longer matches a real new-order signal; unlock tap blocked",
-                )
-                return
+        // Never replay a remembered PendingIntent after the exact notification disappeared. That old
+        // path could fire later while only Bolt's persistent "app is running" status remained and
+        // made it look as though the status notification opened the app. Unlock retries are now tied
+        // to the exact still-active notification and reclassified immediately before the tap.
+        val sbn = runCatching {
+            activeNotifications?.firstOrNull {
+                it.packageName == pending.packageName && it.key == pending.notificationKey
             }
+        }.getOrNull()
+        if (sbn == null) {
+            CaptureEventLog.append(
+                this,
+                stage = "unlock_retry_missing",
+                platform = OfferState.platformLabel(pending.packageName),
+                message = "Exact pending offer notification is no longer active; stale unlock retry blocked",
+            )
+            return
         }
 
-        val rememberedIntent = lastOfferContentIntent.takeIf {
-            lastOfferPackage == pending.packageName && lastOfferNotificationKey == pending.notificationKey
+        val refreshedDecision = NotificationOfferClassifier.classify(this, sbn)
+        if (!refreshedDecision.isOffer) {
+            CaptureEventLog.append(
+                this,
+                stage = "unlock_retry_blocked",
+                platform = OfferState.platformLabel(pending.packageName),
+                message = "Active notification changed and no longer matches a real new-order signal; unlock tap blocked",
+            )
+            return
         }
-        val contentIntent = sbn?.notification?.contentIntent ?: rememberedIntent ?: return
 
         val platform = OfferState.platformLabel(pending.packageName)
         CaptureEventLog.append(
             this,
             "unlock_retry",
-            if (sbn != null) "Device unlocked; retrying the exact active offer PendingIntent"
-            else "Device unlocked; retrying the remembered exact offer PendingIntent",
+            "Device unlocked; retrying the exact active offer PendingIntent",
             platform,
         )
         openOriginalNotification(
-            contentIntent = contentIntent,
+            contentIntent = sbn.notification.contentIntent,
             packageName = pending.packageName,
             notificationKey = pending.notificationKey,
             sourceName = pending.sourceName,

@@ -12,9 +12,10 @@ import android.net.Uri
 internal object OfferDataRepair {
     private const val PREFS = "courier_offer_repairs"
     private const val KEY_REVISION = "parser_repair_revision"
-    // Revision 13 also removes Wolt rows produced by the old full-screen OCR fallback when it
-    // archived a fake MIN/MIR currency or an unanchored amount with no merchant/route identity.
-    private const val CURRENT_REVISION = 13
+    // Revision 14 re-runs dedupe with Bolt price-drift identity so historical rows such as one
+    // €6.84 offer duplicated as €84.00 are collapsed, and backfills visual fingerprints for nearby
+    // different-price Bolt captures as well as the older same-price candidates.
+    private const val CURRENT_REVISION = 14
     private const val LIST_SEPARATOR = "\u001F"
 
     @Synchronized
@@ -139,16 +140,29 @@ internal object OfferDataRepair {
     private fun suspiciousBoltVisualCandidates(records: List<OfferRecord>): Set<Long> {
         val ids = mutableSetOf<Long>()
         val lastByPrice = mutableMapOf<Int, OfferRecord>()
+        var previousBolt: OfferRecord? = null
         records.forEach { record ->
             if (record.packageName != CourierSignals.BOLT_PACKAGE || record.screenshotUri.isBlank()) return@forEach
-            val previous = lastByPrice[record.priceCents]
-            if (previous != null &&
-                record.capturedAt - previous.capturedAt in 0L..OfferDedupeIdentity.BURST_WINDOW_MS
+
+            val samePricePrevious = lastByPrice[record.priceCents]
+            if (samePricePrevious != null &&
+                record.capturedAt - samePricePrevious.capturedAt in 0L..OfferDedupeIdentity.BURST_WINDOW_MS
             ) {
-                ids += previous.id
+                ids += samePricePrevious.id
                 ids += record.id
             }
+
+            val nearbyDifferentPrice = previousBolt
+            if (nearbyDifferentPrice != null &&
+                nearbyDifferentPrice.priceCents != record.priceCents &&
+                record.capturedAt - nearbyDifferentPrice.capturedAt in 0L..OfferDedupeIdentity.BOLT_PRICE_DRIFT_WINDOW_MS
+            ) {
+                ids += nearbyDifferentPrice.id
+                ids += record.id
+            }
+
             lastByPrice[record.priceCents] = record
+            previousBolt = record
         }
         return ids
     }

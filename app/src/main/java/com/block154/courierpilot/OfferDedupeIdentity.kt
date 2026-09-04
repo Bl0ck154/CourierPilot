@@ -8,6 +8,7 @@ import kotlin.math.abs
 internal object OfferDedupeIdentity {
     const val BURST_WINDOW_MS = 90L * 1000L
     const val PERSIST_DEDUPE_WINDOW_MS = 10L * 60L * 1000L
+    internal const val BOLT_PRICE_DRIFT_WINDOW_MS = 30L * 1000L
     private const val NORMAL_FUZZY_WINDOW_MS = 3L * 60L * 1000L
     private const val SPARSE_FRAME_WINDOW_MS = 45L * 1000L
     private const val BOLT_CARD_BURST_WINDOW_MS = 120L * 1000L
@@ -18,18 +19,24 @@ internal object OfferDedupeIdentity {
 
     fun burstFingerprint(packageName: String, parsed: ParsedOffer): String {
         if (packageName == CourierSignals.BOLT_PACKAGE) {
-            // Bolt OCR can see different map labels while the lower offer card has not changed.
-            // Keep the burst identity tied to stable card fields, never to the merchant spelling.
+            // Bolt OCR occasionally corrupts only the price while the card/route is unchanged (for
+            // example €6.84 -> €84.00). Once at least one canonical route address is visible, price
+            // must therefore not be part of the short-lived screen identity. Keep ETA only for the
+            // weaker single-address case so two genuinely different offers from the same venue are
+            // less likely to collapse.
             val addresses = addressTokens(parsed.pickupAddresses + parsed.dropoffAddresses)
                 .sorted()
-                .joinToString(";")
             return buildString {
                 append(packageName)
-                append("|p=").append(parsed.priceCents ?: -1)
+                if (addresses.isEmpty()) {
+                    append("|p=").append(parsed.priceCents ?: -1)
+                }
                 append("|n=").append(parsed.deliveryCount ?: -1)
-                append("|e=").append(parsed.estimatedMinutesMin ?: -1)
-                    .append('-').append(parsed.estimatedMinutesMax ?: -1)
-                append("|a=").append(addresses)
+                if (addresses.size <= 1) {
+                    append("|e=").append(parsed.estimatedMinutesMin ?: -1)
+                        .append('-').append(parsed.estimatedMinutesMax ?: -1)
+                }
+                append("|a=").append(addresses.joinToString(";"))
             }
         }
 
@@ -52,21 +59,21 @@ internal object OfferDedupeIdentity {
      * Fuzzy guard for duplicate captures of the same live courier offer.
      *
      * Wolt can briefly expose the same screen through two capture paths while its Accessibility
-     * contents are still settling. In the observed failure this produced the same pickup/drop-off
-     * twice within 3-10 seconds, but one frame had a different price token. A price mismatch is only
-     * tolerated for that very short Wolt window when the complete canonical route and venue agree;
-     * different destinations are never collapsed just because a merchant matches.
+     * contents are still settling. Bolt can do the equivalent while full-screen OCR is settling,
+     * including corrupting only the price token. Price drift is tolerated only under strong,
+     * platform-specific evidence; different routes are never collapsed just because a venue matches.
      */
     fun isSameLiveOffer(first: OfferRecord, second: OfferRecord): Boolean {
         if (first.packageName != second.packageName) return false
         val elapsed = abs(first.capturedAt - second.capturedAt)
         if (elapsed > PERSIST_DEDUPE_WINDOW_MS) return false
+        val pricesMatch = first.priceCents == second.priceCents
 
-        if (first.priceCents != second.priceCents) {
-            return isStrongWoltPriceDriftDuplicate(first, second, elapsed)
-        }
-
+        // Visual similarity is a final same-price Bolt guard. For different prices it is deliberately
+        // not enough by itself: two consecutive offers can have visually similar bottom cards. Cross-
+        // price dedupe must pass the stronger route identity below.
         if (
+            pricesMatch &&
             first.packageName == CourierSignals.BOLT_PACKAGE &&
             elapsed <= BOLT_VISUAL_BURST_WINDOW_MS &&
             first.visualFingerprint.isNotBlank() &&
@@ -76,24 +83,26 @@ internal object OfferDedupeIdentity {
             return true
         }
 
-        // Bolt's bottom card can be captured more than once while OCR enriches the same screen. The
-        // venue spelling and ETA may change frame-to-frame, so for a short live-card burst an exact
-        // canonical address set + price is enough proof. If only part of the route is visible, fall
-        // back to address overlap plus compatible ETA.
         if (first.packageName == CourierSignals.BOLT_PACKAGE && elapsed <= BOLT_CARD_BURST_WINDOW_MS) {
             val firstRouteAddresses = addressTokens(first.pickupAddresses + first.dropoffAddresses)
             val secondRouteAddresses = addressTokens(second.pickupAddresses + second.dropoffAddresses)
             val countCompatible = first.deliveryCount == null || second.deliveryCount == null ||
                 first.deliveryCount == second.deliveryCount
             val exactAddressSet = firstRouteAddresses.isNotEmpty() && firstRouteAddresses == secondRouteAddresses
-            if (exactAddressSet && countCompatible) return true
-            if (
+
+            if (pricesMatch && exactAddressSet && countCompatible) return true
+            if (pricesMatch &&
                 overlaps(firstRouteAddresses, secondRouteAddresses) &&
                 countCompatible &&
                 boltEtaCompatible(first, second)
             ) {
                 return true
             }
+        }
+
+        if (!pricesMatch) {
+            return isStrongBoltPriceDriftDuplicate(first, second, elapsed) ||
+                isStrongWoltPriceDriftDuplicate(first, second, elapsed)
         }
 
         val firstDistance = first.distanceMeters
@@ -165,18 +174,58 @@ internal object OfferDedupeIdentity {
 
     /** Chooses which row to retain when a repair finds two captures of one live offer. */
     fun preferredHistoricalRecord(first: OfferRecord, second: OfferRecord): OfferRecord {
+        if (first.packageName == CourierSignals.BOLT_PACKAGE && first.priceCents != second.priceCents) {
+            val firstMoneyScore = boltHistoricalMoneyQuality(first)
+            val secondMoneyScore = boltHistoricalMoneyQuality(second)
+            if (firstMoneyScore != secondMoneyScore) {
+                return if (secondMoneyScore > firstMoneyScore) second else first
+            }
+        }
+
         val firstScore = historicalQuality(first)
         val secondScore = historicalQuality(second)
         if (firstScore != secondScore) return if (secondScore > firstScore) second else first
 
-        // When two same-route captures disagree on price but are otherwise equally complete, the
-        // later frame is the safer one: Wolt's tree has had more time to settle. Same-price ties keep
-        // the older row to preserve the previous repair behavior and stable IDs where possible.
-        return if (first.priceCents != second.priceCents) {
-            if (second.capturedAt >= first.capturedAt) second else first
-        } else {
-            if (first.capturedAt <= second.capturedAt) first else second
+        // Wolt price drift normally settles toward the later Accessibility frame. Bolt price drift is
+        // usually OCR corruption of an already stable card, so keep the earlier row on an equal tie.
+        if (first.priceCents != second.priceCents) {
+            return if (first.packageName == CourierSignals.BOLT_PACKAGE) {
+                if (first.capturedAt <= second.capturedAt) first else second
+            } else {
+                if (second.capturedAt >= first.capturedAt) second else first
+            }
         }
+        return if (first.capturedAt <= second.capturedAt) first else second
+    }
+
+    private fun isStrongBoltPriceDriftDuplicate(
+        first: OfferRecord,
+        second: OfferRecord,
+        elapsed: Long,
+    ): Boolean {
+        if (first.packageName != CourierSignals.BOLT_PACKAGE) return false
+        if (elapsed > BOLT_PRICE_DRIFT_WINDOW_MS) return false
+        if (!first.currencyCode.equals(second.currencyCode, ignoreCase = true)) return false
+
+        val firstAddresses = addressTokens(first.pickupAddresses + first.dropoffAddresses)
+        val secondAddresses = addressTokens(second.pickupAddresses + second.dropoffAddresses)
+        if (firstAddresses.isEmpty() || firstAddresses != secondAddresses) return false
+
+        val firstCount = first.deliveryCount
+        val secondCount = second.deliveryCount
+        val countCompatible = firstCount == null || secondCount == null || firstCount == secondCount
+        if (!countCompatible) return false
+
+        // A complete pickup+drop-off route is already strong enough. With only one visible address,
+        // also require the same venue and a compatible ETA to avoid collapsing two rapid real offers
+        // from the same busy restaurant.
+        if (firstAddresses.size >= 2) return true
+
+        val firstMerchants = merchantTokens(first.asParsedOffer())
+        val secondMerchants = merchantTokens(second.asParsedOffer())
+        val venueMatches = firstMerchants.isNotEmpty() && secondMerchants.isNotEmpty() &&
+            firstMerchants.any { left -> secondMerchants.any { right -> tokenMatches(left, right) } }
+        return venueMatches && boltEtaCompatible(first, second)
     }
 
     private fun isStrongWoltPriceDriftDuplicate(
@@ -217,6 +266,16 @@ internal object OfferDedupeIdentity {
         score += record.customerNames.count { it.isNotBlank() }.coerceAtMost(4)
         if (record.deliveryCount != null) score += 1
         return score
+    }
+
+    private fun boltHistoricalMoneyQuality(record: OfferRecord): Int {
+        if (record.priceCents <= 0) return 0
+        if (!record.currencyCode.equals("EUR", ignoreCase = true)) return 1
+        return when (record.priceCents) {
+            in 100..5_000 -> 2
+            in 20..10_000 -> 1
+            else -> 0
+        }
     }
 
     private fun isPlausibleHistoricalMoney(record: OfferRecord): Boolean {

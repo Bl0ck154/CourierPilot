@@ -272,10 +272,14 @@ class OfferDatabase private constructor(context: Context) :
     fun findRecentDuplicate(record: OfferRecord): OfferRecord? {
         val from = record.capturedAt - OfferDedupeIdentity.PERSIST_DEDUPE_WINDOW_MS
         val to = record.capturedAt + OfferDedupeIdentity.PERSIST_DEDUPE_WINDOW_MS
+        // Do not pre-filter by price here. OCR price drift is itself one of the duplicate modes we
+        // must detect (for example one Bolt frame reading €6.84 and the next reading €84.00). The
+        // semantic identity below decides whether a different-price candidate is truly the same live
+        // offer; unrelated offers are still rejected by route/venue/time evidence.
         val candidates = queryOffers(
-            selection = "package_name = ? AND price_cents = ? AND captured_at BETWEEN ? AND ?",
-            args = arrayOf(record.packageName, record.priceCents.toString(), from.toString(), to.toString()),
-            limit = 30,
+            selection = "package_name = ? AND captured_at BETWEEN ? AND ?",
+            args = arrayOf(record.packageName, from.toString(), to.toString()),
+            limit = 50,
             offset = 0,
         )
         val captureKey = record.captureKey.trim()
