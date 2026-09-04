@@ -255,6 +255,54 @@ internal object OfferParser {
                 .forEach(::addDropoff)
         }
 
+        // ML Kit text-block order is not guaranteed to be strictly top-to-bottom. On the current
+        // Wolt build it can emit the pickup name/address *before* the duplicated compact route
+        // summary. In that case the summary-bounded pass above sees the customer address but misses
+        // the pickup completely (real-device telemetry: pickups=0, dropoffs=1). Recover remaining
+        // street-address lines globally, excluding known customer addresses and the expanded
+        // drop-off sheet. Prefer candidates that either carry Vilnius/postcode context themselves or
+        // sit immediately after a merchant-like line, which keeps map labels out of the route.
+        val expandedSheetEndExclusive = expandedIndex?.let { start ->
+            val relativeEnd = lines.drop(start + 1).indexOfFirst { line ->
+                line.equals("Done", ignoreCase = true) ||
+                    WoltOfferUiText.isEarningsLabel(line) ||
+                    line.equals("Accept", ignoreCase = true)
+            }
+            if (relativeEnd >= 0) start + 1 + relativeEnd else lines.size
+        }
+        val expectedTotalStops = summaryIndexes.mapNotNull { index ->
+            WoltOfferUiText.modernRouteSummaryRegex.matchEntire(lines[index])
+                ?.groupValues?.getOrNull(1)?.toIntOrNull()
+        }.maxOrNull()
+        val pickupLimit = expectedTotalStops
+            ?.let { (it - dropoffs.size).coerceAtLeast(1) }
+            ?: Int.MAX_VALUE
+
+        lines.forEachIndexed { index, address ->
+            if (pickups.size >= pickupLimit) return@forEachIndexed
+            if (!looksLikeModernStreetAddress(address)) return@forEachIndexed
+            if (dropoffs.any { addressesEquivalent(it, address) }) return@forEachIndexed
+            if (pickups.any { addressesEquivalent(it, address) }) return@forEachIndexed
+            if (expandedIndex != null && expandedSheetEndExclusive != null &&
+                index in (expandedIndex + 1) until expandedSheetEndExclusive
+            ) return@forEachIndexed
+
+            val nearbyName = lines.subList((index - 4).coerceAtLeast(0), index)
+                .asReversed()
+                .firstOrNull(::isModernWoltMerchantCandidate)
+            val lower = address.lowercase(Locale.ROOT)
+            val hasCardAddressContext = lower.contains("vilnius") || lower.contains("lt-") ||
+                Regex("(?i)\\bLT\\s*[- ]?\\d{4,5}\\b").containsMatchIn(address)
+            if (nearbyName == null && !hasCardAddressContext) return@forEachIndexed
+
+            if (nearbyName != null && merchants.none { namesEquivalent(it, nearbyName) }) merchants += nearbyName
+            pickups += address
+            val recoveredPickup = ParsedRouteStop(ParsedRouteStopKind.PICKUP, nearbyName, address)
+            val firstDropoffIndex = ordered.indexOfFirst { it.kind == ParsedRouteStopKind.DROPOFF }
+            if (firstDropoffIndex >= 0) ordered.add(firstDropoffIndex, recoveredPickup)
+            else ordered += recoveredPickup
+        }
+
         val collapsedCount = collapsedDropoffIndexes.firstNotNullOfOrNull { index ->
             WoltOfferUiText.collapsedMultipleDropoffsRegex.matchEntire(lines[index])
                 ?.groupValues?.getOrNull(1)?.toIntOrNull()
