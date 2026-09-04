@@ -61,6 +61,34 @@ class OfferParserTest {
     }
 
     @Test
+    fun recoversSinglePickupWhenOcrEmitsSummaryAfterPickupAddress() {
+        val parsed = OfferParser.parse(
+            """
+            €1.90
+            2 stops (0.8 km) • 3–9 min
+            Hesburger (Vokiečių)
+            Customer drop-off
+            Arklių gatvė 36, Vilnius, 01305
+            Accept
+            Hesburger (Vokiečių)
+            Vokiečių g. 12, Vilnius, LT01130
+            €1.90
+            2 stops (0.8 km) • 3–9 min
+            Customer drop-off
+            Arklių gatvė 36, Vilnius, 01305
+            Accept
+            """.trimIndent()
+        )
+
+        assertEquals(190, parsed.priceCents)
+        assertEquals(800, parsed.distanceMeters)
+        assertEquals(listOf("Vokiečių g. 12, Vilnius, LT01130"), parsed.pickupAddresses)
+        assertEquals(listOf("Arklių gatvė 36, Vilnius, 01305"), parsed.dropoffAddresses)
+        assertEquals(1, parsed.deliveryCount)
+        assertTrue(AutomaticWoltRouteCoordinator.routeFingerprint(parsed) != null)
+    }
+
+    @Test
     fun parsesRedesignedWoltCollapsedStackedOfferWithoutInventingDropoffs() {
         val parsed = OfferParser.parse(
             """
