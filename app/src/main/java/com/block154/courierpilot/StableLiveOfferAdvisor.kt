@@ -445,7 +445,7 @@ internal class StableLiveOfferAdvisor(
                 OfferDecisionBand.FIRE -> setShadowLayer(dp(5).toFloat(), 0f, 0f, Color.argb(210, 255, 112, 38))
                 OfferDecisionBand.GOOD -> setShadowLayer(dp(3).toFloat(), 0f, 0f, Color.argb(120, 52, 211, 153))
                 OfferDecisionBand.OK -> setShadowLayer(dp(2).toFloat(), 0f, 0f, Color.argb(75, 245, 158, 11))
-                else -> clearShadowLayer()
+                else -> setShadowLayer(0f, 0f, 0f, Color.TRANSPARENT)
             }
         }
         decisionContainer?.background = decisionBackground(cachedDecisionBand, loading)
