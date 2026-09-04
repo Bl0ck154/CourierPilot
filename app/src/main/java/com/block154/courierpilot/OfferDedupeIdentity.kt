@@ -69,9 +69,11 @@ internal object OfferDedupeIdentity {
         if (elapsed > PERSIST_DEDUPE_WINDOW_MS) return false
         val pricesMatch = first.priceCents == second.priceCents
 
-        // The lower Bolt card is stronger evidence than OCR money. Run this before the price guard:
-        // the real-device failure that produced €6.84 and €84.00 had one unchanged visual card.
+        // Visual similarity is a final same-price Bolt guard. For different prices it is deliberately
+        // not enough by itself: two consecutive offers can have visually similar bottom cards. Cross-
+        // price dedupe must pass the stronger route identity below.
         if (
+            pricesMatch &&
             first.packageName == CourierSignals.BOLT_PACKAGE &&
             elapsed <= BOLT_VISUAL_BURST_WINDOW_MS &&
             first.visualFingerprint.isNotBlank() &&
