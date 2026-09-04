@@ -135,4 +135,22 @@ class NotificationGuardRegressionTest {
         assertFalse(decision.isOffer)
         assertTrue(decision.reasons.contains("ongoing_guard"))
     }
+
+    @Test
+    fun boltAppIsRunningStatusIsHardBlockedEvenIfShapeLooksLikeAnOrder() {
+        val decision = NotificationOfferClassifier.classify(
+            structure = learnedBoltProfile().copy(
+                flags = 0,
+                actionCount = 2,
+                actionIntentCount = 2,
+                sameCreatorActionIntentCount = 2,
+            ),
+            text = "Bolt Courier app is running · We keep you active while app is in background",
+            actionLabels = listOf("Accept", "Decline"),
+            learnedProfiles = listOf(learnedBoltProfile()),
+        )
+
+        assertFalse(decision.isOffer)
+        assertTrue(decision.reasons.contains("presence_notification"))
+    }
 }
