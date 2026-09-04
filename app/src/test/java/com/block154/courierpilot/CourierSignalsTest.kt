@@ -103,6 +103,25 @@ class CourierSignalsTest {
     }
 
     @Test
+    fun redesignedWoltOfferScreenAndOcrPriceAreRecognized() {
+        val text = """
+            €6.56
+            2 stops (5.4 km) • 15–22 min
+            Jammi (Tauro kalnas)
+            Tauro g. 3, Vilnius, LT-03106
+            Customer drop-off
+            Vilkpėdės gatvė 2A, Vilnius, 03151
+            Estimated earnings for the full delivery
+            Accept
+            Decline
+        """.trimIndent()
+        val parsed = OfferParser.parse(text)
+
+        assertTrue(CourierSignals.looksLikeOfferScreen(text, parsed))
+        assertTrue(CourierSignals.isTrustedWoltOcrOffer(text, parsed))
+    }
+
+    @Test
     fun woltOcrPriceRequiresCanonicalOfferIdentity() {
         val weak = """
             €28.00

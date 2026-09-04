@@ -21,8 +21,10 @@ internal data class OcrSpatialLine(
  * text parser. Pair the money line with that label by screen geometry instead.
  */
 internal object WoltEarningsSpatialOcr {
-    private const val EARNINGS_LABEL = "expected earnings for the full delivery"
-    private const val MAX_VERTICAL_DISTANCE_FRACTION = 0.16
+    private const val LEGACY_MAX_VERTICAL_DISTANCE_FRACTION = 0.16
+    private const val MODERN_SUMMARY_MAX_VERTICAL_DISTANCE_FRACTION = 0.16
+    private const val MODERN_LABEL_MAX_VERTICAL_DISTANCE_FRACTION = 0.42
+    private const val MODERN_PRICE_MIN_Y_FRACTION = 0.30
 
     fun findMoney(
         lines: List<OcrSpatialLine>,
@@ -30,21 +32,72 @@ internal object WoltEarningsSpatialOcr {
         extraAnchors: List<OcrSpatialLine> = emptyList(),
     ): MoneyAmount? {
         if (imageHeight <= 0) return null
-        val anchors = (lines + extraAnchors).filter {
-            normalize(it.text).contains(EARNINGS_LABEL)
-        }
-        if (anchors.isEmpty()) return null
+        val allAnchors = lines + extraAnchors
 
+        // New Wolt card: the large earnings amount sits immediately above the compact
+        // "N stops (X km) • ETA" line. This is substantially stronger than the explanatory
+        // earnings label, which moved near the bottom of the sheet in the redesigned UI.
+        val routeSummaryAnchors = allAnchors.filter { anchor ->
+            WoltOfferUiText.modernRouteSummaryRegex.matches(anchor.text.trim())
+        }
+        if (routeSummaryAnchors.isNotEmpty()) {
+            chooseMoney(
+                lines = lines,
+                anchors = routeSummaryAnchors,
+                imageHeight = imageHeight,
+                maxVerticalFraction = MODERN_SUMMARY_MAX_VERTICAL_DISTANCE_FRACTION,
+            ) { candidate, anchor ->
+                candidate.centerY <= anchor.centerY + imageHeight / 40
+            }?.let { return it }
+        }
+
+        val earningsAnchors = allAnchors.filter { WoltOfferUiText.isEarningsLabel(it.text) }
+        if (earningsAnchors.isEmpty()) return null
+
+        // Modern label fallback: the label can be hundreds of pixels below the price. Keep the
+        // search in the bottom-sheet region and above the label so map/account balances cannot win.
+        val modernAnchors = earningsAnchors.filter { WoltOfferUiText.isModernEarningsLabel(it.text) }
+        if (modernAnchors.isNotEmpty()) {
+            val minimumPriceY = (imageHeight * MODERN_PRICE_MIN_Y_FRACTION).toInt()
+            chooseMoney(
+                lines = lines,
+                anchors = modernAnchors,
+                imageHeight = imageHeight,
+                maxVerticalFraction = MODERN_LABEL_MAX_VERTICAL_DISTANCE_FRACTION,
+            ) { candidate, anchor ->
+                candidate.centerY >= minimumPriceY && candidate.centerY < anchor.centerY
+            }?.let { return it }
+        }
+
+        // Preserve the old Wolt layout as an explicit fallback. Its price lived right beside the
+        // "Expected earnings..." label, so keep the original tight 16% geometry.
+        val legacyAnchors = earningsAnchors.filterNot { WoltOfferUiText.isModernEarningsLabel(it.text) }
+        return chooseMoney(
+            lines = lines,
+            anchors = legacyAnchors,
+            imageHeight = imageHeight,
+            maxVerticalFraction = LEGACY_MAX_VERTICAL_DISTANCE_FRACTION,
+        ) { _, _ -> true }
+    }
+
+    private fun chooseMoney(
+        lines: List<OcrSpatialLine>,
+        anchors: List<OcrSpatialLine>,
+        imageHeight: Int,
+        maxVerticalFraction: Double,
+        eligible: (OcrSpatialLine, OcrSpatialLine) -> Boolean,
+    ): MoneyAmount? {
+        if (anchors.isEmpty()) return null
         data class Candidate(val money: MoneyAmount, val score: Int)
-        val maxVertical = (imageHeight * MAX_VERTICAL_DISTANCE_FRACTION).toInt().coerceAtLeast(1)
+
+        val maxVertical = (imageHeight * maxVerticalFraction).toInt().coerceAtLeast(1)
         val candidates = mutableListOf<Candidate>()
         lines.forEach { line ->
             val money = MarketCurrencyParser.parse(line.text) ?: return@forEach
             anchors.forEach { anchor ->
+                if (!eligible(line, anchor)) return@forEach
                 val vertical = abs(line.centerY - anchor.centerY)
                 if (vertical <= maxVertical) {
-                    // Wolt normally renders the amount above the explanatory label. Penalise lower
-                    // candidates, but keep them eligible for layouts/locales that place it alongside.
                     val belowPenalty = if (line.centerY > anchor.centerY) imageHeight / 25 else 0
                     candidates += Candidate(money, vertical + belowPenalty)
                 }
@@ -52,11 +105,6 @@ internal object WoltEarningsSpatialOcr {
         }
         return candidates.minByOrNull { it.score }?.money
     }
-
-    private fun normalize(value: String): String = value
-        .lowercase()
-        .replace(Regex("\\s+"), " ")
-        .trim()
 }
 
 /**

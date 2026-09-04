@@ -36,7 +36,7 @@ internal object OfferParser {
         "(?i)(?:(?:€|£|zł|₴|Kč|Ft|[A-Z]{3})\\s*\\d|\\d[^\\n]{0,20}(?:€|£|zł|₴|Kč|Ft|[A-Z]{3}))"
     )
     private val distanceRegex = Regex("(?i)\\b(\\d+(?:[.,]\\d+)?)\\s*(km|m)\\b")
-    private val estimateRegex = Regex("(?i)\\b(\\d{1,3})\\s*-\\s*(\\d{1,3})\\s*min\\b")
+    private val estimateRegex = Regex("(?i)\\b(\\d{1,3})\\s*[-–—]\\s*(\\d{1,3})\\s*min\\b")
     private val singleMinuteRegex = Regex("(?i)~?\\s*(\\d{1,3})\\s*min\\b")
     private val stackedHeaderRegex = Regex("(?i)^\\s*(\\d+)\\s+deliver(?:y|ies)\\s+from\\s*$")
     private val minuteOnlyRegex = Regex("(?i)^~?\\s*\\d{1,3}\\s*min$")
@@ -52,18 +52,20 @@ internal object OfferParser {
 
     fun parse(text: String): ParsedOffer {
         val lines = normalizedLines(text)
+        val modernWolt = parseModernWoltLayout(lines)
         val merchantSummary = parseWoltMerchantSummary(lines)
-        val merchantNames = merchantSummary?.second ?: parseBoltMerchants(lines)
-        val stops = parseAddressStops(lines, merchantNames)
-        val merchantStops = stops.filter { it.isMerchant }
-        val customerStops = stops.filterNot { it.isMerchant }
-        val pickups = merchantStops.map { it.address }.distinct()
-        // Keep a placeholder when Accessibility/OCR exposes a destination address but omits the
-        // customer label. This preserves name/address alignment in Offer details instead of pairing
-        // the next customer's name with the wrong destination.
-        val customers = customerStops.map { it.name ?: "Customer" }
-        val dropoffs = customerStops.map { it.address }
-        val orderedStops = stops.map { stop ->
+        val merchantNames = when {
+            modernWolt?.merchantNames?.isNotEmpty() == true -> modernWolt.merchantNames
+            merchantSummary != null -> merchantSummary.second
+            else -> parseBoltMerchants(lines)
+        }
+        val legacyStops = if (modernWolt == null) parseAddressStops(lines, merchantNames) else emptyList()
+        val merchantStops = legacyStops.filter { it.isMerchant }
+        val customerStops = legacyStops.filterNot { it.isMerchant }
+        val pickups = modernWolt?.pickupAddresses ?: merchantStops.map { it.address }.distinct()
+        val customers = modernWolt?.customerNames ?: customerStops.map { it.name ?: "Customer" }
+        val dropoffs = modernWolt?.dropoffAddresses ?: customerStops.map { it.address }
+        val orderedStops = modernWolt?.orderedRouteStops ?: legacyStops.map { stop ->
             ParsedRouteStop(
                 kind = if (stop.isMerchant) ParsedRouteStopKind.PICKUP else ParsedRouteStopKind.DROPOFF,
                 name = stop.name,
@@ -73,23 +75,28 @@ internal object OfferParser {
         val estimate = parseEstimate(lines)
 
         // Restaurant count and delivery count are different concepts. Wolt can batch any number of
-        // customer orders from one or several venues. Prefer the explicit N-deliveries header when
-        // present, but also count parsed customer stops because Wolt occasionally keeps a singular
-        // "Delivery from" heading for a multi-drop route.
+        // customer orders from one or several venues. Support both the legacy N-deliveries header
+        // and the redesigned "Multiple drop-offs (N stops)" card/modal.
         val headerDeliveryCount = merchantSummary?.first ?: 0
+        val modernDeliveryCount = modernWolt?.deliveryCount ?: 0
         val boltDropoffCount = lines.firstNotNullOfOrNull { line ->
             boltDropoffCountRegex.matchEntire(line)?.groupValues?.getOrNull(1)?.toIntOrNull()
         } ?: 0
-        val customerStopCount = customerStops.size
+        val customerStopCount = dropoffs.size
         val baselineCount = if (merchantNames.isNotEmpty()) 1 else 0
-        val deliveryCount = maxOf(headerDeliveryCount, boltDropoffCount, customerStopCount, baselineCount)
-            .takeIf { it > 0 }
+        val deliveryCount = maxOf(
+            headerDeliveryCount,
+            modernDeliveryCount,
+            boltDropoffCount,
+            customerStopCount,
+            baselineCount,
+        ).takeIf { it > 0 }
 
-        val money = parseMoney(lines.joinToString("\n"), lines)
+        val money = parseMoney(lines.joinToString(separator = 10.toChar().toString()), lines)
         return ParsedOffer(
             priceCents = money?.amountMinor?.takeIf { it in Int.MIN_VALUE..Int.MAX_VALUE }?.toInt(),
             money = money,
-            distanceMeters = parseDistanceMeters(lines.joinToString("\n")),
+            distanceMeters = parseDistanceMeters(lines.joinToString(separator = 10.toChar().toString())),
             restaurant = merchantNames.takeIf { it.isNotEmpty() }?.joinToString(", "),
             merchantNames = merchantNames,
             pickupAddresses = pickups,
@@ -140,6 +147,150 @@ internal object OfferParser {
         value = suspiciousInlineOcrGlyphRegex.replace(value, "")
         return value.trim().replace(Regex("\\s+"), " ")
     }
+
+    private data class ModernWoltLayout(
+        val merchantNames: List<String>,
+        val pickupAddresses: List<String>,
+        val customerNames: List<String>,
+        val dropoffAddresses: List<String>,
+        val deliveryCount: Int?,
+        val orderedRouteStops: List<ParsedRouteStop>,
+    )
+
+    /**
+     * Wolt's September 2026 offer card no longer exposes the legacy "Delivery from / Timeline"
+     * section. Pickups are rendered as name/address rows below a compact "N stops (X km) • ETA"
+     * summary, while one destination is shown as "Customer drop-off" and batches collapse their
+     * destinations behind "Multiple drop-offs (N stops)". When CourierPilot briefly opens that
+     * sheet, its text is accumulated with the card frame and this parser reconstructs the full route.
+     */
+    private fun parseModernWoltLayout(lines: List<String>): ModernWoltLayout? {
+        val summaryIndex = lines.indexOfFirst(WoltOfferUiText.modernRouteSummaryRegex::matches)
+        val singleDropoffIndex = lines.indexOfFirst(WoltOfferUiText.singleCustomerDropoffRegex::matches)
+        val collapsedDropoffIndexes = lines.indices.filter { index ->
+            WoltOfferUiText.collapsedMultipleDropoffsRegex.matches(lines[index])
+        }
+        val expandedDropoffIndexes = lines.indices.filter { index ->
+            WoltOfferUiText.standaloneMultipleDropoffsRegex.matches(lines[index])
+        }
+        val modern = summaryIndex >= 0 ||
+            lines.any(WoltOfferUiText::isModernEarningsLabel) ||
+            singleDropoffIndex >= 0 ||
+            collapsedDropoffIndexes.isNotEmpty() ||
+            expandedDropoffIndexes.isNotEmpty()
+        if (!modern) return null
+
+        val pickupStart = (summaryIndex + 1).coerceAtLeast(0)
+        val pickupEndCandidates = buildList {
+            singleDropoffIndex.takeIf { it >= pickupStart }?.let(::add)
+            collapsedDropoffIndexes.firstOrNull { it >= pickupStart }?.let(::add)
+            expandedDropoffIndexes.firstOrNull { it >= pickupStart }?.let(::add)
+            lines.indexOfFirstFrom(pickupStart, WoltOfferUiText::isEarningsLabel)
+                .takeIf { it >= pickupStart }
+                ?.let(::add)
+        }
+        val pickupEnd = pickupEndCandidates.minOrNull() ?: lines.size
+
+        val merchants = mutableListOf<String>()
+        val pickups = mutableListOf<String>()
+        val ordered = mutableListOf<ParsedRouteStop>()
+        var previousAddressIndex = pickupStart - 1
+        for (index in pickupStart until pickupEnd) {
+            val address = lines[index]
+            if (!looksLikeModernStreetAddress(address)) continue
+            val segmentStart = (previousAddressIndex + 1).coerceAtLeast(pickupStart)
+            val name = lines.subList(segmentStart, index)
+                .asReversed()
+                .firstOrNull(::isModernWoltMerchantCandidate)
+            if (name != null) {
+                if (merchants.none { namesEquivalent(it, name) }) merchants += name
+                if (pickups.none { addressesEquivalent(it, address) }) pickups += address
+                if (ordered.none { it.kind == ParsedRouteStopKind.PICKUP && addressesEquivalent(it.address, address) }) {
+                    ordered += ParsedRouteStop(ParsedRouteStopKind.PICKUP, name, address)
+                }
+            }
+            previousAddressIndex = index
+        }
+
+        val dropoffs = mutableListOf<String>()
+        fun addDropoff(address: String) {
+            if (dropoffs.none { addressesEquivalent(it, address) }) {
+                dropoffs += address
+                ordered += ParsedRouteStop(ParsedRouteStopKind.DROPOFF, "Customer", address)
+            }
+        }
+
+        if (singleDropoffIndex >= 0) {
+            lines.drop(singleDropoffIndex + 1)
+                .takeWhile { line ->
+                    !WoltOfferUiText.isEarningsLabel(line) &&
+                        !line.equals("Accept", ignoreCase = true) &&
+                        !line.equals("Decline", ignoreCase = true)
+                }
+                .firstOrNull(::looksLikeModernStreetAddress)
+                ?.let(::addDropoff)
+        }
+
+        // Prefer an expanded sheet that occurs after the collapsed row in accumulated frame text.
+        // This avoids mistaking pickup addresses from the base card for destinations.
+        val expandedIndex = expandedDropoffIndexes.lastOrNull()
+        if (expandedIndex != null) {
+            lines.drop(expandedIndex + 1)
+                .takeWhile { line ->
+                    !line.equals("Done", ignoreCase = true) &&
+                        !WoltOfferUiText.isEarningsLabel(line) &&
+                        !line.equals("Accept", ignoreCase = true)
+                }
+                .filter(::looksLikeModernStreetAddress)
+                .forEach(::addDropoff)
+        }
+
+        val collapsedCount = collapsedDropoffIndexes.firstNotNullOfOrNull { index ->
+            WoltOfferUiText.collapsedMultipleDropoffsRegex.matchEntire(lines[index])
+                ?.groupValues?.getOrNull(1)?.toIntOrNull()
+        }
+        val expandedCount = expandedIndex?.let { index ->
+            lines.drop(index + 1).take(3).firstNotNullOfOrNull { line ->
+                WoltOfferUiText.standaloneStopsRegex.matchEntire(line)
+                    ?.groupValues?.getOrNull(1)?.toIntOrNull()
+            }
+        }
+        val deliveryCount = maxOf(
+            collapsedCount ?: 0,
+            expandedCount ?: 0,
+            dropoffs.size,
+            if (singleDropoffIndex >= 0) 1 else 0,
+        ).takeIf { it > 0 }
+
+        return ModernWoltLayout(
+            merchantNames = merchants,
+            pickupAddresses = pickups,
+            customerNames = List(dropoffs.size) { "Customer" },
+            dropoffAddresses = dropoffs,
+            deliveryCount = deliveryCount,
+            orderedRouteStops = ordered,
+        )
+    }
+
+    private fun List<String>.indexOfFirstFrom(start: Int, predicate: (String) -> Boolean): Int {
+        for (index in start.coerceAtLeast(0) until size) if (predicate(this[index])) return index
+        return -1
+    }
+
+    private fun isModernWoltMerchantCandidate(line: String): Boolean {
+        val lower = line.lowercase(Locale.ROOT)
+        if (!isStopNameCandidate(line)) return false
+        if (WoltOfferUiText.modernRouteSummaryRegex.matches(line)) return false
+        if (WoltOfferUiText.collapsedMultipleDropoffsRegex.matches(line)) return false
+        if (WoltOfferUiText.standaloneMultipleDropoffsRegex.matches(line)) return false
+        if (WoltOfferUiText.singleCustomerDropoffRegex.matches(line)) return false
+        if (WoltOfferUiText.isEarningsLabel(line)) return false
+        return lower !in MODERN_WOLT_NOISE_LINES
+    }
+
+    private fun addressesEquivalent(a: String, b: String): Boolean =
+        a.lowercase(Locale.ROOT).replace(Regex("\\s+"), " ").trim() ==
+            b.lowercase(Locale.ROOT).replace(Regex("\\s+"), " ").trim()
 
     private fun parseWoltMerchantSummary(lines: List<String>): Pair<Int, List<String>>? {
         lines.forEachIndexed { index, line ->
@@ -330,11 +481,26 @@ internal object OfferParser {
         if (line.length !in 2..140) return false
         if (MarketCurrencyParser.containsMoney(line) || distanceRegex.matches(line) || estimateRegex.containsMatchIn(line)) return false
         if (minuteOnlyRegex.matches(line) || progressStatusRegex.matches(line) || looksLikeAddress(line)) return false
+        if (WoltOfferUiText.modernRouteSummaryRegex.matches(line) ||
+            WoltOfferUiText.collapsedMultipleDropoffsRegex.matches(line) ||
+            WoltOfferUiText.standaloneStopsRegex.matches(line)
+        ) return false
         if (boltDropoffCountRegex.matches(line)) return false
         if (lower in GENERIC_LINES) return false
         if (lower.startsWith("pickup ") || lower.startsWith("delivery ")) return false
         if (lower.matches(Regex("^[\\d:.,%+\\- ]+$"))) return false
         return true
+    }
+
+    private fun looksLikeModernStreetAddress(line: String): Boolean {
+        if (!Regex("\\d").containsMatchIn(line)) return false
+        val lower = line.lowercase(Locale.ROOT)
+        return lower.contains(" gatv") ||
+            Regex("(?i)\\bg\\.\\s*\\d").containsMatchIn(line) ||
+            Regex("(?i)\\bstr\\.?\\s*\\d").containsMatchIn(line) ||
+            lower.contains(" street ") ||
+            lower.contains(" avenue ") ||
+            lower.contains(" road ")
     }
 
     private fun looksLikeAddress(line: String): Boolean {
@@ -349,8 +515,31 @@ internal object OfferParser {
     }
 
     private fun parseMoney(text: String, lines: List<String>): MoneyAmount? {
+        val modernSummaryIndexes = lines.indices.filter { index ->
+            WoltOfferUiText.modernRouteSummaryRegex.matches(lines[index])
+        }
+        if (modernSummaryIndexes.isNotEmpty() || lines.any(WoltOfferUiText::isModernEarningsLabel)) {
+            modernSummaryIndexes.forEach { summaryIndex ->
+                // New Wolt layout: the amount is the large line immediately above the compact
+                // "N stops (X km) • ETA" summary. Keep this anchored and never trust map money.
+                for (offset in listOf(-1, -2, 0, 1)) {
+                    val candidate = lines.getOrNull(summaryIndex + offset) ?: continue
+                    MarketCurrencyParser.parse(candidate)?.let { return it }
+                }
+            }
+            // If Accessibility/OCR drops the compact summary, keep the modern explanatory label as
+            // a conservative fallback. Spatial OCR handles the much larger real screen gap.
+            lines.indices.filter { WoltOfferUiText.isModernEarningsLabel(lines[it]) }.forEach { earningsIndex ->
+                for (offset in listOf(-1, -2, 0, 1, 2)) {
+                    val candidate = lines.getOrNull(earningsIndex + offset) ?: continue
+                    MarketCurrencyParser.parse(candidate)?.let { return it }
+                }
+            }
+            return null
+        }
+
         val earningsIndexes = lines.indices.filter { index ->
-            lines[index].contains("expected earnings for the full delivery", ignoreCase = true)
+            lines[index].contains(WoltOfferUiText.LEGACY_EARNINGS_LABEL, ignoreCase = true)
         }
         if (earningsIndexes.isNotEmpty()) {
             // Accessibility text and OCR text are concatenated, so the same Wolt label can appear
@@ -362,8 +551,8 @@ internal object OfferParser {
                     MarketCurrencyParser.parse(candidate)?.let { return it }
                 }
             }
-            // Wolt's earnings label is authoritative. During loading, full-screen OCR can also see
-            // unrelated balances/map/UI amounts; wait instead of accepting arbitrary money elsewhere.
+            // Legacy Wolt earnings label remains authoritative. During loading, full-screen OCR can
+            // also see unrelated balances/map/UI amounts; wait instead of accepting arbitrary money.
             return null
         }
         return MarketCurrencyParser.parse(text)
@@ -384,9 +573,16 @@ internal object OfferParser {
         "wolt", "bolt", "new task", "new order", "new delivery", "offer",
         "accept", "decline", "reject", "pickup", "dropoff", "delivery",
         "delivery from", "timeline", "route distance", "estimated",
-        "expected earnings for the full delivery", "close drawer", "google map", "map marker",
+        WoltOfferUiText.LEGACY_EARNINGS_LABEL, WoltOfferUiText.MODERN_EARNINGS_LABEL,
+        "customer drop-off", "multiple drop-offs", "collect cash", "done",
+        "close drawer", "google map", "map marker",
         "ready", "show map", "priimti", "atmesti", "užduotis", "uzduot", "užsakymas", "uzsakymas",
         "принять", "отклонить", "заказ", "задание", "прийняти", "відхилити", "замовлення", "завдання"
+    )
+
+    private val MODERN_WOLT_NOISE_LINES = setOf(
+        "collect cash", "customer drop-off", "multiple drop-offs", "done",
+        WoltOfferUiText.LEGACY_EARNINGS_LABEL, WoltOfferUiText.MODERN_EARNINGS_LABEL,
     )
 
     private const val BOLT_NAME_LOOKBACK_LINES = 6

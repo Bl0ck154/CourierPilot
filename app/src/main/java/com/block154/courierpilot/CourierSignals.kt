@@ -239,14 +239,15 @@ internal object CourierSignals {
         val hasStrongNotificationStylePhrase = strongOfferPhrases.any(lower::contains)
         val hasWoltOfferStructure = lower.contains("delivery from") ||
             Regex("(?i)\\b\\d+\\s+deliver(?:y|ies)\\s+from\\b").containsMatchIn(text) ||
-            lower.contains("expected earnings for the full delivery")
+            WoltOfferUiText.hasEarningsLabel(text) ||
+            WoltOfferUiText.hasModernOfferStructure(text)
         val hasRouteEvidence = parsed.distanceMeters != null ||
             lower.contains("route distance") ||
             lower.contains("estimated")
         val hasStructuredStop = parsed.restaurant != null || parsed.dropoffAddresses.isNotEmpty()
         val hasPrice = parsed.priceCents != null
 
-        if (lower.contains("expected earnings for the full delivery") && hasPrice) return true
+        if (WoltOfferUiText.hasEarningsLabel(text) && hasPrice) return true
         if (hasDecision && (hasPrice || hasWoltOfferStructure) && (hasRouteEvidence || hasStructuredStop || hasWoltOfferStructure)) return true
         return hasStrongNotificationStylePhrase && hasDecision && (hasPrice || hasRouteEvidence)
     }
@@ -368,7 +369,7 @@ internal object CourierSignals {
      * enough route identity to prove that the detected money belongs to the offer card. */
     fun isTrustedWoltOcrOffer(text: String, parsed: ParsedOffer): Boolean {
         if (parsed.money == null || parsed.priceCents == null) return false
-        if (!text.contains("expected earnings for the full delivery", ignoreCase = true)) return false
+        if (!WoltOfferUiText.hasEarningsLabel(text)) return false
         return looksLikeOfferScreen(text, parsed) && hasStrongOfferIdentity(parsed, text)
     }
 
