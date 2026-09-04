@@ -36,6 +36,12 @@ class OfferAccessibilityService : AccessibilityService() {
     private var lastFastAccessibilityPriceKey = ""
     private var woltPricePollKey = ""
     private var lastWoltPriceProbeAtElapsed = 0L
+    private var woltFrameKey = ""
+    private var woltCardFrameText = ""
+    private var woltDropoffFrameText = ""
+    private var woltDropoffProbeKey = ""
+    private var woltDropoffProbeAttempts = 0
+    private var woltDropoffSheetSettleAttempts = 0
 
     private val attemptRunnable = Runnable { attemptCapture() }
     private val woltPricePollRunnable = Runnable { pollPendingWoltAccessibilityPrice() }
@@ -209,10 +215,12 @@ class OfferAccessibilityService : AccessibilityService() {
             return
         }
 
-        val uiText = collectVisibleText(target.root)
+        val currentUiText = collectVisibleText(target.root)
+        val uiText = accumulateOfferFrame(pending, currentUiText)
         observeCourierScreen(target.packageName, uiText)
         if (uiText.isNotBlank()) OfferState.saveUiText(this, uiText)
         val parsed = OfferParser.parse(uiText)
+        if (maybeResolveWoltHiddenDropoffs(target.root, pending, currentUiText, parsed)) return
 
         // Bolt's map is not semantically exposed on the current real-device build. Even if a future
         // build exposes a price through Accessibility, keep Bolt metadata on the spatially isolated
@@ -229,7 +237,7 @@ class OfferAccessibilityService : AccessibilityService() {
             }
         } else {
             CaptureEventLog.append(this, "price_wait", "Price not exposed yet; checking current frame with OCR", platform, 5_000L)
-            captureCurrentFrameForOcr(pending, target.windowId, uiText)
+            captureCurrentFrameForOcr(pending, target.windowId, currentUiText)
         }
     }
 
@@ -243,8 +251,9 @@ class OfferAccessibilityService : AccessibilityService() {
         val pending = OfferState.pending(this) ?: return false
         if (pending.packageName != CourierSignals.WOLT_PACKAGE) return false
         val target = findCourierWindow(pending) ?: return false
-        val uiText = collectVisibleText(target.root)
-        if (uiText.isBlank()) return false
+        val currentUiText = collectVisibleText(target.root)
+        if (currentUiText.isBlank()) return false
+        val uiText = accumulateOfferFrame(pending, currentUiText)
         val parsed = OfferParser.parse(uiText)
         val price = parsed.priceCents ?: return false
         val money = parsed.money ?: return false
@@ -302,6 +311,158 @@ class OfferAccessibilityService : AccessibilityService() {
             return
         }
         handler.postDelayed(woltPricePollRunnable, WOLT_HOT_PRICE_POLL_MS)
+    }
+
+    private fun accumulateOfferFrame(pending: PendingOffer, currentText: String): String {
+        if (pending.packageName != CourierSignals.WOLT_PACKAGE) return currentText
+        val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
+        if (key != woltFrameKey) {
+            woltFrameKey = key
+            woltCardFrameText = ""
+            woltDropoffFrameText = ""
+            woltDropoffProbeKey = key
+            woltDropoffProbeAttempts = 0
+            woltDropoffSheetSettleAttempts = 0
+        }
+
+        val clean = currentText.trim()
+        if (clean.isNotBlank()) {
+            when {
+                WoltOfferUiText.hasExpandedMultipleDropoffSheet(clean) -> woltDropoffFrameText = clean
+                WoltOfferUiText.hasModernOfferStructure(clean) -> woltCardFrameText = clean
+            }
+        }
+        val frames = listOf(woltCardFrameText, woltDropoffFrameText)
+            .filter { it.isNotBlank() }
+            .distinct()
+        return if (frames.isEmpty()) currentText else frames.joinToString(separator = 10.toChar().toString())
+    }
+
+    /**
+     * The redesigned Wolt card hides batched customer addresses behind a separate row. When Wolt
+     * routing is enabled, briefly expand that row, accumulate the modal text with the base card, and
+     * close it again before persisting. If Wolt stops exposing a clickable node, fail open after two
+     * attempts and preserve the existing incomplete-route fallback instead of trapping the courier UI.
+     */
+    private fun maybeResolveWoltHiddenDropoffs(
+        root: AccessibilityNodeInfo,
+        pending: PendingOffer,
+        currentText: String,
+        parsed: ParsedOffer,
+    ): Boolean {
+        if (pending.packageName != CourierSignals.WOLT_PACKAGE) return false
+        if (!LiveAdvisorSettings.automaticWoltRouting(this)) return false
+
+        val expectedDropoffs = parsed.deliveryCount?.coerceAtLeast(1) ?: return false
+        val currentIsExpanded = WoltOfferUiText.hasExpandedMultipleDropoffSheet(currentText)
+        if (currentIsExpanded) {
+            if (parsed.dropoffAddresses.size < expectedDropoffs) {
+                woltDropoffSheetSettleAttempts += 1
+                if (woltDropoffSheetSettleAttempts < WOLT_DROPOFF_SHEET_MAX_SETTLE_ATTEMPTS) {
+                    scheduleAttempt(WOLT_DROPOFF_SHEET_SETTLE_MS)
+                    return true
+                }
+                val closedIncomplete = clickAccessibilityText(root) { value -> value.equals("done", ignoreCase = true) } ||
+                    performGlobalAction(GLOBAL_ACTION_BACK)
+                CaptureEventLog.append(
+                    this,
+                    stage = "wolt_dropoffs_incomplete",
+                    platform = "Wolt",
+                    message = "Drop-off sheet stayed incomplete after OCR/Accessibility retries; returning to fallback capture",
+                    dedupeWindowMs = 2_000L,
+                )
+                if (closedIncomplete) {
+                    scheduleAttempt(WOLT_DROPOFF_SHEET_SETTLE_MS)
+                    return true
+                }
+                return false
+            }
+            woltDropoffSheetSettleAttempts = 0
+            val closed = clickAccessibilityText(root) { value -> value.equals("done", ignoreCase = true) } ||
+                performGlobalAction(GLOBAL_ACTION_BACK)
+            if (closed) {
+                CaptureEventLog.append(
+                    this,
+                    stage = "wolt_dropoffs_close",
+                    platform = "Wolt",
+                    message = "Captured hidden customer stops and closed the Wolt drop-off sheet",
+                    dedupeWindowMs = 2_000L,
+                )
+                scheduleAttempt(WOLT_DROPOFF_SHEET_SETTLE_MS)
+                return true
+            }
+            return false
+        }
+
+        if (parsed.dropoffAddresses.size >= expectedDropoffs) return false
+        if (!WoltOfferUiText.hasCollapsedMultipleDropoffs(currentText)) return false
+
+        val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
+        if (woltDropoffProbeKey != key) {
+            woltDropoffProbeKey = key
+            woltDropoffProbeAttempts = 0
+        }
+        if (woltDropoffProbeAttempts >= WOLT_DROPOFF_PROBE_MAX_ATTEMPTS) return false
+
+        woltDropoffProbeAttempts += 1
+        val opened = clickAccessibilityText(root) { value ->
+            value.lowercase().contains("multiple drop-off")
+        }
+        if (opened) {
+            woltDropoffSheetSettleAttempts = 0
+            CaptureEventLog.append(
+                this,
+                stage = "wolt_dropoffs_expand",
+                platform = "Wolt",
+                message = "Opened the redesigned Wolt multiple-drop-off sheet to recover hidden addresses",
+                dedupeWindowMs = 2_000L,
+            )
+            scheduleAttempt(WOLT_DROPOFF_SHEET_SETTLE_MS)
+            return true
+        }
+
+        CaptureEventLog.append(
+            this,
+            stage = "wolt_dropoffs_click_missed",
+            platform = "Wolt",
+            message = "Multiple-drop-off row was visible but not clickable through Accessibility",
+            dedupeWindowMs = 2_000L,
+        )
+        if (woltDropoffProbeAttempts < WOLT_DROPOFF_PROBE_MAX_ATTEMPTS) {
+            scheduleAttempt(WOLT_DROPOFF_SHEET_SETTLE_MS)
+            return true
+        }
+        return false
+    }
+
+    private fun clickAccessibilityText(
+        root: AccessibilityNodeInfo,
+        matches: (String) -> Boolean,
+    ): Boolean {
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var visited = 0
+        while (queue.isNotEmpty() && visited < 700) {
+            val node = queue.removeFirst()
+            visited += 1
+            val values = listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
+                .map { it.trim().replace(Regex("\\s+"), " ") }
+                .filter { it.isNotBlank() }
+            if (node.isVisibleToUser && values.any(matches)) {
+                var clickable: AccessibilityNodeInfo? = node
+                repeat(5) {
+                    val candidate = clickable ?: return@repeat
+                    if (candidate.isClickable && candidate.isEnabled &&
+                        candidate.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    ) {
+                        return true
+                    }
+                    clickable = candidate.parent
+                }
+            }
+            for (i in 0 until node.childCount) node.getChild(i)?.let(queue::addLast)
+        }
+        return false
     }
 
     private data class CourierWindow(val root: AccessibilityNodeInfo, val windowId: Int, val packageName: String)
@@ -526,8 +687,9 @@ class OfferAccessibilityService : AccessibilityService() {
                         return
                     }
                     resetScreenshotFailures(pending)
-                    val earlyParsed = OfferParser.parse(accessibilityText)
-                    if (CourierSignals.looksLikeOfferScreen(accessibilityText, earlyParsed)) {
+                    val accumulatedAccessibilityText = accumulateOfferFrame(pending, accessibilityText)
+                    val earlyParsed = OfferParser.parse(accumulatedAccessibilityText)
+                    if (CourierSignals.looksLikeOfferScreen(accumulatedAccessibilityText, earlyParsed)) {
                         LiveAdvisorHub.showPendingOffer(this@OfferAccessibilityService, pending, earlyParsed)
                     }
 
@@ -538,7 +700,8 @@ class OfferAccessibilityService : AccessibilityService() {
                                 bitmap.recycle()
                                 return@addOnSuccessListener
                             }
-                            val combined = OfferOcrText.combine(pending.packageName, accessibilityText, result, bitmap.height)
+                            val combinedCurrent = OfferOcrText.combine(pending.packageName, accessibilityText, result, bitmap.height)
+                            val combined = accumulateOfferFrame(pending, combinedCurrent)
                             observeCourierScreen(pending.packageName, combined, ScreenTextSource.OCR_AUGMENTED)
                             if (combined.isNotBlank()) OfferState.saveUiText(this@OfferAccessibilityService, combined)
                             val parsedText = OfferParser.parse(combined)
@@ -557,6 +720,14 @@ class OfferAccessibilityService : AccessibilityService() {
                                 pending.packageName != CourierSignals.WOLT_PACKAGE ||
                                     CourierSignals.isTrustedWoltOcrOffer(combined, parsed)
                                 )
+                            val latestRoot = findCourierWindow(pending)?.root
+                            if (latestRoot != null &&
+                                maybeResolveWoltHiddenDropoffs(latestRoot, pending, combinedCurrent, parsed)
+                            ) {
+                                finishCapture(captureToken)
+                                bitmap.recycle()
+                                return@addOnSuccessListener
+                            }
                             CaptureEventLog.append(
                                 this@OfferAccessibilityService,
                                 stage = "ocr_price_probe",
@@ -1114,6 +1285,9 @@ class OfferAccessibilityService : AccessibilityService() {
         private const val WOLT_FAST_PRICE_POLL_MS = 350L
         private const val WOLT_HOT_PRICE_POLL_MS = 220L
         private const val WOLT_PRICE_EVENT_THROTTLE_MS = 90L
+        private const val WOLT_DROPOFF_SHEET_SETTLE_MS = 180L
+        private const val WOLT_DROPOFF_SHEET_MAX_SETTLE_ATTEMPTS = 4
+        private const val WOLT_DROPOFF_PROBE_MAX_ATTEMPTS = 2
         private const val DISCOVERY_EVENT_WINDOW_MS = 1_500L
         private const val DISCOVERY_OCR_MIN_INTERVAL_MS = 1_800L
         private const val DISCOVERY_SCREENSHOT_RETRY_MS = 1_200L

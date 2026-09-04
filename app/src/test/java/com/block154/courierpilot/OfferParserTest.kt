@@ -8,6 +8,96 @@ import org.junit.Test
 class OfferParserTest {
 
     @Test
+    fun parsesRedesignedWoltSingleOffer() {
+        val parsed = OfferParser.parse(
+            """
+            €6.56
+            2 stops (5.4 km) • 15–22 min
+            Collect cash
+            Jammi (Tauro kalnas)
+            Tauro g. 3, Vilnius, LT-03106
+            Customer drop-off
+            Vilkpėdės gatvė 2A, Vilnius, 03151
+            Estimated earnings for the full delivery
+            Accept
+            """.trimIndent()
+        )
+
+        assertEquals(656, parsed.priceCents)
+        assertEquals(5400, parsed.distanceMeters)
+        assertEquals(listOf("Jammi (Tauro kalnas)"), parsed.merchantNames)
+        assertEquals(listOf("Tauro g. 3, Vilnius, LT-03106"), parsed.pickupAddresses)
+        assertEquals(listOf("Vilkpėdės gatvė 2A, Vilnius, 03151"), parsed.dropoffAddresses)
+        assertEquals(1, parsed.deliveryCount)
+        assertEquals(15, parsed.estimatedMinutesMin)
+        assertEquals(22, parsed.estimatedMinutesMax)
+    }
+
+    @Test
+    fun parsesRedesignedWoltCollapsedStackedOfferWithoutInventingDropoffs() {
+        val parsed = OfferParser.parse(
+            """
+            €13.04
+            4 stops (14.0 km) • 29–42 min
+            Eat More Chinese & Shimai Sushi (Palangos g.)
+            Palangos g. 2, Vilnius, LT01117
+            Talutti Bakes'n'Shakes City
+            Vilniaus g. 35, Vilnius, LT01119
+            Multiple drop-offs (2 stops)
+            Estimated earnings for the full delivery
+            Accept
+            """.trimIndent()
+        )
+
+        assertEquals(1304, parsed.priceCents)
+        assertEquals(14000, parsed.distanceMeters)
+        assertEquals(
+            listOf("Eat More Chinese & Shimai Sushi (Palangos g.)", "Talutti Bakes'n'Shakes City"),
+            parsed.merchantNames,
+        )
+        assertEquals(
+            listOf("Palangos g. 2, Vilnius, LT01117", "Vilniaus g. 35, Vilnius, LT01119"),
+            parsed.pickupAddresses,
+        )
+        assertTrue(parsed.dropoffAddresses.isEmpty())
+        assertEquals(2, parsed.deliveryCount)
+        assertEquals(29, parsed.estimatedMinutesMin)
+        assertEquals(42, parsed.estimatedMinutesMax)
+    }
+
+    @Test
+    fun combinesRedesignedWoltCardAndExpandedDropoffSheetIntoRoutableOffer() {
+        val parsed = OfferParser.parse(
+            """
+            €12.46
+            4 stops (14.9 km) • 38–51 min
+            Sushi Out (Upės g.)
+            Upės g. 6, Vilnius, LT-09309
+            Guacamole Mexican Grill (Baltas tiltas)
+            Upės g. 6, Vilnius, LT-09309
+            Multiple drop-offs (2 stops)
+            Estimated earnings for the full delivery
+            Accept
+            Multiple drop-offs
+            2 stops
+            V. Grybo Gatvė 34
+            Vilnius
+            Kaukyšos gatvė 18
+            Vilnius, 11342
+            Done
+            """.trimIndent()
+        )
+
+        assertEquals(1246, parsed.priceCents)
+        assertEquals(14900, parsed.distanceMeters)
+        assertEquals(listOf("Sushi Out (Upės g.)", "Guacamole Mexican Grill (Baltas tiltas)"), parsed.merchantNames)
+        assertEquals(listOf("Upės g. 6, Vilnius, LT-09309"), parsed.pickupAddresses)
+        assertEquals(listOf("V. Grybo Gatvė 34", "Kaukyšos gatvė 18"), parsed.dropoffAddresses)
+        assertEquals(2, parsed.deliveryCount)
+        assertTrue(AutomaticWoltRouteCoordinator.routeFingerprint(parsed) != null)
+    }
+
+    @Test
     fun parsesRealWoltSingleOffer() {
         val parsed = OfferParser.parse(
             """
