@@ -173,6 +173,17 @@ class CourierPilotNotificationListener : NotificationListenerService() {
             return
         }
 
+        val refreshedDecision = NotificationOfferClassifier.classify(this, sbn)
+        if (!refreshedDecision.isOffer) {
+            CaptureEventLog.append(
+                this,
+                stage = "promoted_open_blocked",
+                platform = OfferState.platformLabel(packageName),
+                message = "Queued notification changed and no longer matches a real new-order signal; tap blocked",
+            )
+            return
+        }
+
         val contentIntent = sbn.notification.contentIntent
         if (contentIntent == null) {
             CaptureEventLog.append(
@@ -214,6 +225,19 @@ class CourierPilotNotificationListener : NotificationListenerService() {
         val sbn = active.firstOrNull {
             it.packageName == pending.packageName && it.key == pending.notificationKey
         }
+        if (sbn != null) {
+            val refreshedDecision = NotificationOfferClassifier.classify(this, sbn)
+            if (!refreshedDecision.isOffer) {
+                CaptureEventLog.append(
+                    this,
+                    stage = "unlock_retry_blocked",
+                    platform = OfferState.platformLabel(pending.packageName),
+                    message = "Active notification changed and no longer matches a real new-order signal; unlock tap blocked",
+                )
+                return
+            }
+        }
+
         val rememberedIntent = lastOfferContentIntent.takeIf {
             lastOfferPackage == pending.packageName && lastOfferNotificationKey == pending.notificationKey
         }

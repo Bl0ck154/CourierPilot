@@ -6,15 +6,15 @@ import org.junit.Test
 
 class NotificationStructuralFallbackTest {
     @Test
-    fun highConfidenceWoltStructure_canBootstrapWithoutText() {
+    fun highConfidenceWoltStructure_doesNotAutoOpenWithoutExplicitOrderSignal() {
         val structure = interactiveStructure(CourierSignals.WOLT_PACKAGE)
         val decision = NotificationOfferClassifier.classify(
             structure = structure,
             text = "",
             actionLabels = emptyList(),
         )
-        assertTrue(decision.isOffer)
-        assertTrue("wolt_structural_fallback" in decision.reasons)
+        assertFalse(decision.isOffer)
+        assertTrue("structure_diagnostic_only" in decision.reasons)
     }
 
     @Test

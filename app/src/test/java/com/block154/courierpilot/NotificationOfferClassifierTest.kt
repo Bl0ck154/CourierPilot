@@ -55,7 +55,7 @@ class NotificationOfferClassifierTest {
     }
 
     @Test
-    fun learnedBoltProfileStillRecognizesTextlessOrderPush() {
+    fun learnedBoltProfileAloneDoesNotAutoOpenTextlessPush() {
         val learned = NotificationStructure(
             packageName = CourierSignals.BOLT_PACKAGE,
             channelId = "incoming_requests",
@@ -83,7 +83,8 @@ class NotificationOfferClassifierTest {
         )
 
         assertTrue(decision.learnedMatchScore >= NotificationOfferClassifier.LEARNED_PROFILE_MATCH_THRESHOLD)
-        assertTrue(decision.isOffer)
+        assertFalse(decision.isOffer)
+        assertTrue(decision.reasons.contains("learned_profile_diagnostic_only"))
     }
 
     @Test
@@ -178,7 +179,7 @@ class NotificationOfferClassifierTest {
     }
 
     @Test
-    fun learnedWoltProfileSurvivesWordingChange() {
+    fun learnedWoltProfileAloneDoesNotAutoOpenChangedWording() {
         val learned = NotificationStructure(
             packageName = CourierSignals.WOLT_PACKAGE,
             channelId = "orders",
@@ -203,7 +204,8 @@ class NotificationOfferClassifierTest {
         )
 
         assertTrue(decision.learnedMatchScore >= NotificationOfferClassifier.LEARNED_PROFILE_MATCH_THRESHOLD)
-        assertTrue(decision.isOffer)
+        assertFalse(decision.isOffer)
+        assertTrue(decision.reasons.contains("learned_profile_diagnostic_only"))
     }
 
     @Test
