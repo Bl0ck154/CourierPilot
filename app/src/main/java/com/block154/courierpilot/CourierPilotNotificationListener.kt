@@ -34,6 +34,7 @@ class CourierPilotNotificationListener : NotificationListenerService() {
         super.onListenerConnected()
         registerUnlockReceiver()
         CaptureEventLog.append(this, "listener", "Notification listener connected", dedupeWindowMs = 30_000L)
+        reconcileOfferNotificationLifetime()
         reconcileAllCourierPresence()
     }
 
@@ -47,6 +48,7 @@ class CourierPilotNotificationListener : NotificationListenerService() {
         // key is confirmed later by the real offer screen, preventing a nearby unrelated push from
         // poisoning the structural profile.
         if (decision.isOffer) {
+            LiveOfferNotificationLifetime.markActive(sbn.packageName, sbn.key)
             NotificationOfferProfileStore.rememberCandidate(this, sbn)
             CourierPresence.markOfferOnline(this, sbn.packageName, "offer notification")
             val shape = notificationShapeSummary(sbn)
@@ -117,8 +119,18 @@ class CourierPilotNotificationListener : NotificationListenerService() {
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         if (!CourierSignals.isCourierPackage(sbn.packageName)) return
-        if (NotificationOfferClassifier.classify(this, sbn).isOffer) {
+        val wasTrackedOffer = LiveOfferNotificationLifetime.isActive(sbn.packageName, sbn.key)
+        if (wasTrackedOffer || NotificationOfferClassifier.classify(this, sbn).isOffer) {
+            LiveOfferNotificationLifetime.markRemoved(sbn.packageName, sbn.key)
+            LiveAdvisorHub.onOfferNotificationRemoved(sbn.packageName, sbn.key)
             OfferState.releaseCapturedNotification(this, sbn.packageName, sbn.key)
+            CaptureEventLog.append(
+                this,
+                stage = "offer_notification_removed",
+                platform = OfferState.platformLabel(sbn.packageName),
+                message = "Exact offer notification ended; requested live-card lifecycle recheck",
+                dedupeWindowMs = 1_000L,
+            )
             return
         }
         if (sbn.notification.flags and android.app.Notification.FLAG_ONGOING_EVENT == 0) return
@@ -134,6 +146,18 @@ class CourierPilotNotificationListener : NotificationListenerService() {
             unlockReceiverRegistered = false
         }
         super.onDestroy()
+    }
+
+    private fun reconcileOfferNotificationLifetime() {
+        val offers = runCatching {
+            activeNotifications?.asSequence()
+                ?.filter { CourierSignals.isCourierPackage(it.packageName) }
+                ?.filter { NotificationOfferClassifier.classify(this, it).isOffer }
+                ?.map { it.packageName to it.key }
+                ?.toList()
+                .orEmpty()
+        }.getOrDefault(emptyList())
+        LiveOfferNotificationLifetime.replaceActive(offers)
     }
 
     private fun registerUnlockReceiver() {

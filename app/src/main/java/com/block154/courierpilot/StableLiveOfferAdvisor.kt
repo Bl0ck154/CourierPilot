@@ -25,6 +25,7 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import java.util.ArrayDeque
 import java.util.Locale
+import java.util.concurrent.Executors
 import kotlin.math.abs
 
 /**
@@ -48,6 +49,7 @@ internal class StableLiveOfferAdvisor(
     private var currentPlatform = ""
     private var currentParsed: ParsedOffer? = null
     private var expectedPackageName = ""
+    private var currentNotificationKey = ""
     private var dismissed = false
     private var temporarilyHidden = false
     private var temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
@@ -59,9 +61,17 @@ internal class StableLiveOfferAdvisor(
     private var captureSuppressed = false
     private var offerVisualStartedAtElapsed = 0L
 
+    private data class DecisionThresholdSnapshot(
+        val currencyCode: String,
+        val thresholds: OfferDecisionThresholds?,
+        val source: String,
+    )
+
     private var cachedDecisionLine = ""
     private var cachedDecisionBand = OfferDecisionBand.UNKNOWN
     private var cachedDecisionLoading = true
+    private var decisionThresholdSnapshot: DecisionThresholdSnapshot? = null
+    private var decisionThresholdPrewarmGeneration = -1L
     private var cachedRouteLine = ""
     private var cachedRouteVisible = true
     private var cachedPedestrianRoute: RouteResult? = null
@@ -91,7 +101,7 @@ internal class StableLiveOfferAdvisor(
      * Show the advisor as soon as CourierPilot has a verified offer surface, even while the courier
      * app is still loading the price. Later price/persistence/route updates mutate this same view.
      */
-    fun showPending(platform: String, parsed: ParsedOffer) {
+    fun showPending(platform: String, parsed: ParsedOffer, notificationKey: String = "") {
         if (!LiveAdvisorSettings.enabled(service)) return
         val packageName = packageForPlatform(platform)
         val sameSurface = !dismissed && currentParsed != null && expectedPackageName == packageName
@@ -101,12 +111,15 @@ internal class StableLiveOfferAdvisor(
             offerVisualStartedAtElapsed = SystemClock.elapsedRealtime()
             currentPlatform = platform
             expectedPackageName = packageName
+            currentNotificationKey = notificationKey
             dismissed = false
             temporarilyHidden = false
             temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
             cachedDecisionLine = ""
             cachedDecisionBand = OfferDecisionBand.UNKNOWN
             cachedDecisionLoading = true
+            decisionThresholdSnapshot = null
+            decisionThresholdPrewarmGeneration = -1L
             cachedRouteLine = ""
             cachedRouteVisible = true
             cachedPedestrianRoute = null
@@ -117,7 +130,9 @@ internal class StableLiveOfferAdvisor(
             } else null
         }
         previewMode = true
+        if (notificationKey.isNotBlank()) currentNotificationKey = notificationKey
         currentParsed = parsed
+        prewarmDecisionThresholds()
         differentOfferConfirmation.reset()
         renderProgressiveDecision(parsed)
         if (cachedRouteLine.isBlank()) renderRouteLoadingState()
@@ -136,7 +151,7 @@ internal class StableLiveOfferAdvisor(
         startVisibilityWatchdog()
     }
 
-    fun showBase(platform: String, parsed: ParsedOffer) {
+    fun showBase(platform: String, parsed: ParsedOffer, notificationKey: String = "") {
         if (!LiveAdvisorSettings.enabled(service)) {
             suppressCurrentOffer("advisor disabled")
             return
@@ -144,11 +159,14 @@ internal class StableLiveOfferAdvisor(
 
         val packageName = packageForPlatform(platform)
         if (!dismissed && currentParsed != null && expectedPackageName == packageName && previewMode) {
+            val previousPrice = currentParsed?.priceCents
             currentPlatform = platform
             currentParsed = parsed
+            if (notificationKey.isNotBlank()) currentNotificationKey = notificationKey
             previewMode = false
+            prewarmDecisionThresholds()
             differentOfferConfirmation.reset()
-            renderProgressiveDecision(parsed)
+            if (cachedDecisionLoading || previousPrice != parsed.priceCents) renderProgressiveDecision(parsed)
             if (cachedRouteLine.isBlank()) renderRouteLoadingState()
             if (!temporarilyHidden) {
                 ensureView()
@@ -172,6 +190,7 @@ internal class StableLiveOfferAdvisor(
         currentPlatform = platform
         currentParsed = parsed
         expectedPackageName = packageForPlatform(platform)
+        currentNotificationKey = notificationKey
         dismissed = false
         temporarilyHidden = false
         temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
@@ -179,6 +198,8 @@ internal class StableLiveOfferAdvisor(
         cachedDecisionLine = ""
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
         cachedDecisionLoading = true
+        decisionThresholdSnapshot = null
+        decisionThresholdPrewarmGeneration = -1L
         cachedRouteLine = ""
         cachedRouteVisible = true
         cachedPedestrianRoute = null
@@ -189,6 +210,7 @@ internal class StableLiveOfferAdvisor(
         } else {
             null
         }
+        prewarmDecisionThresholds()
 
         handler.post {
             if (dismissed || expectedGeneration != generation) return@post
@@ -236,8 +258,17 @@ internal class StableLiveOfferAdvisor(
             if (dismissed) return@post
             val walking = comparison.pedestrian.getOrNull()
             val cycling = comparison.cycleway.getOrNull()
+            val samePreparedRoute = sameRoute(cachedPedestrianRoute, walking) &&
+                sameRoute(cachedCyclewayRoute, cycling) &&
+                cachedRouteLine.isNotBlank()
             cachedPedestrianRoute = walking
             cachedCyclewayRoute = cycling
+            if (samePreparedRoute) {
+                // Persistence reattaches the exact route that was already prepared before price.
+                // Do not re-score/repaint the same live offer a second time.
+                if (cachedDecisionLoading) currentParsed?.let(::renderProgressiveDecision)
+                return@post
+            }
             currentParsed?.let(::renderProgressiveDecision)
             setRouteContent(LiveAdvisorPresentation.routeLine(walking, cycling))
             CaptureEventLog.append(
@@ -382,27 +413,19 @@ internal class StableLiveOfferAdvisor(
         cyclewayRoute: RouteResult?,
     ) {
         val currencyCode = parsed.money?.currencyCode
-        val adaptiveThresholds = currencyCode?.let { code ->
-            MarketIntelligence.thresholdsFor(service, currentPlatform, code)
-        }
-        val coldStartThresholds = currencyCode?.let(LiveOfferColdStartThresholds::forCurrency)
-        val thresholdSource = when {
-            adaptiveThresholds != null -> "adaptive"
-            coldStartThresholds != null -> "currency_cold_start"
-            else -> "none"
-        }
+        val thresholdSnapshot = currencyCode?.let(::decisionThresholdSnapshotFor)
         val decision = OfferDecisionEngine.evaluate(
             parsed,
             pedestrianRoute,
             cyclewayRoute,
-            thresholds = adaptiveThresholds ?: coldStartThresholds,
+            thresholds = thresholdSnapshot?.thresholds,
         )
         CaptureEventLog.append(
             service,
             stage = "score_model",
             platform = currentPlatform,
-            message = "source=$thresholdSource; currency=${currencyCode ?: "none"}; band=${decision.band.name}; " +
-                "rate=${decision.moneyPerKilometer?.let { "%.2f".format(Locale.US, it) } ?: "none"}",
+            message = "source=${thresholdSnapshot?.source ?: "none"}; frozen=true; currency=${currencyCode ?: "none"}; " +
+                "band=${decision.band.name}; rate=${decision.moneyPerKilometer?.let { "%.2f".format(Locale.US, it) } ?: "none"}",
             dedupeWindowMs = 5_000L,
         )
         if (decision.moneyPerKilometer == null) {
@@ -451,7 +474,8 @@ internal class StableLiveOfferAdvisor(
                 else -> setShadowLayer(0f, 0f, 0f, Color.TRANSPARENT)
             }
         }
-        decisionContainer?.background = decisionBackground(cachedDecisionBand, loading)
+        // Keep the primary €/km value visually open; verdict is communicated by text color/glow.
+        decisionContainer?.background = null
     }
 
     private fun ensureView() {
@@ -524,7 +548,7 @@ internal class StableLiveOfferAdvisor(
         val rateFrame = FrameLayout(service).apply {
             minimumWidth = dp(RATE_MIN_WIDTH_DP)
             minimumHeight = dp(RATE_MIN_HEIGHT_DP)
-            background = decisionBackground(OfferDecisionBand.UNKNOWN, loading = true)
+            background = null
         }
         installGestureSurface(rateFrame)
         decisionContainer = rateFrame
@@ -728,9 +752,12 @@ internal class StableLiveOfferAdvisor(
         offerVisualStartedAtElapsed = 0L
         currentParsed = null
         expectedPackageName = ""
+        currentNotificationKey = ""
         cachedDecisionLine = ""
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
         cachedDecisionLoading = true
+        decisionThresholdSnapshot = null
+        decisionThresholdPrewarmGeneration = -1L
         cachedRouteLine = ""
         cachedRouteVisible = true
         cachedPedestrianRoute = null
@@ -748,31 +775,69 @@ internal class StableLiveOfferAdvisor(
         OfferDecisionBand.UNKNOWN -> Color.rgb(190, 200, 214)
     }
 
-    private fun decisionBackground(band: OfferDecisionBand, loading: Boolean): GradientDrawable {
-        val accent = if (loading) Color.rgb(100, 116, 139) else decisionColor(band)
-        val fillAlpha = when {
-            loading -> 10
-            band == OfferDecisionBand.FIRE -> 30
-            band == OfferDecisionBand.GOOD -> 20
-            band == OfferDecisionBand.OK -> 15
-            else -> 9
-        }
-        val strokeAlpha = when {
-            loading -> 30
-            band == OfferDecisionBand.FIRE -> 150
-            band == OfferDecisionBand.GOOD -> 95
-            band == OfferDecisionBand.OK -> 70
-            else -> 38
-        }
-        return GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = dp(10).toFloat()
-            setColor(Color.argb(fillAlpha, Color.red(accent), Color.green(accent), Color.blue(accent)))
-            setStroke(
-                dp(1),
-                Color.argb(strokeAlpha, Color.red(accent), Color.green(accent), Color.blue(accent)),
+    private fun sameRoute(previous: RouteResult?, current: RouteResult?): Boolean = when {
+        previous == null && current == null -> true
+        previous == null || current == null -> false
+        else -> previous.distanceMeters == current.distanceMeters && previous.durationSeconds == current.durationSeconds
+    }
+
+    private fun decisionThresholdSnapshotFor(currencyCode: String): DecisionThresholdSnapshot {
+        decisionThresholdSnapshot?.takeIf { it.currencyCode.equals(currencyCode, ignoreCase = true) }?.let { return it }
+        val adaptive = MarketIntelligence.thresholdsFor(service, currentPlatform, currencyCode)
+        val coldStart = LiveOfferColdStartThresholds.forCurrency(currencyCode)
+        return DecisionThresholdSnapshot(
+            currencyCode = currencyCode,
+            thresholds = adaptive ?: coldStart,
+            source = when {
+                adaptive != null -> "adaptive"
+                coldStart != null -> "currency_cold_start"
+                else -> "none"
+            },
+        ).also { decisionThresholdSnapshot = it }
+    }
+
+    private fun prewarmDecisionThresholds() {
+        if (currentPlatform.isBlank() || decisionThresholdSnapshot != null) return
+        val expectedGeneration = generation
+        if (decisionThresholdPrewarmGeneration == expectedGeneration) return
+        decisionThresholdPrewarmGeneration = expectedGeneration
+        val platform = currentPlatform
+        val app = service.applicationContext
+        SCORE_PREWARM_EXECUTOR.execute {
+            val currencyCode = runCatching { MarketIntelligence.currencyFor(app, platform) }.getOrNull().orEmpty()
+            if (currencyCode.isBlank()) return@execute
+            val adaptive = runCatching { MarketIntelligence.thresholdsFor(app, platform, currencyCode) }.getOrNull()
+            val coldStart = LiveOfferColdStartThresholds.forCurrency(currencyCode)
+            val snapshot = DecisionThresholdSnapshot(
+                currencyCode = currencyCode,
+                thresholds = adaptive ?: coldStart,
+                source = when {
+                    adaptive != null -> "adaptive"
+                    coldStart != null -> "currency_cold_start"
+                    else -> "none"
+                },
             )
+            handler.post {
+                if (!dismissed && generation == expectedGeneration && decisionThresholdSnapshot == null) {
+                    decisionThresholdSnapshot = snapshot
+                }
+            }
         }
+    }
+
+    private fun hasActiveNotificationAnchor(): Boolean =
+        currentPlatform.equals("Wolt", ignoreCase = true) &&
+            currentNotificationKey.isNotBlank() &&
+            !currentNotificationKey.startsWith("screen:") &&
+            LiveOfferNotificationLifetime.isActive(expectedPackageName, currentNotificationKey)
+
+    fun onOfferNotificationRemoved(notificationKey: String) {
+        if (notificationKey.isBlank() || notificationKey != currentNotificationKey) return
+        handler.postDelayed({
+            if (!dismissed && currentParsed != null && currentNotificationKey == notificationKey) {
+                checkOfferStillVisible()
+            }
+        }, NOTIFICATION_REMOVAL_RECHECK_MS)
     }
 
     private fun startVisibilityWatchdog() {
@@ -798,7 +863,7 @@ internal class StableLiveOfferAdvisor(
         }
 
         if (courierRoot == null) {
-            if (isTransientSystemOverlayPackage(activePackage)) {
+            if (isTransientSystemOverlayPackage(activePackage) || hasActiveNotificationAnchor()) {
                 resetMissingEvidence()
                 return
             }
@@ -829,10 +894,10 @@ internal class StableLiveOfferAdvisor(
             if (differentNow) {
                 if (isConfirmedDifferentOffer(expected, parsed)) {
                     suppressCurrentOffer("different offer is now stably visible")
+                } else if (hasActiveNotificationAnchor()) {
+                    // The exact incoming-task notification is stronger than one contradictory Compose frame.
+                    resetMissingEvidence()
                 } else {
-                    // A contradictory first frame is not enough to permanently replace the offer,
-                    // but it is enough to keep the OLD card off-screen while confirmation runs.
-                    // Otherwise a newly arrived offer briefly resurrects the previous €/km card.
                     temporarilyHide("possible different offer detected; awaiting confirmation")
                 }
                 return
@@ -891,9 +956,12 @@ internal class StableLiveOfferAdvisor(
             return
         }
 
-        // Missing Wolt controls alone are weak evidence: real-device telemetry shows the Compose
-        // tree can stay semantically sparse for >1.5 s while the offer is still visible. Keep the
-        // card through that transient gap; explicit lifecycle/presence still ends it immediately.
+        // The exact active incoming-task notification is a strong positive lifetime anchor.
+        // Keep the card through Wolt Compose gaps while that notification is still active.
+        if (hasActiveNotificationAnchor()) {
+            resetMissingEvidence()
+            return
+        }
         if (registerMissingEvidence(graceMs = WOLT_UNCERTAIN_GRACE_MS, minChecks = WOLT_UNCERTAIN_MIN_CHECKS)) {
             temporarilyHide("Wolt offer surface remained unconfirmed")
         }
@@ -1110,6 +1178,9 @@ internal class StableLiveOfferAdvisor(
     private fun dp(value: Int): Int = (value * service.resources.displayMetrics.density).toInt()
 
     private companion object {
+        val SCORE_PREWARM_EXECUTOR = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "CourierPilot-ScorePrewarm").apply { isDaemon = true }
+        }
         const val SYSTEM_UI_PACKAGE = "com.android.systemui"
         const val VISIBILITY_CHECK_MS = 750L
         const val HIDDEN_VISIBILITY_CHECK_MS = 1_500L
@@ -1131,6 +1202,7 @@ internal class StableLiveOfferAdvisor(
         const val SWIPE_MIN_DP = 44
         const val SWIPE_FRACTION = 0.16f
         const val SNAP_BACK_MS = 140L
+        const val NOTIFICATION_REMOVAL_RECHECK_MS = 180L
         const val GESTURE_NONE = 0
         const val GESTURE_HORIZONTAL = 1
         const val GESTURE_VERTICAL = 2
