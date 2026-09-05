@@ -232,18 +232,22 @@ class OfferAccessibilityService : AccessibilityService() {
             // waiting for the optional proof screenshot + DB insert to finish.
             LiveAdvisorHub.showPendingOffer(this, pending, parsed)
 
-            val needsWoltRouteTextRecovery = target.packageName == CourierSignals.WOLT_PACKAGE &&
-                LiveAdvisorSettings.automaticWoltRouting(this) &&
-                AutomaticWoltRouteCoordinator.routeFingerprint(parsed) == null
-            if (needsWoltRouteTextRecovery) {
-                // Real 0.15.34 telemetry proved the redesigned card can expose the price through
-                // Accessibility while withholding one or both visible stop addresses. Do not archive
-                // that incomplete tree and immediately fail Valhalla: OCR the same visible frame first.
+            val needsWoltOfferTextRecovery = target.packageName == CourierSignals.WOLT_PACKAGE &&
+                WoltOfferTextRecoveryPolicy.needsOcrBeforePersist(
+                    parsed,
+                    automaticRouting = LiveAdvisorSettings.automaticWoltRouting(this),
+                )
+            if (needsWoltOfferTextRecovery) {
+                val routeIncomplete = AutomaticWoltRouteCoordinator.routeFingerprint(parsed) == null
                 CaptureEventLog.append(
                     this,
-                    stage = "route_text_ocr_recovery",
+                    stage = if (routeIncomplete) "route_text_ocr_recovery" else "merchant_text_ocr_recovery",
                     platform = platform,
-                    message = "Price is ready but Wolt route text is incomplete; augmenting visible card with OCR",
+                    message = if (routeIncomplete) {
+                        "Price is ready but Wolt route text is incomplete; augmenting visible card with OCR"
+                    } else {
+                        "Wolt route is ready but merchant title is missing from Accessibility; augmenting visible card with OCR"
+                    },
                     dedupeWindowMs = 1_500L,
                 )
                 captureCurrentFrameForOcr(pending, target.windowId, currentUiText)
@@ -837,7 +841,8 @@ class OfferAccessibilityService : AccessibilityService() {
                                 platform = platform,
                                 message = "capture_ms=${(ocrStartedAt - probeStartedAt).coerceAtLeast(0L)}; " +
                                     "ocr_ms=${(SystemClock.elapsedRealtime() - ocrStartedAt).coerceAtLeast(0L)}; " +
-                                    "spatial=${spatialWoltMoney != null}; price=${parsed.priceCents != null}; trusted=$trustedPrice",
+                                    "spatial=${spatialWoltMoney != null}; price=${parsed.priceCents != null}; trusted=$trustedPrice; " +
+                                    "merchants=${parsed.merchantNames.size}; pickups=${parsed.pickupAddresses.size}; dropoffs=${parsed.dropoffAddresses.size}",
                                 dedupeWindowMs = 1_500L,
                             )
                             if (spatialWoltMoney != null && trustedPrice) {
