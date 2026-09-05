@@ -9,6 +9,8 @@ class WoltOfferTextRecoveryPolicyTest {
     fun routeCompleteButMerchantMissingStillRequiresOcrBeforeHistoryPersist() {
         val parsed = ParsedOffer(
             priceCents = 504,
+            distanceMeters = 6000,
+            restaurant = null,
             merchantNames = emptyList(),
             pickupAddresses = listOf("Vokiečių g. 6, Vilnius, LT01130"),
             dropoffAddresses = listOf("Teatro gatvė 9-4, Vilnius, 03107"),
@@ -23,6 +25,8 @@ class WoltOfferTextRecoveryPolicyTest {
     fun completeMerchantAndRouteCanPersistImmediately() {
         val parsed = ParsedOffer(
             priceCents = 504,
+            distanceMeters = 6000,
+            restaurant = "Backstage cafe (Vokiečių g.)",
             merchantNames = listOf("Backstage cafe (Vokiečių g.)"),
             pickupAddresses = listOf("Vokiečių g. 6, Vilnius, LT01130"),
             dropoffAddresses = listOf("Teatro gatvė 9-4, Vilnius, 03107"),
