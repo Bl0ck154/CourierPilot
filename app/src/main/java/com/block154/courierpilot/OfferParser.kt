@@ -303,6 +303,27 @@ internal object OfferParser {
             else ordered += recoveredPickup
         }
 
+        // Live 0.15.36 telemetry showed the new Wolt card can OCR both visible addresses while
+        // dropping the literal "Customer drop-off" label. That produced pickups=2/dropoffs=0 for a
+        // two-stop single delivery and prevented Valhalla from starting. A genuine two-stop Wolt
+        // offer must be one pickup plus one destination, so when no multi-drop UI is present we can
+        // safely reclassify the second visually ordered address as the customer destination. The
+        // spatially sorted Wolt OCR path keeps this order deterministic; the older recovery logic
+        // remains in place as fallback for incomplete Accessibility text.
+        if (expectedTotalStops == 2 &&
+            dropoffs.isEmpty() &&
+            collapsedDropoffIndexes.isEmpty() &&
+            expandedDropoffIndexes.isEmpty() &&
+            pickups.size == 2
+        ) {
+            val inferredDropoff = pickups.removeAt(1)
+            val recoveredIndex = ordered.indexOfLast { stop ->
+                stop.kind == ParsedRouteStopKind.PICKUP && addressesEquivalent(stop.address, inferredDropoff)
+            }
+            if (recoveredIndex >= 0) ordered.removeAt(recoveredIndex)
+            addDropoff(inferredDropoff)
+        }
+
         val collapsedCount = collapsedDropoffIndexes.firstNotNullOfOrNull { index ->
             WoltOfferUiText.collapsedMultipleDropoffsRegex.matchEntire(lines[index])
                 ?.groupValues?.getOrNull(1)?.toIntOrNull()
