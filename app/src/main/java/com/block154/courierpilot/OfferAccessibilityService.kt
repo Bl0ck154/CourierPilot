@@ -221,7 +221,7 @@ class OfferAccessibilityService : AccessibilityService() {
         observeCourierScreen(target.packageName, uiText)
         if (uiText.isNotBlank()) OfferState.saveUiText(this, uiText)
         val parsed = OfferParser.parse(uiText)
-        if (maybeResolveWoltHiddenDropoffs(target.root, pending, currentUiText, parsed)) return
+        if (maybeResolveWoltHiddenDropoffs(target.root, pending, parsed)) return
 
         // Bolt's map is not semantically exposed on the current real-device build. Even if a future
         // build exposes a price through Accessibility, keep Bolt metadata on the spatially isolated
@@ -357,36 +357,73 @@ class OfferAccessibilityService : AccessibilityService() {
     }
 
     /**
-     * The redesigned Wolt card hides batched customer addresses behind a separate row. When Wolt
-     * routing is enabled, briefly expand that row, accumulate the modal text with the base card, and
-     * close it again before persisting. If Wolt stops exposing a clickable node, fail open after two
-     * attempts and preserve the existing incomplete-route fallback instead of trapping the courier UI.
+     * The redesigned Wolt card hides batched customer addresses behind a separate row. Prefer
+     * reading already-created but non-visible Accessibility nodes first; Compose can keep the
+     * collapsed sheet content in the semantics tree even though OCR cannot see it. Only if that
+     * semantic recovery is incomplete do we briefly expand the row. If Wolt stops exposing a
+     * clickable node, fail open after two attempts and preserve the existing incomplete-route
+     * fallback instead of trapping the courier UI.
      */
     private fun maybeResolveWoltHiddenDropoffs(
         root: AccessibilityNodeInfo,
         pending: PendingOffer,
-        currentText: String,
         parsed: ParsedOffer,
     ): Boolean {
         if (pending.packageName != CourierSignals.WOLT_PACKAGE) return false
         if (!LiveAdvisorSettings.automaticWoltRouting(this)) return false
 
         val expectedDropoffs = parsed.deliveryCount?.coerceAtLeast(1) ?: return false
-        val currentIsExpanded = WoltOfferUiText.hasExpandedMultipleDropoffSheet(currentText)
+        val strictlyVisibleText = collectStrictlyVisibleText(root)
+        val currentIsExpanded = WoltOfferUiText.hasExpandedMultipleDropoffSheet(strictlyVisibleText)
         if (currentIsExpanded) {
+            // Do not depend on Wolt keeping the popup labels in a parser-friendly order. The live
+            // 0.15.37 double-order trace showed the sheet opening while all three street addresses
+            // were still classified as pickups. Recover the visible popup destinations directly,
+            // excluding pickup addresses remembered from the collapsed base card.
+            val baseParsed = OfferParser.parse(woltCardFrameText)
+            val expandedRecovery = WoltAccessibilityDropoffRecovery.recover(
+                hiddenTextPieces = collectStrictlyVisibleAccessibilityPieces(root),
+                excludedAddresses = baseParsed.pickupAddresses + baseParsed.dropoffAddresses,
+                expectedCount = expectedDropoffs,
+            )
+            if (expandedRecovery.resolvedAddresses.size == expectedDropoffs) {
+                woltDropoffFrameText = WoltAccessibilityDropoffRecovery.expandedFrame(
+                    expandedRecovery.resolvedAddresses,
+                    expectedDropoffs,
+                )
+                woltDropoffSheetSettleAttempts = 0
+                val closedRecovered = clickAccessibilityText(root) { value -> value.equals("done", ignoreCase = true) } ||
+                    performGlobalAction(GLOBAL_ACTION_BACK)
+                CaptureEventLog.append(
+                    this,
+                    stage = "wolt_dropoffs_expanded_accessibility",
+                    platform = "Wolt",
+                    message = "Recovered $expectedDropoffs customer stops from the opened Accessibility sheet",
+                    dedupeWindowMs = 2_000L,
+                )
+                if (closedRecovered) {
+                    scheduleAttempt(WOLT_DROPOFF_ACCESSIBILITY_SETTLE_MS)
+                    return true
+                }
+            }
+
             if (parsed.dropoffAddresses.size < expectedDropoffs) {
                 woltDropoffSheetSettleAttempts += 1
                 if (woltDropoffSheetSettleAttempts < WOLT_DROPOFF_SHEET_MAX_SETTLE_ATTEMPTS) {
                     scheduleAttempt(WOLT_DROPOFF_SHEET_SETTLE_MS)
                     return true
                 }
+                // One visible expansion is enough. Reopening the sheet a second time proved noisy
+                // on the live 0.15.37 trace, so mark the click fallback exhausted before returning
+                // to the non-invasive OCR/Accessibility capture path.
+                woltDropoffProbeAttempts = WOLT_DROPOFF_PROBE_MAX_ATTEMPTS
                 val closedIncomplete = clickAccessibilityText(root) { value -> value.equals("done", ignoreCase = true) } ||
                     performGlobalAction(GLOBAL_ACTION_BACK)
                 CaptureEventLog.append(
                     this,
                     stage = "wolt_dropoffs_incomplete",
                     platform = "Wolt",
-                    message = "Drop-off sheet stayed incomplete after OCR/Accessibility retries; returning to fallback capture",
+                    message = "Drop-off sheet stayed incomplete after Accessibility retries; returning to non-click fallback capture",
                     dedupeWindowMs = 2_000L,
                 )
                 if (closedIncomplete) {
@@ -413,7 +450,55 @@ class OfferAccessibilityService : AccessibilityService() {
         }
 
         if (parsed.dropoffAddresses.size >= expectedDropoffs) return false
-        if (!WoltOfferUiText.hasCollapsedMultipleDropoffs(currentText)) return false
+        if (!WoltOfferUiText.hasCollapsedMultipleDropoffs(strictlyVisibleText)) return false
+
+        // Prefer the already-instantiated Accessibility semantics over touching the Wolt UI. The
+        // collapsed Compose sheet may keep destination rows alive with isVisibleToUser=false. The
+        // ordinary parser cannot know that those rows are destinations, so classify them here using
+        // the visibility bit and inject a tiny synthetic expanded-sheet frame for the next pass.
+        val visibleParsed = OfferParser.parse(strictlyVisibleText)
+        val excludedVisibleAddresses = visibleParsed.pickupAddresses + visibleParsed.dropoffAddresses
+        val hiddenRecovery = WoltAccessibilityDropoffRecovery.recover(
+            hiddenTextPieces = collectHiddenAccessibilityPieces(root),
+            excludedAddresses = excludedVisibleAddresses,
+            expectedCount = expectedDropoffs,
+        )
+        // Some Compose versions keep collapsed descendants in the tree but still mark them visible.
+        // If the strict hidden-node pass misses, compare the whole semantics tree against the
+        // addresses from the actually visible base card. Resolve only on an exact count match.
+        val treeRecovery = if (hiddenRecovery.resolvedAddresses.isEmpty()) {
+            WoltAccessibilityDropoffRecovery.recover(
+                hiddenTextPieces = collectAccessibilityPieces(root, visibleFilter = null),
+                excludedAddresses = excludedVisibleAddresses,
+                expectedCount = expectedDropoffs,
+            )
+        } else hiddenRecovery
+        if (treeRecovery.resolvedAddresses.size == expectedDropoffs) {
+            woltDropoffFrameText = WoltAccessibilityDropoffRecovery.expandedFrame(
+                treeRecovery.resolvedAddresses,
+                expectedDropoffs,
+            )
+            woltDropoffSheetSettleAttempts = 0
+            CaptureEventLog.append(
+                this,
+                stage = "wolt_dropoffs_accessibility",
+                platform = "Wolt",
+                message = "Recovered $expectedDropoffs customer stops from the collapsed Accessibility tree without opening the drop-off sheet",
+                dedupeWindowMs = 2_000L,
+            )
+            scheduleAttempt(WOLT_DROPOFF_ACCESSIBILITY_SETTLE_MS)
+            return true
+        }
+        val candidateCount = maxOf(hiddenRecovery.candidateCount, treeRecovery.candidateCount)
+        if (candidateCount > 0) {
+            CaptureEventLog.append(
+                this,
+                stage = "wolt_dropoffs_accessibility_incomplete",
+                platform = "Wolt",
+                message = "Accessibility address candidates=$candidateCount; expected=$expectedDropoffs; using one click fallback",
+                dedupeWindowMs = 2_000L,
+            )
+        }
 
         val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
         if (woltDropoffProbeKey != key) {
@@ -740,7 +825,7 @@ class OfferAccessibilityService : AccessibilityService() {
                                 )
                             val latestRoot = findCourierWindow(pending)?.root
                             if (latestRoot != null &&
-                                maybeResolveWoltHiddenDropoffs(latestRoot, pending, combinedCurrent, parsed)
+                                maybeResolveWoltHiddenDropoffs(latestRoot, pending, parsed)
                             ) {
                                 finishCapture(captureToken)
                                 bitmap.recycle()
@@ -1287,13 +1372,31 @@ class OfferAccessibilityService : AccessibilityService() {
         handler.postDelayed(attemptRunnable, delayMs)
     }
 
-    private fun collectVisibleText(root: AccessibilityNodeInfo): String {
+    // Historical name kept for compatibility: this intentionally collects every Accessibility
+    // node, including non-visible semantics. Some older Wolt screens depended on that behaviour.
+    private fun collectVisibleText(root: AccessibilityNodeInfo): String =
+        collectAccessibilityPieces(root, visibleFilter = null).joinToString("\n")
+
+    private fun collectStrictlyVisibleText(root: AccessibilityNodeInfo): String =
+        collectStrictlyVisibleAccessibilityPieces(root).joinToString("\n")
+
+    private fun collectStrictlyVisibleAccessibilityPieces(root: AccessibilityNodeInfo): List<String> =
+        collectAccessibilityPieces(root, visibleFilter = true)
+
+    private fun collectHiddenAccessibilityPieces(root: AccessibilityNodeInfo): List<String> =
+        collectAccessibilityPieces(root, visibleFilter = false)
+
+    private fun collectAccessibilityPieces(
+        root: AccessibilityNodeInfo,
+        visibleFilter: Boolean?,
+    ): List<String> {
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         val pieces = mutableListOf<String>()
         queue.add(root)
         var visited = 0
 
-        fun addPiece(value: CharSequence?) {
+        fun addPiece(value: CharSequence?, eligible: Boolean) {
+            if (!eligible) return
             val cleaned = value?.toString()?.trim()?.takeIf { it.isNotEmpty() } ?: return
             if (pieces.lastOrNull() != cleaned) pieces += cleaned
         }
@@ -1301,11 +1404,12 @@ class OfferAccessibilityService : AccessibilityService() {
         while (queue.isNotEmpty() && visited < 700) {
             val node = queue.removeFirst()
             visited++
-            addPiece(node.text)
-            addPiece(node.contentDescription)
+            val eligible = visibleFilter == null || node.isVisibleToUser == visibleFilter
+            addPiece(node.text, eligible)
+            addPiece(node.contentDescription, eligible)
             for (i in 0 until node.childCount) node.getChild(i)?.let(queue::addLast)
         }
-        return pieces.joinToString("\n")
+        return pieces
     }
 
     private fun mergeText(accessibilityText: String, ocrText: String): String =
@@ -1327,6 +1431,7 @@ class OfferAccessibilityService : AccessibilityService() {
         private const val WOLT_HOT_PRICE_POLL_MS = 220L
         private const val WOLT_PRICE_EVENT_THROTTLE_MS = 90L
         private const val WOLT_DROPOFF_SHEET_SETTLE_MS = 180L
+        private const val WOLT_DROPOFF_ACCESSIBILITY_SETTLE_MS = 40L
         private const val WOLT_DROPOFF_SHEET_MAX_SETTLE_ATTEMPTS = 4
         private const val WOLT_DROPOFF_PROBE_MAX_ATTEMPTS = 2
         private const val WOLT_ROUTE_OCR_RECOVERY_DELAY_MS = 220L
