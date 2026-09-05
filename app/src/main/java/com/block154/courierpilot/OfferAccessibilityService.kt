@@ -43,6 +43,8 @@ class OfferAccessibilityService : AccessibilityService() {
     private var woltDropoffProbeAttempts = 0
     private var woltDropoffSheetSettleAttempts = 0
     private var woltRouteOcrRecoveryAttempts = 0
+    private var woltProofBitmap: Bitmap? = null
+    private var woltProofOfferKey = ""
 
     private val attemptRunnable = Runnable { attemptCapture() }
     private val woltPricePollRunnable = Runnable { pollPendingWoltAccessibilityPrice() }
@@ -128,6 +130,7 @@ class OfferAccessibilityService : AccessibilityService() {
             runCatching { unregisterReceiver(unlockReceiver) }
             unlockReceiverRegistered = false
         }
+        clearWoltProofBitmap()
         recognizer.close()
         CaptureEventLog.append(this, "accessibility", "Accessibility capture service destroyed")
         super.onDestroy()
@@ -221,7 +224,11 @@ class OfferAccessibilityService : AccessibilityService() {
         observeCourierScreen(target.packageName, uiText)
         if (uiText.isNotBlank()) OfferState.saveUiText(this, uiText)
         val parsed = OfferParser.parse(uiText)
-        if (maybeResolveWoltHiddenDropoffs(target.root, pending, parsed)) return
+
+        // Do not open Wolt's multiple-dropoff sheet before we freeze the base offer card. On a
+        // live batch the sheet/close animation can outlive the offer itself, so the later screenshot
+        // ends up belonging to a different screen. Hidden destinations are resolved only after the
+        // first OCR snapshot has captured the merchant and visible pickup metadata.
 
         // Bolt's map is not semantically exposed on the current real-device build. Even if a future
         // build exposes a price through Accessibility, keep Bolt metadata on the spatially isolated
@@ -252,8 +259,21 @@ class OfferAccessibilityService : AccessibilityService() {
                 )
                 captureCurrentFrameForOcr(pending, target.windowId, currentUiText)
             } else if (CaptureStorageSettings.saveOfferScreenshots(this)) {
-                captureCurrentFrameAndPersist(pending, target.windowId, uiText, parsed)
+                val frozenProof = takeWoltProofBitmap(pending)
+                if (frozenProof != null) {
+                    CaptureEventLog.append(
+                        this,
+                        stage = "wolt_frozen_proof_used",
+                        platform = platform,
+                        message = "Persisting the first frozen Wolt offer frame instead of taking a late screenshot",
+                        dedupeWindowMs = 2_000L,
+                    )
+                    persistOffer(frozenProof, pending, uiText, parsed)
+                } else {
+                    captureCurrentFrameAndPersist(pending, target.windowId, uiText, parsed)
+                }
             } else {
+                discardWoltProofBitmap(pending)
                 persistOffer(null, pending, uiText, parsed)
             }
         } else {
@@ -338,6 +358,7 @@ class OfferAccessibilityService : AccessibilityService() {
         if (pending.packageName != CourierSignals.WOLT_PACKAGE) return currentText
         val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
         if (key != woltFrameKey) {
+            if (woltProofOfferKey.isNotBlank() && woltProofOfferKey != key) clearWoltProofBitmap()
             woltFrameKey = key
             woltCardFrameText = ""
             woltDropoffFrameText = ""
@@ -827,12 +848,22 @@ class OfferAccessibilityService : AccessibilityService() {
                                 pending.packageName != CourierSignals.WOLT_PACKAGE ||
                                     CourierSignals.isTrustedWoltOcrOffer(combined, parsed)
                                 )
+
+                            // Publish the OCR-enriched base card immediately. Batch-route recovery
+                            // may briefly open Wolt's hidden drop-off sheet; the advisor must not wait
+                            // for that UI round-trip before it can show merchant/pickup information.
+                            if (CourierSignals.looksLikeOfferScreen(combined, parsed) &&
+                                (parsed.priceCents == null || trustedPrice)
+                            ) {
+                                LiveAdvisorHub.showPendingOffer(this@OfferAccessibilityService, pending, parsed)
+                            }
+
                             val latestRoot = findCourierWindow(pending)?.root
                             if (latestRoot != null &&
                                 maybeResolveWoltHiddenDropoffs(latestRoot, pending, parsed)
                             ) {
                                 finishCapture(captureToken)
-                                bitmap.recycle()
+                                if (!stashWoltProofBitmap(pending, bitmap)) bitmap.recycle()
                                 return@addOnSuccessListener
                             }
                             CaptureEventLog.append(
@@ -854,12 +885,6 @@ class OfferAccessibilityService : AccessibilityService() {
                                     dedupeWindowMs = 3_000L,
                                 )
                             }
-                            if (CourierSignals.looksLikeOfferScreen(combined, parsed) &&
-                                (parsed.priceCents == null || trustedPrice)
-                            ) {
-                                LiveAdvisorHub.showPendingOffer(this@OfferAccessibilityService, pending, parsed)
-                            }
-
                             val routeStillIncomplete = pending.packageName == CourierSignals.WOLT_PACKAGE &&
                                 LiveAdvisorSettings.automaticWoltRouting(this@OfferAccessibilityService) &&
                                 AutomaticWoltRouteCoordinator.routeFingerprint(parsed) == null
@@ -877,7 +902,7 @@ class OfferAccessibilityService : AccessibilityService() {
                                     dedupeWindowMs = 500L,
                                 )
                                 finishCapture(captureToken)
-                                bitmap.recycle()
+                                if (!stashWoltProofBitmap(pending, bitmap)) bitmap.recycle()
                                 scheduleAttempt(WOLT_ROUTE_OCR_RECOVERY_DELAY_MS)
                                 return@addOnSuccessListener
                             }
@@ -885,7 +910,13 @@ class OfferAccessibilityService : AccessibilityService() {
                             finishCapture(captureToken)
                             if (parsed.priceCents != null && trustedPrice) {
                                 CaptureEventLog.append(this@OfferAccessibilityService, "price_ocr", "Price detected by OCR fallback", platform)
-                                persistOffer(bitmap, pending, combined, parsed)
+                                val frozenProof = takeWoltProofBitmap(pending)
+                                if (frozenProof != null) {
+                                    bitmap.recycle()
+                                    persistOffer(frozenProof, pending, combined, parsed)
+                                } else {
+                                    persistOffer(bitmap, pending, combined, parsed)
+                                }
                             } else {
                                 if (parsed.priceCents != null && !trustedPrice) {
                                     CaptureEventLog.append(
@@ -1341,6 +1372,49 @@ class OfferAccessibilityService : AccessibilityService() {
         val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
         screenshotFailureKey = key
         screenshotFailureCount = 0
+    }
+
+    private fun proofKeyFor(pending: PendingOffer): String =
+        "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
+
+    private fun stashWoltProofBitmap(pending: PendingOffer, bitmap: Bitmap): Boolean {
+        if (pending.packageName != CourierSignals.WOLT_PACKAGE) return false
+        val key = proofKeyFor(pending)
+        if (woltProofOfferKey.isNotBlank() && woltProofOfferKey != key) clearWoltProofBitmap()
+        if (woltProofBitmap != null) return false
+        woltProofOfferKey = key
+        woltProofBitmap = bitmap
+        CaptureEventLog.append(
+            this,
+            stage = "wolt_frozen_proof_saved",
+            platform = "Wolt",
+            message = "Frozen the first priced Wolt card before multiple-dropoff recovery",
+            dedupeWindowMs = 2_000L,
+        )
+        return true
+    }
+
+    private fun takeWoltProofBitmap(pending: PendingOffer): Bitmap? {
+        if (pending.packageName != CourierSignals.WOLT_PACKAGE) return null
+        val key = proofKeyFor(pending)
+        if (woltProofOfferKey != key) {
+            if (woltProofOfferKey.isNotBlank()) clearWoltProofBitmap()
+            return null
+        }
+        val bitmap = woltProofBitmap
+        woltProofBitmap = null
+        woltProofOfferKey = ""
+        return bitmap
+    }
+
+    private fun discardWoltProofBitmap(pending: PendingOffer) {
+        if (woltProofOfferKey == proofKeyFor(pending)) clearWoltProofBitmap()
+    }
+
+    private fun clearWoltProofBitmap() {
+        woltProofBitmap?.let { if (!it.isRecycled) it.recycle() }
+        woltProofBitmap = null
+        woltProofOfferKey = ""
     }
 
     private fun adaptiveOcrDelay(pending: PendingOffer): Long {
