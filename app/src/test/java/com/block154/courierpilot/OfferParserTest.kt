@@ -89,6 +89,27 @@ class OfferParserTest {
     }
 
     @Test
+    fun infersSingleDropoffWhenNewWoltOcrMissesCustomerLabel() {
+        val parsed = OfferParser.parse(
+            """
+            €3.32
+            2 stops (3.1 km) • 7–14 min
+            Holy Donut (Vokiečių g.)
+            Vokiečių g. 9, Vilnius, 01130
+            Brolių gatvė 21, Vilnius
+            Accept
+            """.trimIndent()
+        )
+
+        assertEquals(332, parsed.priceCents)
+        assertEquals(3100, parsed.distanceMeters)
+        assertEquals(listOf("Vokiečių g. 9, Vilnius, 01130"), parsed.pickupAddresses)
+        assertEquals(listOf("Brolių gatvė 21, Vilnius"), parsed.dropoffAddresses)
+        assertEquals(1, parsed.deliveryCount)
+        assertTrue(AutomaticWoltRouteCoordinator.routeFingerprint(parsed) != null)
+    }
+
+    @Test
     fun parsesRedesignedWoltCollapsedStackedOfferWithoutInventingDropoffs() {
         val parsed = OfferParser.parse(
             """

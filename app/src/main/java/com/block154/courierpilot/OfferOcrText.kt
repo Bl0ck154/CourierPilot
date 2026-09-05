@@ -170,7 +170,25 @@ internal object OfferOcrText {
         imageHeight: Int,
     ): String {
         if (packageName != CourierSignals.BOLT_PACKAGE) {
-            return listOf(accessibilityText.trim(), ocr.text.trim())
+            // ML Kit's flattened Text.text is not guaranteed to follow the visual Y/X order.
+            // The September Wolt redesign made route parsing depend on the visible pickup/drop-off
+            // row order, so feed Wolt a geometry-sorted OCR copy. Keep the original path for every
+            // other non-Bolt package as a compatibility fallback.
+            val ocrText = if (packageName == CourierSignals.WOLT_PACKAGE) {
+                ocr.textBlocks
+                    .flatMap { it.lines }
+                    .mapNotNull { line ->
+                        val bounds = line.boundingBox ?: return@mapNotNull null
+                        val value = line.text.trim().replace(Regex("\\s+"), " ")
+                        if (value.isBlank()) null
+                        else CardLine(bounds.top, bounds.bottom, bounds.left, bounds.centerY(), value)
+                    }
+                    .sortedWith(compareBy<CardLine> { it.top }.thenBy { it.left })
+                    .joinToString("\n") { it.text }
+            } else {
+                ocr.text.trim()
+            }
+            return listOf(accessibilityText.trim(), ocrText.trim())
                 .filter { it.isNotBlank() }
                 .distinct()
                 .joinToString("\n")
