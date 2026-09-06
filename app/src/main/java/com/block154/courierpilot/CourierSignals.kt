@@ -246,6 +246,23 @@ internal object CourierSignals {
             lower.contains("paklausa pristatymams")
     }
 
+    /**
+     * Wolt keeps the underlying map/home semantics alive while its decline confirmation sheet is
+     * visible. Treat that modal as part of the current offer lifetime so hidden "Delivery demand"
+     * text cannot end the advisor and immediately re-arm the same offer on return.
+     */
+    fun looksLikeWoltDeclineConfirmation(packageName: String, text: String): Boolean {
+        if (packageName != WOLT_PACKAGE) return false
+        val lower = text.lowercase(Locale.ROOT)
+        val hasDeclinePrompt = lower.contains("decline offer") ||
+            lower.contains("atmesti pasiūlymą") ||
+            lower.contains("atmesti pasiulyma")
+        val hasReturnAction = lower.contains("return to offer details") ||
+            lower.contains("grįžti į pasiūlymo informaciją") ||
+            lower.contains("grizti i pasiulymo informacija")
+        return hasDeclinePrompt && hasReturnAction
+    }
+
     fun looksLikeOfferScreen(text: String, parsed: ParsedOffer): Boolean {
         val lower = text.lowercase(Locale.ROOT)
         val hasDecision = decisionPhrases.any(lower::contains)
