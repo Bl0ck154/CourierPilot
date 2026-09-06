@@ -58,6 +58,7 @@ internal class StableLiveOfferAdvisor(
     private var missingSince = 0L
     private var missingChecks = 0
     private var boltBaselineSurface: LiveOfferSurfaceSnapshot? = null
+    private var woltBaselineSurface: LiveOfferSurfaceSnapshot? = null
     private var previewMode = false
     private var captureSuppressed = false
     private var offerVisualStartedAtElapsed = 0L
@@ -134,9 +135,9 @@ internal class StableLiveOfferAdvisor(
             cachedPedestrianRoute = null
             cachedCyclewayRoute = null
             resetMissingEvidence()
-            boltBaselineSurface = if (platform.equals("Bolt", ignoreCase = true)) {
-                findVisiblePackageRoot(packageName)?.let { inspectVisibleSurface(it).snapshot }
-            } else null
+            val initialSurface = findVisiblePackageRoot(packageName)?.let { inspectVisibleSurface(it).snapshot }
+            boltBaselineSurface = if (platform.equals("Bolt", ignoreCase = true)) initialSurface else null
+            woltBaselineSurface = if (platform.equals("Wolt", ignoreCase = true)) initialSurface else null
         }
         previewMode = true
         if (notificationKey.isNotBlank()) {
@@ -229,11 +230,9 @@ internal class StableLiveOfferAdvisor(
         cachedPedestrianRoute = null
         cachedCyclewayRoute = null
         resetMissingEvidence()
-        boltBaselineSurface = if (platform.equals("Bolt", ignoreCase = true)) {
-            findVisiblePackageRoot(expectedPackageName)?.let { inspectVisibleSurface(it).snapshot }
-        } else {
-            null
-        }
+        val initialSurface = findVisiblePackageRoot(expectedPackageName)?.let { inspectVisibleSurface(it).snapshot }
+        boltBaselineSurface = if (platform.equals("Bolt", ignoreCase = true)) initialSurface else null
+        woltBaselineSurface = if (platform.equals("Wolt", ignoreCase = true)) initialSurface else null
         prewarmDecisionThresholds()
 
         handler.post {
@@ -821,6 +820,7 @@ internal class StableLiveOfferAdvisor(
         detachView(animate = animate)
         resetMissingEvidence()
         boltBaselineSurface = null
+        woltBaselineSurface = null
         previewMode = false
         captureSuppressed = false
         temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
@@ -988,6 +988,14 @@ internal class StableLiveOfferAdvisor(
             return
         }
 
+        // Known Wolt navigation pages are decisive end-of-offer evidence. Real 0.15.47 telemetry
+        // showed the advisor staying over the Stats page because an incoming-task notification was
+        // still considered a lifetime anchor even though the visible Wolt surface was unrelated.
+        if (CourierSignals.looksLikeWoltNonOfferNavigationScreen(expected, visibleText)) {
+            suppressCurrentOffer("offer replaced by Wolt navigation screen", animate = false)
+            return
+        }
+
         // Strong accepted/in-progress task surfaces always beat stale offer identity. Bolt can keep
         // merchant/address nodes around after Accept, so waiting for generic surface change was able
         // to pin the card over Dropoff/Address details screens indefinitely.
@@ -1018,6 +1026,8 @@ internal class StableLiveOfferAdvisor(
                 // Adopt the latest confirmed same-offer surface after map zoom/recomposition instead
                 // of treating the old geometry snapshot as immutable proof that the offer vanished.
                 boltBaselineSurface = inspection.snapshot
+            } else if (currentPlatform.equals("Wolt", ignoreCase = true)) {
+                woltBaselineSurface = inspection.snapshot
             }
             if (temporarilyHidden) restoreFromCache("same offer returned to foreground")
             return
@@ -1044,7 +1054,11 @@ internal class StableLiveOfferAdvisor(
         // price, merchant or address. This identity is stronger than window geometry on both apps.
         if (LiveOfferResumePolicy.hasMatchingIdentity(expectedOffer, parsed)) {
             resetMissingEvidence()
-            if (currentPlatform.equals("Bolt", ignoreCase = true)) boltBaselineSurface = inspection.snapshot
+            if (currentPlatform.equals("Bolt", ignoreCase = true)) {
+                boltBaselineSurface = inspection.snapshot
+            } else if (currentPlatform.equals("Wolt", ignoreCase = true)) {
+                woltBaselineSurface = inspection.snapshot
+            }
             if (temporarilyHidden) restoreFromCache("same offer identity returned without controls")
             return
         }
@@ -1073,8 +1087,25 @@ internal class StableLiveOfferAdvisor(
             return
         }
 
-        // The exact active incoming-task notification is a strong positive lifetime anchor.
-        // Keep the card through Wolt Compose gaps while that notification is still active.
+        if (currentPlatform.equals("Wolt", ignoreCase = true)) {
+            val baseline = woltBaselineSurface
+            if (baseline != null && LiveOfferSurfaceEvidence.materiallyChanged(baseline, inspection.snapshot)) {
+                // A populated, structurally different Wolt page cannot be kept alive forever by a
+                // stale incoming-task notification. Require a short stable transition so one Compose
+                // frame does not kill the card, then end it even for navigation pages we do not know by name.
+                if (registerMissingEvidence(
+                        graceMs = WOLT_NAVIGATION_GONE_GRACE_MS,
+                        minChecks = WOLT_NAVIGATION_MIN_MISSING_CHECKS,
+                    )
+                ) {
+                    suppressCurrentOffer("offer replaced by materially different Wolt screen", animate = false)
+                }
+                return
+            }
+        }
+
+        // The exact active incoming-task notification is a strong positive lifetime anchor only for
+        // transient Compose gaps, not for a stable different Wolt page.
         if (hasActiveNotificationAnchor()) {
             resetMissingEvidence()
             return
@@ -1307,6 +1338,8 @@ internal class StableLiveOfferAdvisor(
         const val BOLT_MIN_MISSING_CHECKS = 5
         const val WOLT_UNCERTAIN_GRACE_MS = 2_000L
         const val WOLT_UNCERTAIN_MIN_CHECKS = 3
+        const val WOLT_NAVIGATION_GONE_GRACE_MS = 900L
+        const val WOLT_NAVIGATION_MIN_MISSING_CHECKS = 2
         const val REMOVED_NOTIFICATION_GONE_GRACE_MS = 350L
         const val REMOVED_NOTIFICATION_MIN_MISSING_CHECKS = 2
         const val FADE_IN_MS = 380L

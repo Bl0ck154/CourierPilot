@@ -81,6 +81,36 @@ class CourierSignalsTest {
     }
 
     @Test
+    fun woltStatsScreenIsDecisiveNonOfferNavigation() {
+        val stats = """
+            Your stats
+            TODAY
+            WEEK
+            MONTH
+            CUSTOM
+            Deliveries completed
+            50
+            Distance on- and off-task
+            206.2 km
+            Earnings (estimate)
+            €210.26
+            Earnings without tips
+            €203.33
+            Tips
+            €6.93
+        """.trimIndent()
+
+        assertTrue(CourierSignals.looksLikeWoltNonOfferNavigationScreen(CourierSignals.WOLT_PACKAGE, stats))
+        assertFalse(CourierSignals.looksLikeWoltNonOfferNavigationScreen(CourierSignals.BOLT_PACKAGE, stats))
+        assertFalse(
+            CourierSignals.looksLikeWoltNonOfferNavigationScreen(
+                CourierSignals.WOLT_PACKAGE,
+                "Expected earnings for the full delivery\n€4.50\nAccept\nDecline",
+            ),
+        )
+    }
+
+    @Test
     fun woltOfferScreenCanBeDetectedWithoutNotification() {
         val text = """
             Delivery from
