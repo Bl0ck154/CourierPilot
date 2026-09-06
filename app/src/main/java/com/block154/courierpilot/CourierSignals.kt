@@ -263,6 +263,35 @@ internal object CourierSignals {
         return hasDeclinePrompt && hasReturnAction
     }
 
+    /**
+     * Strong markers for Wolt pages that are unquestionably not an incoming offer. These markers
+     * intentionally win over stale Compose offer nodes that can remain exposed to Accessibility
+     * after the courier navigates to another Wolt page.
+     */
+    fun looksLikeWoltNonOfferNavigationScreen(packageName: String, text: String): Boolean {
+        if (packageName != WOLT_PACKAGE) return false
+        val lower = text.lowercase(Locale.ROOT)
+
+        val statsMarkers = listOf(
+            "your stats",
+            "deliveries completed",
+            "distance on- and off-task",
+            "earnings without tips",
+            "earnings (estimate)",
+        ).count(lower::contains)
+        if (statsMarkers >= 2) return true
+
+        val strongHeaders = listOf(
+            "task history",
+            "delivery history",
+            "payment history",
+            "payouts",
+            "account settings",
+            "support center",
+        )
+        return strongHeaders.any(lower::contains)
+    }
+
     fun looksLikeOfferScreen(text: String, parsed: ParsedOffer): Boolean {
         val lower = text.lowercase(Locale.ROOT)
         val hasDecision = decisionPhrases.any(lower::contains)

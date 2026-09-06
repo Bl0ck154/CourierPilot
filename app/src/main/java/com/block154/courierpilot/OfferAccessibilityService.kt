@@ -853,6 +853,9 @@ class OfferAccessibilityService : AccessibilityService() {
     }
 
     private fun armFromVisibleOffer(packageName: String, text: String, parsed: ParsedOffer): Boolean {
+        // A real Wolt navigation page is stronger evidence than stale offer semantics left behind
+        // by Compose. Never re-arm an old offer over Stats/History/Settings-like screens.
+        if (CourierSignals.looksLikeWoltNonOfferNavigationScreen(packageName, text)) return false
         if (!CourierSignals.looksLikeOfferScreen(text, parsed)) return false
         OfferOpenState.markOfferVisible(this, packageName)
 
