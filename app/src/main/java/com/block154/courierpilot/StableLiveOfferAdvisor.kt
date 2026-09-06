@@ -84,6 +84,7 @@ internal class StableLiveOfferAdvisor(
     private var gestureDownX = 0f
     private var gestureDownY = 0f
     private var gestureStartY = 0
+    private var gesturePendingY = 0
     private var gestureMode = GESTURE_NONE
 
     private var tts: TextToSpeech? = null
@@ -595,8 +596,8 @@ internal class StableLiveOfferAdvisor(
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = dp(12).toFloat()
-                setColor(Color.argb(246, 15, 23, 36))
-                setStroke(dp(1), Color.argb(125, 71, 85, 105))
+                setColor(Color.argb(210, 15, 23, 36))
+                setStroke(dp(1), Color.argb(105, 71, 85, 105))
             }
             elevation = dp(9).toFloat()
         }
@@ -1153,7 +1154,7 @@ internal class StableLiveOfferAdvisor(
             resetMissingEvidence()
             return
         }
-        if (registerMissingEvidence(graceMs = WOLT_UNCERTAIN_GRACE_MS, minChecks = WOLT_UNCERTAIN_MIN_CHECKS)) {
+        if (registerMissingEvidence(graceMs = WOLT_UNCERTAIN_GRACE_MS, minChecks = WOLT_UNCERTAIN_MIN_MISSING_CHECKS)) {
             temporarilyHide("Wolt offer surface remained unconfirmed")
         }
     }
@@ -1282,9 +1283,11 @@ internal class StableLiveOfferAdvisor(
                 gestureDownX = event.rawX
                 gestureDownY = event.rawY
                 gestureStartY = windowParams?.y ?: dp(DEFAULT_Y_DP)
+                gesturePendingY = gestureStartY
                 gestureMode = GESTURE_NONE
                 view?.animate()?.cancel()
                 view?.translationX = 0f
+                view?.translationY = 0f
                 view?.alpha = 1f
             }
             MotionEvent.ACTION_MOVE -> {
@@ -1296,8 +1299,12 @@ internal class StableLiveOfferAdvisor(
                 if (gestureMode == GESTURE_HORIZONTAL) {
                     view?.translationX = dx
                     view?.alpha = (1f - abs(dx) / ((view?.width ?: 1).coerceAtLeast(1) * 1.1f)).coerceIn(0.3f, 1f)
-                } else if (gestureMode == GESTURE_VERTICAL) {
-                    moveTo(gestureStartY + dy.toInt())
+                } else if (gestureMode == GESTURE_VERTICAL && view != null) {
+                    // Relayout through WindowManager on every MotionEvent is expensive on ColorOS and
+                    // makes the card visibly trail the finger. Translate the already-rendered view
+                    // locally while dragging, then commit the real overlay Y only when the gesture ends.
+                    gesturePendingY = clampY(gestureStartY + dy.toInt(), view)
+                    view.translationY = (gesturePendingY - gestureStartY).toFloat()
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -1312,18 +1319,23 @@ internal class StableLiveOfferAdvisor(
                     }
                     view?.animate()?.translationX(0f)?.alpha(1f)?.setDuration(SNAP_BACK_MS)?.start()
                 } else if (mode == GESTURE_VERTICAL) {
-                    windowParams?.y?.let { LiveAdvisorSettings.setOverlayYPx(service, it) }
+                    commitVerticalDrag(gesturePendingY)
                 }
             }
         }
         return true
     }
 
-    private fun moveTo(targetY: Int) {
+    private fun commitVerticalDrag(targetY: Int) {
         val view = root ?: return
         val params = windowParams ?: return
-        params.y = clampY(targetY, view)
+        val finalY = clampY(targetY, view)
+        params.y = finalY
         runCatching { windowManager.updateViewLayout(view, params) }
+        view.translationY = 0f
+        gestureStartY = finalY
+        gesturePendingY = finalY
+        LiveAdvisorSettings.setOverlayYPx(service, finalY)
     }
 
     private fun clampY(targetY: Int, view: View): Int {
@@ -1380,7 +1392,7 @@ internal class StableLiveOfferAdvisor(
         const val BOLT_GONE_GRACE_MS = 8_000L
         const val BOLT_MIN_MISSING_CHECKS = 5
         const val WOLT_UNCERTAIN_GRACE_MS = 2_000L
-        const val WOLT_UNCERTAIN_MIN_CHECKS = 3
+        const val WOLT_UNCERTAIN_MIN_MISSING_CHECKS = 3
         const val WOLT_NAVIGATION_GONE_GRACE_MS = 900L
         const val WOLT_NAVIGATION_MIN_MISSING_CHECKS = 2
         const val REMOVED_NOTIFICATION_GONE_GRACE_MS = 350L
