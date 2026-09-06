@@ -351,13 +351,13 @@ internal class StableLiveOfferAdvisor(
         val expectedGeneration = generation
         handler.post {
             if (dismissed || generation != expectedGeneration) return@post
-            val parsed = currentParsed
-            if (parsed != null && renderProvisionalProfitability(parsed, marker = "⚠️")) {
-                parsed.distanceMeters?.takeIf { it > 0 }?.let { meters ->
-                    setRouteContent(LiveAdvisorPresentation.platformDistanceLine(meters))
-                }
+            // A failed real route must not fall back to a made-up €/km based on the platform's own
+            // distance. Keep the platform distance as context, but mark profitability unavailable.
+            setDecisionUnavailable()
+            val platformMeters = currentParsed?.distanceMeters?.takeIf { it > 0 }
+            if (platformMeters != null) {
+                setRouteContent("⚠️ ${LiveAdvisorPresentation.platformDistanceLine(platformMeters)}")
             } else {
-                setDecisionUnavailable()
                 setRouteContent("⚠️ Route unavailable")
             }
             CaptureEventLog.append(service, "route_failed", reason, currentPlatform)
@@ -422,8 +422,12 @@ internal class StableLiveOfferAdvisor(
         when {
             !hasPrice -> setDecisionLoading()
             hasRoute -> renderProfitability(parsed, cachedPedestrianRoute, cachedCyclewayRoute)
-            renderProvisionalProfitability(parsed) -> Unit
+            // When real routing is enabled, do not flash a platform-distance €/km that will be
+            // replaced moments later by a materially different real-route value. Live 0.15.46
+            // showed €0.92/km from Wolt's 3.9 km while the resolved route was €2.73/km.
             LiveAdvisorSettings.routeEnabled(service, currentPlatform) -> setDecisionLoading()
+            // A provisional platform-distance rate is only useful when the user disabled routing.
+            renderProvisionalProfitability(parsed) -> Unit
             else -> setDecisionUnavailable()
         }
     }
@@ -503,8 +507,15 @@ internal class StableLiveOfferAdvisor(
     }
 
     private fun renderRouteLoadingState() {
-        // The spinner on the primary €/km field is enough feedback; keep the left side uncluttered.
-        setRouteContent("", visible = false)
+        // Keep one truthful instant datum visible while the real route is resolving. The platform
+        // distance is labelled only as distance; the primary €/km remains a spinner until Valhalla
+        // returns, so users never see a fake provisional profitability verdict.
+        val platformMeters = currentParsed?.distanceMeters?.takeIf { it > 0 }
+        if (platformMeters != null) {
+            setRouteContent(LiveAdvisorPresentation.platformDistanceLine(platformMeters))
+        } else {
+            setRouteContent("⏳ Route…")
+        }
     }
 
     private fun setRouteContent(text: String, visible: Boolean = true) {
@@ -966,6 +977,16 @@ internal class StableLiveOfferAdvisor(
         val visibleText = inspection.text
         val parsed = OfferParser.parse(visibleText)
         val hasOfferUi = CourierSignals.looksLikeOfferScreen(visibleText, parsed) || hasDecisionPair(visibleText)
+
+        // Wolt's decline confirmation is a modal over the same live offer. Check it before every
+        // generic offer/home/identity rule because underlying Compose nodes may still contain both
+        // old offer controls and the city home map while the modal is on top.
+        if (CourierSignals.looksLikeWoltDeclineConfirmation(expected, visibleText)) {
+            differentOfferConfirmation.reset()
+            resetMissingEvidence()
+            if (temporarilyHidden) restoreFromCache("Wolt decline confirmation still belongs to current offer")
+            return
+        }
 
         // Strong accepted/in-progress task surfaces always beat stale offer identity. Bolt can keep
         // merchant/address nodes around after Accept, so waiting for generic surface change was able

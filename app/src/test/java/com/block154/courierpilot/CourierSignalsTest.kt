@@ -62,6 +62,25 @@ class CourierSignalsTest {
     }
 
     @Test
+    fun woltDeclineConfirmationBelongsToCurrentOfferLifetime() {
+        val modal = """
+            Decline offer?
+            You'll lose potential earnings and it might take some time to find another offer in your delivery area.
+            Decline
+            Return to offer details
+        """.trimIndent()
+
+        assertTrue(CourierSignals.looksLikeWoltDeclineConfirmation(CourierSignals.WOLT_PACKAGE, modal))
+        assertFalse(CourierSignals.looksLikeWoltDeclineConfirmation(CourierSignals.BOLT_PACKAGE, modal))
+        assertFalse(
+            CourierSignals.looksLikeWoltDeclineConfirmation(
+                CourierSignals.WOLT_PACKAGE,
+                "Vilnius\nDelivery demand\nHigh",
+            ),
+        )
+    }
+
+    @Test
     fun woltOfferScreenCanBeDetectedWithoutNotification() {
         val text = """
             Delivery from

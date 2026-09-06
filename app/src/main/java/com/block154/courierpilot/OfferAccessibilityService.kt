@@ -169,7 +169,10 @@ class OfferAccessibilityService : AccessibilityService() {
         if (pending == null) {
             val visible = findAnyCourierWindow()
             if (visible != null) {
-                val uiText = collectVisibleText(visible.root)
+                // Screen discovery must never arm from hidden Compose semantics. Real telemetry from
+                // 0.15.46 showed a stale 10.5 km Wolt offer being re-armed from background nodes,
+                // producing a bogus €0.55/km card before the actual 3.9 km offer was processed.
+                val uiText = collectStrictlyVisibleText(visible.root)
                 observeCourierScreen(visible.packageName, uiText)
                 if (uiText.isNotBlank()) OfferState.saveUiText(this, uiText)
                 val parsed = OfferParser.parse(uiText)
@@ -223,13 +226,21 @@ class OfferAccessibilityService : AccessibilityService() {
             return
         }
 
-        // Lifetime decisions must use only the surface that is visible right now. Accumulated Wolt
-        // frames are useful for reconstructing hidden stops, but feeding them back into lifecycle
-        // checks can resurrect an offer after Wolt has already returned to its home map.
-        val currentUiText = collectVisibleText(target.root)
-        observeCourierScreen(target.packageName, currentUiText)
-        if (handleWoltIdleHomeSurface(pending, target.packageName, currentUiText)) return
+        // Lifetime decisions must use only the surface that is genuinely visible right now. Wolt
+        // Compose keeps hidden offer/home semantics around for a while, so using the full tree here
+        // can either resurrect a finished offer or incorrectly kill the current one under a modal.
+        val visibleUiText = collectStrictlyVisibleText(target.root)
+        observeCourierScreen(target.packageName, visibleUiText)
+        if (handleWoltIdleHomeSurface(pending, target.packageName, visibleUiText)) return
 
+        // Never parse Wolt's whole semantics tree as the base offer. Old hidden Compose nodes can
+        // carry a previous distance/price for seconds and poisoned 0.15.46 with a stale 10.5 km
+        // denominator. Hidden customer rows are recovered separately by maybeResolveWoltHiddenDropoffs().
+        val currentUiText = if (target.packageName == CourierSignals.WOLT_PACKAGE) {
+            visibleUiText
+        } else {
+            collectVisibleText(target.root)
+        }
         val uiText = accumulateOfferFrame(pending, currentUiText)
         if (uiText.isNotBlank()) OfferState.saveUiText(this, uiText)
         val parsed = OfferParser.parse(uiText)
@@ -330,8 +341,11 @@ class OfferAccessibilityService : AccessibilityService() {
         val pending = OfferState.pending(this) ?: return false
         if (pending.packageName != CourierSignals.WOLT_PACKAGE) return false
         val target = findCourierWindow(pending) ?: return false
-        val currentUiText = collectVisibleText(target.root)
+        // Price polling is a hot path, so it must be even stricter than normal capture: never let
+        // hidden Compose nodes from a previous offer inject an old price/distance into the advisor.
+        val currentUiText = collectStrictlyVisibleText(target.root)
         if (currentUiText.isBlank()) return false
+        if (CourierSignals.looksLikeWoltDeclineConfirmation(pending.packageName, currentUiText)) return true
         val uiText = accumulateOfferFrame(pending, currentUiText)
         val parsed = OfferParser.parse(uiText)
         val price = parsed.priceCents ?: return false
@@ -672,10 +686,26 @@ class OfferAccessibilityService : AccessibilityService() {
         if (packageName != CourierSignals.WOLT_PACKAGE || pending.packageName != CourierSignals.WOLT_PACKAGE) {
             return false
         }
+        val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
+        if (CourierSignals.looksLikeWoltDeclineConfirmation(packageName, currentText)) {
+            // The confirmation sheet belongs to the current offer. Wolt leaves the map/home
+            // semantics behind it, so never interpret this surface as an ended transaction.
+            woltIdleHomeKey = ""
+            woltIdleHomeFirstSeenAtElapsed = 0L
+            woltIdleHomeChecks = 0
+            CaptureEventLog.append(
+                this,
+                stage = "wolt_decline_modal",
+                platform = "Wolt",
+                message = "Decline confirmation is open; preserving current offer and route state",
+                dedupeWindowMs = 2_000L,
+            )
+            scheduleAttempt(WOLT_IDLE_HOME_RECHECK_MS)
+            return true
+        }
         val currentParsed = OfferParser.parse(currentText)
         val isIdleHome = CourierSignals.looksLikeIdleHomeScreen(packageName, currentText) &&
             !CourierSignals.looksLikeOfferScreen(currentText, currentParsed)
-        val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
         if (!isIdleHome) {
             if (woltIdleHomeKey == key) {
                 woltIdleHomeKey = ""
