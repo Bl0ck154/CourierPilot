@@ -1,0 +1,44 @@
+package com.block154.courierpilot
+
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class LiveOfferTransactionPolicyTest {
+    @Test
+    fun replacedSamePlatformNotificationStartsNewCapture() {
+        assertTrue(LiveOfferTransactionPolicy.startsNewCapture(ArmResult.REPLACED_SAME_PLATFORM))
+        assertTrue(LiveOfferTransactionPolicy.startsNewCapture(ArmResult.ARMED))
+        assertTrue(LiveOfferTransactionPolicy.startsNewCapture(ArmResult.PREEMPTED_STALE_OTHER_PLATFORM))
+        assertFalse(LiveOfferTransactionPolicy.startsNewCapture(ArmResult.DUPLICATE_UPDATE))
+        assertFalse(LiveOfferTransactionPolicy.startsNewCapture(ArmResult.QUEUED_OTHER_PLATFORM))
+    }
+
+    @Test
+    fun changedWoltNotificationKeyIsHardOfferBoundary() {
+        assertFalse(
+            LiveOfferTransactionPolicy.isSameSurface(
+                dismissed = false,
+                hasCurrentOffer = true,
+                expectedPackageName = CourierSignals.WOLT_PACKAGE,
+                currentNotificationKey = "old-offer-key",
+                incomingPackageName = CourierSignals.WOLT_PACKAGE,
+                incomingNotificationKey = "new-offer-key",
+            ),
+        )
+    }
+
+    @Test
+    fun repeatedUpdateOfExactNotificationKeepsSameSurface() {
+        assertTrue(
+            LiveOfferTransactionPolicy.isSameSurface(
+                dismissed = false,
+                hasCurrentOffer = true,
+                expectedPackageName = CourierSignals.WOLT_PACKAGE,
+                currentNotificationKey = "same-offer-key",
+                incomingPackageName = CourierSignals.WOLT_PACKAGE,
+                incomingNotificationKey = "same-offer-key",
+            ),
+        )
+    }
+}

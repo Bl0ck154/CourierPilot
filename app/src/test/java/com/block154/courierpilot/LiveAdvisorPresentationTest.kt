@@ -43,6 +43,18 @@ class LiveAdvisorPresentationTest {
     }
 
     @Test
+    fun provisionalRateAppearsBeforeRealRouteAndHasNoVerdictEmoji() {
+        val line = LiveAdvisorPresentation.provisionalRateLine(
+            money = MoneyAmount(533, "EUR", 2),
+            estimatedRouteMeters = 7500,
+        )
+
+        assertEquals("≈ €0.71/km  ⏳", line)
+        assertFalse(line!!.contains("💩"))
+        assertFalse(line.contains("🔥"))
+    }
+
+    @Test
     fun routeLineShowsOnlyWalkingAndCyclingProfiles() {
         val walking = RouteResult(
             provider = "test",

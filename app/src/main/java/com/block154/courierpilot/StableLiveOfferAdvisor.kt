@@ -50,6 +50,7 @@ internal class StableLiveOfferAdvisor(
     private var currentParsed: ParsedOffer? = null
     private var expectedPackageName = ""
     private var currentNotificationKey = ""
+    private var currentNotificationRemoved = false
     private var dismissed = false
     private var temporarilyHidden = false
     private var temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
@@ -104,7 +105,14 @@ internal class StableLiveOfferAdvisor(
     fun showPending(platform: String, parsed: ParsedOffer, notificationKey: String = "") {
         if (!LiveAdvisorSettings.enabled(service)) return
         val packageName = packageForPlatform(platform)
-        val sameSurface = !dismissed && currentParsed != null && expectedPackageName == packageName
+        val sameSurface = LiveOfferTransactionPolicy.isSameSurface(
+            dismissed = dismissed,
+            hasCurrentOffer = currentParsed != null,
+            expectedPackageName = expectedPackageName,
+            currentNotificationKey = currentNotificationKey,
+            incomingPackageName = packageName,
+            incomingNotificationKey = notificationKey,
+        )
         val createdSurface = !sameSurface
         if (!sameSurface) {
             generation += 1
@@ -112,6 +120,7 @@ internal class StableLiveOfferAdvisor(
             currentPlatform = platform
             expectedPackageName = packageName
             currentNotificationKey = notificationKey
+            currentNotificationRemoved = notificationIsAlreadyRemoved(packageName, notificationKey)
             dismissed = false
             temporarilyHidden = false
             temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
@@ -130,7 +139,10 @@ internal class StableLiveOfferAdvisor(
             } else null
         }
         previewMode = true
-        if (notificationKey.isNotBlank()) currentNotificationKey = notificationKey
+        if (notificationKey.isNotBlank()) {
+            currentNotificationKey = notificationKey
+            currentNotificationRemoved = notificationIsAlreadyRemoved(packageName, notificationKey)
+        }
         currentParsed = parsed
         prewarmDecisionThresholds()
         differentOfferConfirmation.reset()
@@ -158,11 +170,22 @@ internal class StableLiveOfferAdvisor(
         }
 
         val packageName = packageForPlatform(platform)
-        if (!dismissed && currentParsed != null && expectedPackageName == packageName && previewMode) {
+        val samePreviewSurface = previewMode && LiveOfferTransactionPolicy.isSameSurface(
+            dismissed = dismissed,
+            hasCurrentOffer = currentParsed != null,
+            expectedPackageName = expectedPackageName,
+            currentNotificationKey = currentNotificationKey,
+            incomingPackageName = packageName,
+            incomingNotificationKey = notificationKey,
+        )
+        if (samePreviewSurface) {
             val previousPrice = currentParsed?.priceCents
             currentPlatform = platform
             currentParsed = parsed
-            if (notificationKey.isNotBlank()) currentNotificationKey = notificationKey
+            if (notificationKey.isNotBlank()) {
+                currentNotificationKey = notificationKey
+                currentNotificationRemoved = notificationIsAlreadyRemoved(packageName, notificationKey)
+            }
             previewMode = false
             prewarmDecisionThresholds()
             differentOfferConfirmation.reset()
@@ -191,6 +214,7 @@ internal class StableLiveOfferAdvisor(
         currentParsed = parsed
         expectedPackageName = packageForPlatform(platform)
         currentNotificationKey = notificationKey
+        currentNotificationRemoved = notificationIsAlreadyRemoved(expectedPackageName, notificationKey)
         dismissed = false
         temporarilyHidden = false
         temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
@@ -254,8 +278,9 @@ internal class StableLiveOfferAdvisor(
 
     fun updateRoute(comparison: RouteComparison, waypointCount: Int) {
         if (dismissed || !LiveAdvisorSettings.enabled(service)) return
+        val expectedGeneration = generation
         handler.post {
-            if (dismissed) return@post
+            if (dismissed || generation != expectedGeneration) return@post
             val walking = comparison.pedestrian.getOrNull()
             val cycling = comparison.cycleway.getOrNull()
             val samePreparedRoute = sameRoute(cachedPedestrianRoute, walking) &&
@@ -282,8 +307,9 @@ internal class StableLiveOfferAdvisor(
 
     fun updateBoltRoute(outcome: AutomaticBoltRouteOutcome) {
         if (dismissed || !LiveAdvisorSettings.enabled(service)) return
+        val expectedGeneration = generation
         handler.post {
-            if (dismissed) return@post
+            if (dismissed || generation != expectedGeneration) return@post
             val comparison = outcome.comparison
             if (comparison == null) {
                 setDecisionUnavailable()
@@ -308,7 +334,7 @@ internal class StableLiveOfferAdvisor(
                 // Never turn that partial distance into a misleading €/km verdict.
                 cachedPedestrianRoute = null
                 cachedCyclewayRoute = null
-                currentParsed?.let { parsed -> renderProfitability(parsed, null, null) }
+                currentParsed?.let(::renderProgressiveDecision)
             }
             setRouteContent(LiveAdvisorPresentation.routeLine(walking, cycling))
             CaptureEventLog.append(
@@ -322,8 +348,9 @@ internal class StableLiveOfferAdvisor(
 
     fun updateRouteUnavailable(reason: String) {
         if (dismissed || !LiveAdvisorSettings.enabled(service)) return
+        val expectedGeneration = generation
         handler.post {
-            if (dismissed) return@post
+            if (dismissed || generation != expectedGeneration) return@post
             setDecisionUnavailable()
             setRouteContent("⚠️ Route unavailable")
             CaptureEventLog.append(service, "route_failed", reason, currentPlatform)
@@ -388,9 +415,41 @@ internal class StableLiveOfferAdvisor(
         when {
             !hasPrice -> setDecisionLoading()
             hasRoute -> renderProfitability(parsed, cachedPedestrianRoute, cachedCyclewayRoute)
+            renderProvisionalProfitability(parsed) -> Unit
             LiveAdvisorSettings.routeEnabled(service, currentPlatform) -> setDecisionLoading()
             else -> setDecisionUnavailable()
         }
+    }
+
+    /**
+     * Show money/km as soon as the offer exposes price + platform distance. This never triggers a
+     * network request: it uses the user's locally learned platform->Valhalla distance ratio (or the
+     * platform distance itself until enough history exists). No rating emoji is shown until the full
+     * route is verified, so a provisional estimate cannot masquerade as the final verdict.
+     */
+    private fun renderProvisionalProfitability(parsed: ParsedOffer): Boolean {
+        val money = parsed.money ?: return false
+        val estimate = LiveRouteDistanceEstimator.estimate(
+            service,
+            currentPlatform,
+            parsed.distanceMeters,
+        ) ?: return false
+        val line = LiveAdvisorPresentation.provisionalRateLine(money, estimate.distanceMeters) ?: return false
+        cachedDecisionLine = line
+        cachedDecisionBand = OfferDecisionBand.UNKNOWN
+        cachedDecisionLoading = false
+        applyDecisionPresentation()
+        val major = money.major().toDouble()
+        val rate = major * 1000.0 / estimate.distanceMeters
+        CaptureEventLog.append(
+            service,
+            stage = "score_estimate",
+            platform = currentPlatform,
+            message = "source=${estimate.source}; samples=${estimate.sampleCount}; platform_m=${parsed.distanceMeters ?: -1}; " +
+                "estimated_route_m=${estimate.distanceMeters}; rate=${"%.2f".format(Locale.US, rate)}",
+            dedupeWindowMs = 5_000L,
+        )
+        return true
     }
 
     private fun setDecisionLoading() {
@@ -753,6 +812,7 @@ internal class StableLiveOfferAdvisor(
         currentParsed = null
         expectedPackageName = ""
         currentNotificationKey = ""
+        currentNotificationRemoved = false
         cachedDecisionLine = ""
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
         cachedDecisionLoading = true
@@ -831,8 +891,14 @@ internal class StableLiveOfferAdvisor(
             !currentNotificationKey.startsWith("screen:") &&
             LiveOfferNotificationLifetime.isActive(expectedPackageName, currentNotificationKey)
 
+    private fun notificationIsAlreadyRemoved(packageName: String, notificationKey: String): Boolean =
+        notificationKey.isNotBlank() &&
+            !notificationKey.startsWith("screen:") &&
+            !LiveOfferNotificationLifetime.isActive(packageName, notificationKey)
+
     fun onOfferNotificationRemoved(notificationKey: String) {
         if (notificationKey.isBlank() || notificationKey != currentNotificationKey) return
+        currentNotificationRemoved = true
         handler.postDelayed({
             if (!dismissed && currentParsed != null && currentNotificationKey == notificationKey) {
                 checkOfferStillVisible()
@@ -858,7 +924,13 @@ internal class StableLiveOfferAdvisor(
             !isTransientSystemOverlayPackage(activePackage)
 
         if (definitelyAway) {
-            temporarilyHide("foreground changed to $activePackage")
+            if (currentNotificationRemoved) {
+                // The exact incoming-task notification is already gone and the user left the courier
+                // app: this transaction cannot legitimately come back. Remove the card immediately.
+                suppressCurrentOffer("offer notification ended and courier app left foreground", animate = false)
+            } else {
+                temporarilyHide("foreground changed to $activePackage")
+            }
             return
         }
 
@@ -867,8 +939,20 @@ internal class StableLiveOfferAdvisor(
                 resetMissingEvidence()
                 return
             }
-            if (registerMissingEvidence()) {
-                temporarilyHide("courier window temporarily unavailable; active=$activePackage")
+            val gone = if (currentNotificationRemoved) {
+                registerMissingEvidence(
+                    graceMs = REMOVED_NOTIFICATION_GONE_GRACE_MS,
+                    minChecks = REMOVED_NOTIFICATION_MIN_MISSING_CHECKS,
+                )
+            } else {
+                registerMissingEvidence()
+            }
+            if (gone) {
+                if (currentNotificationRemoved) {
+                    suppressCurrentOffer("offer notification ended and courier window disappeared", animate = false)
+                } else {
+                    temporarilyHide("courier window temporarily unavailable; active=$activePackage")
+                }
             }
             return
         }
@@ -1190,6 +1274,8 @@ internal class StableLiveOfferAdvisor(
         const val BOLT_MIN_MISSING_CHECKS = 5
         const val WOLT_UNCERTAIN_GRACE_MS = 2_000L
         const val WOLT_UNCERTAIN_MIN_CHECKS = 3
+        const val REMOVED_NOTIFICATION_GONE_GRACE_MS = 350L
+        const val REMOVED_NOTIFICATION_MIN_MISSING_CHECKS = 2
         const val FADE_IN_MS = 380L
         const val FADE_OUT_MS = 280L
         const val FADE_OFFSET_DP = 10
@@ -1202,7 +1288,7 @@ internal class StableLiveOfferAdvisor(
         const val SWIPE_MIN_DP = 44
         const val SWIPE_FRACTION = 0.16f
         const val SNAP_BACK_MS = 140L
-        const val NOTIFICATION_REMOVAL_RECHECK_MS = 180L
+        const val NOTIFICATION_REMOVAL_RECHECK_MS = 60L
         const val GESTURE_NONE = 0
         const val GESTURE_HORIZONTAL = 1
         const val GESTURE_VERTICAL = 2
