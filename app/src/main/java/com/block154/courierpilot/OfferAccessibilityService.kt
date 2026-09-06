@@ -39,6 +39,7 @@ class OfferAccessibilityService : AccessibilityService() {
     private var woltFrameKey = ""
     private var woltCardFrameText = ""
     private var woltDropoffFrameText = ""
+    private var woltVisibleBasePickupAddresses: List<String> = emptyList()
     private var woltDropoffProbeKey = ""
     private var woltDropoffProbeAttempts = 0
     private var woltDropoffSheetSettleAttempts = 0
@@ -225,10 +226,25 @@ class OfferAccessibilityService : AccessibilityService() {
         if (uiText.isNotBlank()) OfferState.saveUiText(this, uiText)
         val parsed = OfferParser.parse(uiText)
 
-        // Do not open Wolt's multiple-dropoff sheet before we freeze the base offer card. On a
-        // live batch the sheet/close animation can outlive the offer itself, so the later screenshot
-        // ends up belonging to a different screen. Hidden destinations are resolved only after the
-        // first OCR snapshot has captured the merchant and visible pickup metadata.
+        // Batched Wolt destinations are an Accessibility problem first, not an OCR problem. The
+        // live 0.15.42 traces showed the price available immediately while CourierPilot spent
+        // several seconds taking a screenshot before it even tried the already-visible destination
+        // semantics. Resolve/click the multiple-dropoff surface directly from the current tree and
+        // only fall back to screenshot/OCR after the semantic path is exhausted.
+        val woltBatchRouteIncomplete = target.packageName == CourierSignals.WOLT_PACKAGE &&
+            LiveAdvisorSettings.automaticWoltRouting(this) &&
+            (parsed.deliveryCount ?: 0) > 1 &&
+            AutomaticWoltRouteCoordinator.routeFingerprint(parsed) == null
+        if (woltBatchRouteIncomplete && maybeResolveWoltHiddenDropoffs(target.root, pending, parsed)) {
+            CaptureEventLog.append(
+                this,
+                stage = "wolt_dropoffs_fastpath",
+                platform = "Wolt",
+                message = "Handled incomplete batch destinations directly from Accessibility before OCR",
+                dedupeWindowMs = 1_000L,
+            )
+            return
+        }
 
         // Bolt's map is not semantically exposed on the current real-device build. Even if a future
         // build exposes a price through Accessibility, keep Bolt metadata on the spatially isolated
@@ -362,6 +378,7 @@ class OfferAccessibilityService : AccessibilityService() {
             woltFrameKey = key
             woltCardFrameText = ""
             woltDropoffFrameText = ""
+            woltVisibleBasePickupAddresses = emptyList()
             woltDropoffProbeKey = key
             woltDropoffProbeAttempts = 0
             woltDropoffSheetSettleAttempts = 0
@@ -398,19 +415,39 @@ class OfferAccessibilityService : AccessibilityService() {
         if (!LiveAdvisorSettings.automaticWoltRouting(this)) return false
 
         val expectedDropoffs = parsed.deliveryCount?.coerceAtLeast(1) ?: return false
-        val strictlyVisibleText = collectStrictlyVisibleText(root)
-        val currentIsExpanded = WoltOfferUiText.hasExpandedMultipleDropoffSheet(strictlyVisibleText)
+        val strictlyVisiblePieces = collectStrictlyVisibleAccessibilityPieces(root)
+        val strictlyVisibleText = strictlyVisiblePieces.joinToString("\n")
+        val collapsedVisible = WoltOfferUiText.hasCollapsedMultipleDropoffs(strictlyVisibleText)
+        val visibleParsed = OfferParser.parse(strictlyVisibleText)
+        if (collapsedVisible && visibleParsed.pickupAddresses.isNotEmpty()) {
+            // Only remember pickups that are truly visible on the collapsed card. collectVisibleText()
+            // intentionally includes hidden Compose semantics, and those hidden customer addresses
+            // can be misclassified as pickups; excluding them later is exactly what made 0.15.42
+            // unable to recover the opened sheet despite the destinations being plainly visible.
+            woltVisibleBasePickupAddresses = visibleParsed.pickupAddresses
+        }
+
+        // On current Wolt Compose builds the opened sheet can be a separate semantics surface whose
+        // header is not exposed consistently, even though the destination rows themselves are. Once
+        // we have clicked the multiple-dropoff row, exact visible street candidates are sufficient
+        // proof that we are looking at that sheet; do not wait for OCR merely to rediscover its title.
+        val baseParsed = OfferParser.parse(woltCardFrameText)
+        val expandedRecovery = WoltAccessibilityDropoffRecovery.recover(
+            hiddenTextPieces = strictlyVisiblePieces,
+            excludedAddresses = woltVisibleBasePickupAddresses.ifEmpty {
+                // Compatibility fallback for an older flow that reaches the opened sheet before a
+                // collapsed strict-visible snapshot was recorded. Never exclude parsed drop-offs:
+                // the opened sheet legitimately contains those customer addresses again.
+                baseParsed.pickupAddresses
+            },
+            expectedCount = expectedDropoffs,
+        )
+        val currentIsExpanded = WoltOfferUiText.hasExpandedMultipleDropoffSheet(strictlyVisibleText) ||
+            (woltDropoffProbeAttempts > 0 && expandedRecovery.candidateCount > 0)
         if (currentIsExpanded) {
-            // Do not depend on Wolt keeping the popup labels in a parser-friendly order. The live
-            // 0.15.37 double-order trace showed the sheet opening while all three street addresses
-            // were still classified as pickups. Recover the visible popup destinations directly,
-            // excluding pickup addresses remembered from the collapsed base card.
-            val baseParsed = OfferParser.parse(woltCardFrameText)
-            val expandedRecovery = WoltAccessibilityDropoffRecovery.recover(
-                hiddenTextPieces = collectStrictlyVisibleAccessibilityPieces(root),
-                excludedAddresses = baseParsed.pickupAddresses + baseParsed.dropoffAddresses,
-                expectedCount = expectedDropoffs,
-            )
+            // Do not depend on Wolt keeping the popup labels in a parser-friendly order. Recover the
+            // visible popup destinations directly, excluding pickup addresses remembered from the
+            // collapsed base card.
             if (expandedRecovery.resolvedAddresses.size == expectedDropoffs) {
                 woltDropoffFrameText = WoltAccessibilityDropoffRecovery.expandedFrame(
                     expandedRecovery.resolvedAddresses,
@@ -481,8 +518,10 @@ class OfferAccessibilityService : AccessibilityService() {
         // collapsed Compose sheet may keep destination rows alive with isVisibleToUser=false. The
         // ordinary parser cannot know that those rows are destinations, so classify them here using
         // the visibility bit and inject a tiny synthetic expanded-sheet frame for the next pass.
-        val visibleParsed = OfferParser.parse(strictlyVisibleText)
-        val excludedVisibleAddresses = visibleParsed.pickupAddresses + visibleParsed.dropoffAddresses
+        // Recover the complete customer set, including any customer address that Wolt may also
+        // expose on the collapsed card. Only merchant/pickup addresses are exclusions; duplicates
+        // are already de-duplicated by WoltAccessibilityDropoffRecovery.
+        val excludedVisibleAddresses = visibleParsed.pickupAddresses
         val hiddenRecovery = WoltAccessibilityDropoffRecovery.recover(
             hiddenTextPieces = collectHiddenAccessibilityPieces(root),
             excludedAddresses = excludedVisibleAddresses,

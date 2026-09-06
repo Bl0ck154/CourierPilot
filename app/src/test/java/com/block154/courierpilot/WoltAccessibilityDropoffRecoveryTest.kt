@@ -95,4 +95,24 @@ class WoltAccessibilityDropoffRecoveryTest {
         assertTrue(result.resolvedAddresses.isEmpty())
         assertEquals(0, result.candidateCount)
     }
+    @Test
+    fun recoversCurrentVilniusOpenedSheetAddressesFromAccessibility() {
+        val result = WoltAccessibilityDropoffRecovery.recover(
+            hiddenTextPieces = listOf(
+                "Multiple dropoffs",
+                "2 stops",
+                "Liepkalnio gatvė 22",
+                "Vilnius, 02105",
+                "Bartų g. 30",
+                "Vilnius, 03153",
+                "Done",
+            ),
+            excludedAddresses = emptyList(),
+            expectedCount = 2,
+        )
+
+        assertEquals(listOf("Liepkalnio gatvė 22", "Bartų g. 30"), result.resolvedAddresses)
+        assertEquals(2, result.candidateCount)
+    }
+
 }
