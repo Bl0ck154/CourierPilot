@@ -112,6 +112,91 @@ internal object LiveAdvisorHub {
         }
     }
 
+    /**
+     * Recover an offer that was already persisted but whose overlay was destroyed by transient
+     * Accessibility state. This runs before ScreenOfferDeduper, so the 10-minute screen tombstone
+     * cannot leave the user with no card when the *same* offer is still visibly open.
+     */
+    fun tryRestoreRecentOffer(context: Context, packageName: String, parsed: ParsedOffer): Boolean {
+        attach(context)
+        val service = serviceRef.get() ?: return false
+        val currentAdvisor = advisor ?: return false
+        val historical = OfferHistoryResumePolicy.findMatchingRecent(
+            database = OfferDatabase.get(service),
+            packageName = packageName,
+            parsed = parsed,
+        ) ?: return false
+        restoreHistoricalOffer(service, currentAdvisor, historical, parsed, "screen history match")
+        return true
+    }
+
+    fun restoreDuplicateOffer(context: Context, historical: OfferRecord, visible: ParsedOffer) {
+        attach(context)
+        val service = serviceRef.get() ?: return
+        val currentAdvisor = advisor ?: return
+        restoreHistoricalOffer(service, currentAdvisor, historical.withCurrentParsedStructure(), visible, "persistence duplicate")
+    }
+
+    private fun restoreHistoricalOffer(
+        service: AccessibilityService,
+        currentAdvisor: StableLiveOfferAdvisor,
+        historical: OfferRecord,
+        visible: ParsedOffer,
+        reason: String,
+    ) {
+        val syntheticCaptureKey = "screen:history:${historical.id}"
+        val parsedFromHistory = OfferParser.parse(historical.rawText)
+        val merged = visible.copy(
+            priceCents = visible.priceCents ?: historical.priceCents,
+            money = visible.money ?: MoneyAmount(
+                historical.priceCents.toLong(),
+                historical.currencyCode,
+                historical.currencyFractionDigits,
+            ),
+            distanceMeters = visible.distanceMeters ?: historical.distanceMeters,
+            restaurant = visible.restaurant ?: historical.restaurant ?: parsedFromHistory.restaurant,
+            merchantNames = visible.merchantNames.ifEmpty { historical.merchantNames.ifEmpty { parsedFromHistory.merchantNames } },
+            pickupAddresses = visible.pickupAddresses.ifEmpty { historical.pickupAddresses.ifEmpty { parsedFromHistory.pickupAddresses } },
+            customerNames = visible.customerNames.ifEmpty { historical.customerNames.ifEmpty { parsedFromHistory.customerNames } },
+            dropoffAddresses = visible.dropoffAddresses.ifEmpty { historical.dropoffAddresses.ifEmpty { parsedFromHistory.dropoffAddresses } },
+            deliveryCount = visible.deliveryCount ?: historical.deliveryCount ?: parsedFromHistory.deliveryCount,
+            estimatedMinutesMin = visible.estimatedMinutesMin ?: historical.estimatedMinutesMin ?: parsedFromHistory.estimatedMinutesMin,
+            estimatedMinutesMax = visible.estimatedMinutesMax ?: historical.estimatedMinutesMax ?: parsedFromHistory.estimatedMinutesMax,
+        )
+        val activeRecord = historical.copy(
+            captureKey = syntheticCaptureKey,
+            distanceMeters = merged.distanceMeters,
+            restaurant = merged.restaurant,
+            merchantNames = merged.merchantNames,
+            pickupAddresses = merged.pickupAddresses,
+            customerNames = merged.customerNames,
+            dropoffAddresses = merged.dropoffAddresses,
+            deliveryCount = merged.deliveryCount,
+            estimatedMinutesMin = merged.estimatedMinutesMin,
+            estimatedMinutesMax = merged.estimatedMinutesMax,
+        )
+        currentOffer = CurrentAdvisorOffer(historical.id, activeRecord, merged)
+        pendingPreview = null
+        captureOfferKey = null
+
+        currentAdvisor.showBase(historical.platform, merged, syntheticCaptureKey)
+        val route = runCatching { RouteResearchDatabase.get(service).latestSuccessfulAdvisorRoute(historical.id) }.getOrNull()
+        val historicalRouteMeters = historical.trustedMarketRouteDistanceMeters
+        when {
+            route != null -> currentAdvisor.updateRoute(route.comparison, route.waypointCount)
+            historicalRouteMeters != null -> currentAdvisor.updateHistoricalRouteDistance(historicalRouteMeters)
+            else -> startRouteForOffer(service, currentOffer ?: return, preparedKey = null)
+        }
+        CaptureEventLog.append(
+            service,
+            stage = "offer_history_restored",
+            platform = historical.platform,
+            message = "Restored record #${historical.id} after $reason; reused_route=${route != null}; " +
+                "history_route_m=${historical.trustedMarketRouteDistanceMeters ?: -1}",
+            dedupeWindowMs = 1_000L,
+        )
+    }
+
     fun setCaptureSuppressed(context: Context, suppressed: Boolean) {
         attach(context)
         advisor?.setCaptureSuppressed(suppressed)

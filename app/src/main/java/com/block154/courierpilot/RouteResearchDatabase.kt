@@ -5,6 +5,12 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 
+
+internal data class HistoricalAdvisorRoute(
+    val comparison: RouteComparison,
+    val waypointCount: Int,
+)
+
 internal enum class RouteComparisonVerdict {
     PEDESTRIAN_BETTER,
     CYCLEWAY_BETTER,
@@ -298,6 +304,60 @@ internal class RouteResearchDatabase private constructor(context: Context) :
 
     fun liveAdvisorRunCount(): Int = readableDatabase.rawQuery("SELECT COUNT(*) FROM live_advisor_runs", null).use {
         if (it.moveToFirst()) it.getInt(0) else 0
+    }
+
+    /**
+     * Returns the last successful real-route result for an already persisted offer. This is the
+     * durable fallback used when Accessibility briefly kills the live card and the same offer is
+     * observed again: reusing these distances is both faster and safer than calling Valhalla twice.
+     */
+    fun latestSuccessfulAdvisorRoute(offerId: Long): HistoricalAdvisorRoute? {
+        if (offerId <= 0L) return null
+        val runId = readableDatabase.rawQuery(
+            "SELECT id FROM live_advisor_runs WHERE offer_id=? AND status='COMPARED' ORDER BY created_at DESC LIMIT 1",
+            arrayOf(offerId.toString()),
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else return null }
+
+        var pedestrian: RouteResult? = null
+        var cycleway: RouteResult? = null
+        readableDatabase.rawQuery(
+            "SELECT profile, distance_m, duration_s, http_status, warnings FROM live_advisor_candidates WHERE run_id=?",
+            arrayOf(runId.toString()),
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                if (cursor.isNull(1) || cursor.isNull(2)) continue
+                val profile = runCatching { RouteProfile.valueOf(cursor.getString(0)) }.getOrNull() ?: continue
+                val route = RouteResult(
+                    provider = "history-cache",
+                    profile = profile,
+                    distanceMeters = cursor.getInt(1),
+                    durationSeconds = cursor.getInt(2),
+                    legShapes = emptyList(),
+                    httpStatus = if (cursor.isNull(3)) null else cursor.getInt(3),
+                    warnings = cursor.getString(4).orEmpty().split(" | ").filter(String::isNotBlank),
+                )
+                when (profile) {
+                    RouteProfile.PEDESTRIAN_SHORTCUT -> pedestrian = route
+                    RouteProfile.CYCLEWAY_BIASED -> cycleway = route
+                }
+            }
+        }
+        if (pedestrian == null && cycleway == null) return null
+        val waypointCount = readableDatabase.rawQuery(
+            "SELECT COUNT(*) FROM live_advisor_waypoints WHERE run_id=?",
+            arrayOf(runId.toString()),
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getInt(0) else 0 }
+
+        fun result(route: RouteResult?, label: String): Result<RouteResult> =
+            if (route != null) Result.success(route) else Result.failure(IllegalStateException("$label route unavailable in history"))
+
+        return HistoricalAdvisorRoute(
+            comparison = RouteComparison(
+                pedestrian = result(pedestrian, "Pedestrian"),
+                cycleway = result(cycleway, "Cycleway"),
+            ),
+            waypointCount = waypointCount.coerceAtLeast(2),
+        )
     }
 
     private fun insertCandidate(db: SQLiteDatabase, comparisonId: Long, profile: RouteProfile, result: Result<RouteResult>) {

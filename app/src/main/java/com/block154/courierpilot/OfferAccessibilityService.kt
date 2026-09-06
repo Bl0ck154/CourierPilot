@@ -873,6 +873,21 @@ class OfferAccessibilityService : AccessibilityService() {
             return false
         }
 
+        // If one bad Accessibility frame destroyed the advisor, the normal screen deduper would
+        // intentionally block this exact fingerprint for ten minutes. Before applying that tombstone,
+        // compare the still-visible card against recent persisted history. A strict price + distance +
+        // merchant match means this is the same transaction, so restore its saved route immediately.
+        if (LiveAdvisorHub.tryRestoreRecentOffer(this, packageName, parsed)) {
+            CaptureEventLog.append(
+                this,
+                stage = "screen_history_restore",
+                platform = OfferState.platformLabel(packageName),
+                message = "Same recent offer is still visible; restored advisor from history instead of re-arming",
+                dedupeWindowMs = 2_000L,
+            )
+            return false
+        }
+
         val fingerprint = CourierSignals.offerFingerprint(packageName, text)
         if (!ScreenOfferDeduper.shouldArm(this, packageName, fingerprint)) return false
 
@@ -1413,12 +1428,16 @@ class OfferAccessibilityService : AccessibilityService() {
 
         val duplicate = database.findRecentDuplicate(candidate)
         if (duplicate != null) {
+            // Persistence dedupe used to stop here, which meant the database was correct but the live
+            // overlay stayed gone. Reattach the duplicate row and its saved route before clearing the
+            // capture transaction. This is the durable second line of defence behind screen recovery.
+            LiveAdvisorHub.restoreDuplicateOffer(this, duplicate, parsed)
             bitmap?.recycle()
             captureInFlight = false
             CaptureEventLog.append(
                 this,
                 "duplicate_suppressed",
-                "Same live offer already exists as record #${duplicate.id}; skipped history insert",
+                "Same live offer already exists as record #${duplicate.id}; restored advisor and skipped history insert",
                 platform,
             )
             OfferState.clear(this)
@@ -1456,10 +1475,13 @@ class OfferAccessibilityService : AccessibilityService() {
             if (!insertResult.inserted) {
                 saved?.let { ScreenshotStore.delete(this, it) }
                 saved = null
+                database.findById(insertResult.rowId)?.let { existing ->
+                    LiveAdvisorHub.restoreDuplicateOffer(this, existing, parsed)
+                }
                 CaptureEventLog.append(
                     this,
                     "duplicate_race_suppressed",
-                    "Duplicate reached persistence guard; reused record #${insertResult.rowId}",
+                    "Duplicate reached persistence guard; restored record #${insertResult.rowId}",
                     platform,
                 )
             } else {
