@@ -44,6 +44,9 @@ class OfferAccessibilityService : AccessibilityService() {
     private var woltDropoffProbeAttempts = 0
     private var woltDropoffSheetSettleAttempts = 0
     private var woltRouteOcrRecoveryAttempts = 0
+    private var woltIdleHomeKey = ""
+    private var woltIdleHomeFirstSeenAtElapsed = 0L
+    private var woltIdleHomeChecks = 0
     private var woltProofBitmap: Bitmap? = null
     private var woltProofOfferKey = ""
 
@@ -220,9 +223,14 @@ class OfferAccessibilityService : AccessibilityService() {
             return
         }
 
+        // Lifetime decisions must use only the surface that is visible right now. Accumulated Wolt
+        // frames are useful for reconstructing hidden stops, but feeding them back into lifecycle
+        // checks can resurrect an offer after Wolt has already returned to its home map.
         val currentUiText = collectVisibleText(target.root)
+        observeCourierScreen(target.packageName, currentUiText)
+        if (handleWoltIdleHomeSurface(pending, target.packageName, currentUiText)) return
+
         val uiText = accumulateOfferFrame(pending, currentUiText)
-        observeCourierScreen(target.packageName, uiText)
         if (uiText.isNotBlank()) OfferState.saveUiText(this, uiText)
         val parsed = OfferParser.parse(uiText)
 
@@ -397,6 +405,9 @@ class OfferAccessibilityService : AccessibilityService() {
             woltDropoffProbeAttempts = 0
             woltDropoffSheetSettleAttempts = 0
             woltRouteOcrRecoveryAttempts = 0
+            woltIdleHomeKey = ""
+            woltIdleHomeFirstSeenAtElapsed = 0L
+            woltIdleHomeChecks = 0
         }
 
         val clean = currentText.trim()
@@ -467,6 +478,7 @@ class OfferAccessibilityService : AccessibilityService() {
                     expandedRecovery.resolvedAddresses,
                     expectedDropoffs,
                 )
+                publishRecoveredWoltBatchRoute(pending, expectedDropoffs)
                 woltDropoffSheetSettleAttempts = 0
                 val closedRecovered = clickAccessibilityText(root) { value -> value.equals("done", ignoreCase = true) } ||
                     performGlobalAction(GLOBAL_ACTION_BACK)
@@ -556,6 +568,7 @@ class OfferAccessibilityService : AccessibilityService() {
                 treeRecovery.resolvedAddresses,
                 expectedDropoffs,
             )
+            publishRecoveredWoltBatchRoute(pending, expectedDropoffs)
             woltDropoffSheetSettleAttempts = 0
             CaptureEventLog.append(
                 this,
@@ -614,6 +627,93 @@ class OfferAccessibilityService : AccessibilityService() {
             return true
         }
         return false
+    }
+
+    /**
+     * Hidden Wolt customer rows are enough to start the real route. Feed the reconstructed route
+     * back to the live advisor immediately instead of waiting for the popup to close, another
+     * capture pass, or OCR.
+     */
+    private fun publishRecoveredWoltBatchRoute(pending: PendingOffer, expectedDropoffs: Int): Boolean {
+        val mergedText = listOf(woltCardFrameText, woltDropoffFrameText)
+            .map(String::trim)
+            .filter(String::isNotBlank)
+            .distinct()
+            .joinToString("\n")
+        if (mergedText.isBlank()) return false
+
+        val recovered = OfferParser.parse(mergedText)
+        if (recovered.dropoffAddresses.size < expectedDropoffs) return false
+        if (AutomaticWoltRouteCoordinator.routeFingerprint(recovered) == null) return false
+
+        OfferState.saveUiText(this, mergedText)
+        LiveAdvisorHub.showPendingOffer(this, pending, recovered)
+        CaptureEventLog.append(
+            this,
+            stage = "wolt_route_ready_from_accessibility",
+            platform = "Wolt",
+            message = "Started real route immediately after hidden-stop recovery; " +
+                "pickups=${recovered.pickupAddresses.size}; dropoffs=${recovered.dropoffAddresses.size}; " +
+                "deliveries=${recovered.deliveryCount ?: expectedDropoffs}",
+            dedupeWindowMs = 1_000L,
+        )
+        return true
+    }
+
+    /**
+     * Accumulated route text must never resurrect a finished offer over Wolt's home map. Ignore a
+     * single transient home frame, then clear the pending transaction after a second stable check.
+     */
+    private fun handleWoltIdleHomeSurface(
+        pending: PendingOffer,
+        packageName: String,
+        currentText: String,
+    ): Boolean {
+        if (packageName != CourierSignals.WOLT_PACKAGE || pending.packageName != CourierSignals.WOLT_PACKAGE) {
+            return false
+        }
+        val currentParsed = OfferParser.parse(currentText)
+        val isIdleHome = CourierSignals.looksLikeIdleHomeScreen(packageName, currentText) &&
+            !CourierSignals.looksLikeOfferScreen(currentText, currentParsed)
+        val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
+        if (!isIdleHome) {
+            if (woltIdleHomeKey == key) {
+                woltIdleHomeKey = ""
+                woltIdleHomeFirstSeenAtElapsed = 0L
+                woltIdleHomeChecks = 0
+            }
+            return false
+        }
+
+        val now = SystemClock.elapsedRealtime()
+        if (woltIdleHomeKey != key) {
+            woltIdleHomeKey = key
+            woltIdleHomeFirstSeenAtElapsed = now
+            woltIdleHomeChecks = 1
+        } else {
+            woltIdleHomeChecks += 1
+        }
+
+        val stable = woltIdleHomeChecks >= WOLT_IDLE_HOME_END_MIN_CHECKS &&
+            now - woltIdleHomeFirstSeenAtElapsed >= WOLT_IDLE_HOME_END_GRACE_MS
+        if (!stable) {
+            scheduleAttempt(WOLT_IDLE_HOME_RECHECK_MS)
+            return true
+        }
+
+        CaptureEventLog.append(
+            this,
+            stage = "wolt_home_end_confirmed",
+            platform = "Wolt",
+            message = "Visible Wolt home screen ended pending capture; stale accumulated offer will not be rendered again",
+            dedupeWindowMs = 1_000L,
+        )
+        OfferState.clear(this)
+        woltIdleHomeKey = ""
+        woltIdleHomeFirstSeenAtElapsed = 0L
+        woltIdleHomeChecks = 0
+        scheduleAttempt(IDLE_WATCHDOG_MS)
+        return true
     }
 
     private fun clickAccessibilityText(
@@ -1569,6 +1669,9 @@ class OfferAccessibilityService : AccessibilityService() {
         private const val WOLT_DROPOFF_ACCESSIBILITY_SETTLE_MS = 40L
         private const val WOLT_DROPOFF_SHEET_MAX_SETTLE_ATTEMPTS = 4
         private const val WOLT_DROPOFF_PROBE_MAX_ATTEMPTS = 2
+        private const val WOLT_IDLE_HOME_RECHECK_MS = 180L
+        private const val WOLT_IDLE_HOME_END_GRACE_MS = 160L
+        private const val WOLT_IDLE_HOME_END_MIN_CHECKS = 2
         private const val WOLT_ROUTE_OCR_RECOVERY_DELAY_MS = 220L
         private const val WOLT_ROUTE_OCR_RECOVERY_RETRIES = 2
         private const val DISCOVERY_EVENT_WINDOW_MS = 1_500L
