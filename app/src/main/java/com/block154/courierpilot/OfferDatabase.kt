@@ -28,7 +28,13 @@ data class OfferRecord(
     val estimatedMinutesMax: Int? = null,
     val captureKey: String = "",
     val visualFingerprint: String = "",
-)
+    val marketRouteDistanceMeters: Int? = null,
+    val marketRouteSource: String = "",
+) {
+    /** Real full-route distance when Valhalla resolved it; platform distance is only a fallback. */
+    val effectiveRouteDistanceMeters: Int?
+        get() = marketRouteDistanceMeters?.takeIf { it > 0 } ?: distanceMeters?.takeIf { it > 0 }
+}
 
 data class OfferInsertResult(
     val rowId: Long,
@@ -396,6 +402,8 @@ class OfferDatabase private constructor(context: Context) :
             estimatedMinutesMax = nullableInt("estimated_max"),
             captureKey = nullableString("capture_key").orEmpty(),
             visualFingerprint = nullableString("visual_fingerprint").orEmpty(),
+            marketRouteDistanceMeters = nullableInt("market_route_distance_meters"),
+            marketRouteSource = nullableString("market_route_source").orEmpty(),
         )
     }
 
@@ -405,8 +413,11 @@ class OfferDatabase private constructor(context: Context) :
         val sql = """
             SELECT COUNT(*) AS count,
                    AVG(price_cents) AS avg_price,
-                   AVG(distance_meters) AS avg_distance,
-                   AVG(CASE WHEN distance_meters > 0 THEN price_cents * 10.0 / distance_meters END) AS avg_per_km
+                   AVG(COALESCE(NULLIF(market_route_distance_meters, 0), NULLIF(distance_meters, 0))) AS avg_distance,
+                   AVG(CASE
+                       WHEN COALESCE(NULLIF(market_route_distance_meters, 0), NULLIF(distance_meters, 0)) IS NOT NULL
+                       THEN price_cents * 10.0 / COALESCE(NULLIF(market_route_distance_meters, 0), NULLIF(distance_meters, 0))
+                   END) AS avg_per_km
             FROM offers
             WHERE $where
         """.trimIndent()
@@ -429,7 +440,10 @@ class OfferDatabase private constructor(context: Context) :
                    SUM(CASE WHEN platform = 'Wolt' THEN 1 ELSE 0 END) AS wolt_count,
                    SUM(CASE WHEN platform = 'Bolt' THEN 1 ELSE 0 END) AS bolt_count,
                    AVG(price_cents) AS avg_price,
-                   AVG(CASE WHEN distance_meters > 0 THEN price_cents * 10.0 / distance_meters END) AS avg_per_km
+                   AVG(CASE
+                       WHEN COALESCE(NULLIF(market_route_distance_meters, 0), NULLIF(distance_meters, 0)) IS NOT NULL
+                       THEN price_cents * 10.0 / COALESCE(NULLIF(market_route_distance_meters, 0), NULLIF(distance_meters, 0))
+                   END) AS avg_per_km
             FROM offers
             GROUP BY day
             ORDER BY day DESC

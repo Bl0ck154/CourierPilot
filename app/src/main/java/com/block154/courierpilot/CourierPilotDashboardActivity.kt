@@ -1057,7 +1057,7 @@ private fun DashboardOfferCard(record: OfferRecord, onClick: () -> Unit) {
             Spacer(Modifier.size(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    record.restaurant ?: record.merchantNames.firstOrNull() ?: record.platform,
+                    record.restaurant ?: record.merchantNames.firstOrNull() ?: record.pickupAddresses.firstOrNull() ?: record.platform,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -1068,7 +1068,7 @@ private fun DashboardOfferCard(record: OfferRecord, onClick: () -> Unit) {
                 }
                 Text(
                     "${record.platform} · ${dashShortDate(record.capturedAt)}" +
-                        (record.distanceMeters?.let { " · ${"%.1f".format(it / 1000.0)} km" } ?: ""),
+                        (record.effectiveRouteDistanceMeters?.let { " · ${"%.1f".format(it / 1000.0)} km" } ?: ""),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 11.sp,
                 )

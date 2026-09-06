@@ -12,10 +12,10 @@ import android.net.Uri
 internal object OfferDataRepair {
     private const val PREFS = "courier_offer_repairs"
     private const val KEY_REVISION = "parser_repair_revision"
-    // Revision 14 re-runs dedupe with Bolt price-drift identity so historical rows such as one
-    // €6.84 offer duplicated as €84.00 are collapsed, and backfills visual fingerprints for nearby
-    // different-price Bolt captures as well as the older same-price candidates.
-    private const val CURRENT_REVISION = 14
+    // Revision 15 removes Wolt screen-only ghost captures persisted after the courier had already
+    // navigated to Stats/History/Settings. Those rows came from stale Compose offer semantics and
+    // polluted History, averages and market learning.
+    private const val CURRENT_REVISION = 15
     private const val LIST_SEPARATOR = "\u001F"
 
     @Synchronized
@@ -40,7 +40,7 @@ internal object OfferDataRepair {
         sqlite.beginTransaction()
         try {
             records.forEach { original ->
-                if (shouldDiscardUntrustedWoltCapture(original)) {
+                if (shouldDiscardUntrustedWoltCapture(original) || shouldDiscardWoltNavigationGhost(original)) {
                     deleteDuplicateRow(sqlite, original.id)
                     original.screenshotUri.takeIf(String::isNotBlank)?.let(duplicateScreenshotUris::add)
                     return@forEach
@@ -128,6 +128,15 @@ internal object OfferDataRepair {
         val hasRoute = structural.pickupAddresses.isNotEmpty() || structural.dropoffAddresses.isNotEmpty() ||
             structural.distanceMeters != null
         return !hasMerchant && !hasRoute
+    }
+
+    internal fun shouldDiscardWoltNavigationGhost(record: OfferRecord): Boolean {
+        if (record.packageName != CourierSignals.WOLT_PACKAGE) return false
+        // The bad 0.15.47 captures were armed by screen discovery after the real offer had ended.
+        // Notification-backed rows are deliberately excluded from this repair.
+        if (!record.captureKey.startsWith("screen:")) return false
+        if (record.rawText.isBlank()) return false
+        return CourierSignals.looksLikeWoltNonOfferNavigationScreen(record.packageName, record.rawText)
     }
 
     private fun deleteDuplicateRow(sqlite: android.database.sqlite.SQLiteDatabase, offerId: Long) {
