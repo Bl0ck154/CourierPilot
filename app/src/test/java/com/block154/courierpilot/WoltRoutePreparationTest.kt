@@ -68,4 +68,19 @@ class WoltRoutePreparationTest {
             RouteGeocodeQueryPolicy.candidates("Dariaus ir Girėno g. 11", city),
         )
     }
+
+    @Test
+    fun apartmentSuffixFallsBackToBuildingAddress() {
+        val city = MarketCity("lt-vilnius", "Vilnius", "LT", 1L)
+        assertEquals(
+            listOf(
+                "J. Basanavičiaus gatvė 9a-15, Vilnius, 01118",
+                "J. Basanavičiaus gatvė 9a, Vilnius, 01118",
+            ),
+            RouteGeocodeQueryPolicy.candidates(
+                "J. Basanavičiaus gatvė 9a-15, Vilnius, 01118",
+                city,
+            ),
+        )
+    }
 }
