@@ -439,10 +439,12 @@ internal object AutomaticWoltRouteCoordinator {
             .distinctBy { "${it.kind}|${normalizeAddress(it.address)}" }
     }
 
-    private fun normalizeAddress(value: String): String = value
-        .trim()
-        .lowercase(Locale.ROOT)
-        .replace(Regex("\\s+"), " ")
+    private fun normalizeAddress(value: String): String =
+        DeliveryAddressNormalizer.key(value)
+            ?: value
+                .trim()
+                .lowercase(Locale.ROOT)
+                .replace(Regex("\\s+"), " ")
 
     private fun resolveAll(
         context: Context,

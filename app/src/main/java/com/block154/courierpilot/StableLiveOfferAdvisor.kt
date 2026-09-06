@@ -79,6 +79,7 @@ internal class StableLiveOfferAdvisor(
     private var cachedPedestrianRoute: RouteResult? = null
     private var cachedCyclewayRoute: RouteResult? = null
     private val differentOfferConfirmation = OfferDifferenceConfirmation()
+    private val woltHomeEndConfirmation = WoltHomeEndConfirmation()
 
     private var gestureDownX = 0f
     private var gestureDownY = 0f
@@ -135,6 +136,7 @@ internal class StableLiveOfferAdvisor(
             cachedPedestrianRoute = null
             cachedCyclewayRoute = null
             resetMissingEvidence()
+            woltHomeEndConfirmation.reset()
             val initialSurface = findVisiblePackageRoot(packageName)?.let { inspectVisibleSurface(it).snapshot }
             boltBaselineSurface = if (platform.equals("Bolt", ignoreCase = true)) initialSurface else null
             woltBaselineSurface = if (platform.equals("Wolt", ignoreCase = true)) initialSurface else null
@@ -230,6 +232,7 @@ internal class StableLiveOfferAdvisor(
         cachedPedestrianRoute = null
         cachedCyclewayRoute = null
         resetMissingEvidence()
+        woltHomeEndConfirmation.reset()
         val initialSurface = findVisiblePackageRoot(expectedPackageName)?.let { inspectVisibleSurface(it).snapshot }
         boltBaselineSurface = if (platform.equals("Bolt", ignoreCase = true)) initialSurface else null
         woltBaselineSurface = if (platform.equals("Wolt", ignoreCase = true)) initialSurface else null
@@ -983,6 +986,7 @@ internal class StableLiveOfferAdvisor(
         // old offer controls and the city home map while the modal is on top.
         if (CourierSignals.looksLikeWoltDeclineConfirmation(expected, visibleText)) {
             differentOfferConfirmation.reset()
+            woltHomeEndConfirmation.reset()
             resetMissingEvidence()
             if (temporarilyHidden) restoreFromCache("Wolt decline confirmation still belongs to current offer")
             return
@@ -1021,6 +1025,7 @@ internal class StableLiveOfferAdvisor(
                 return
             }
             differentOfferConfirmation.reset()
+            woltHomeEndConfirmation.reset()
             resetMissingEvidence()
             if (currentPlatform.equals("Bolt", ignoreCase = true)) {
                 // Adopt the latest confirmed same-offer surface after map zoom/recomposition instead
@@ -1033,11 +1038,18 @@ internal class StableLiveOfferAdvisor(
             return
         }
 
-        // Once the offer controls are gone, Wolt's normal city/home card is decisive end-of-offer
-        // evidence even if Android has not removed the incoming-task notification yet.
-        if (CourierSignals.looksLikeIdleHomeScreen(expected, visibleText)) {
-            suppressCurrentOffer("offer replaced by Wolt home screen", animate = false)
+        // Wolt Compose can expose the underlying city-home `Delivery demand` node for a single
+        // visible frame while the offer sheet is still on screen (observed on 0.15.51 immediately
+        // after a transient Android window). Never let that one frame destroy a freshly calculated
+        // route. Require the home surface to remain stable across two watchdog observations.
+        val idleHome = CourierSignals.looksLikeIdleHomeScreen(expected, visibleText)
+        if (idleHome) {
+            if (woltHomeEndConfirmation.observe(true, SystemClock.elapsedRealtime())) {
+                suppressCurrentOffer("offer replaced by stable Wolt home screen", animate = false)
+            }
             return
+        } else {
+            woltHomeEndConfirmation.reset()
         }
 
         DeliveryLifecycleTracking.detect(visibleText)?.let {

@@ -108,4 +108,27 @@ class WoltRoutePreparationTest {
             ),
         )
     }
+    @Test
+    fun formattingOnlyAddressChangesReusePreparedRouteFingerprint() {
+        val first = ParsedOffer(
+            priceCents = null,
+            distanceMeters = 4_900,
+            restaurant = "Georgian House",
+            merchantNames = listOf("Georgian House"),
+            pickupAddresses = listOf("Mėsinių g. 4-3, Vilnius, 01130"),
+            dropoffAddresses = listOf("Rasų gatvė 89, Vilnius, 11351"),
+            deliveryCount = 1,
+        )
+        val second = first.copy(
+            priceCents = 405,
+            pickupAddresses = listOf("Mėsinių gatvė 4, LT-01130 Vilnius"),
+            dropoffAddresses = listOf("Rasų g. 89, LT11351 Vilnius"),
+        )
+
+        assertEquals(
+            AutomaticWoltRouteCoordinator.routeFingerprint(first),
+            AutomaticWoltRouteCoordinator.routeFingerprint(second),
+        )
+    }
+
 }
