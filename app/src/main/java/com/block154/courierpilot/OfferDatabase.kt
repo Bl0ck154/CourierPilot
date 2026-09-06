@@ -31,9 +31,13 @@ data class OfferRecord(
     val marketRouteDistanceMeters: Int? = null,
     val marketRouteSource: String = "",
 ) {
-    /** Real full-route distance when Valhalla resolved it; platform distance is only a fallback. */
+    /** Calculated full route only when it is still plausible against the captured platform truth. */
+    val trustedMarketRouteDistanceMeters: Int?
+        get() = OfferRouteDistancePolicy.trustedCalculatedRouteMeters(distanceMeters, marketRouteDistanceMeters)
+
+    /** Best denominator for economics; never lets a historical geocoder jump override platform truth. */
     val effectiveRouteDistanceMeters: Int?
-        get() = marketRouteDistanceMeters?.takeIf { it > 0 } ?: distanceMeters?.takeIf { it > 0 }
+        get() = OfferRouteDistancePolicy.effectiveMeters(distanceMeters, marketRouteDistanceMeters)
 }
 
 data class OfferInsertResult(
@@ -77,6 +81,21 @@ internal data class LocalMarketSample(
     val routeDistanceMeters: Int,
     val cityKey: String,
 )
+
+private val TRUSTED_EFFECTIVE_DISTANCE_SQL = """
+    CASE
+        WHEN market_route_distance_meters > 0 AND (
+            distance_meters IS NULL OR distance_meters < ${OfferRouteDistancePolicy.MIN_COMPARABLE_PLATFORM_METERS} OR
+            market_route_distance_meters <= distance_meters +
+                CASE
+                    WHEN distance_meters * ${OfferRouteDistancePolicy.RELATIVE_ALLOWANCE} > ${OfferRouteDistancePolicy.ABSOLUTE_ALLOWANCE_METERS}
+                    THEN distance_meters * ${OfferRouteDistancePolicy.RELATIVE_ALLOWANCE}
+                    ELSE ${OfferRouteDistancePolicy.ABSOLUTE_ALLOWANCE_METERS}
+                END
+        ) THEN market_route_distance_meters
+        ELSE NULLIF(distance_meters, 0)
+    END
+""".trimIndent()
 
 class OfferDatabase private constructor(context: Context) :
     SQLiteOpenHelper(context.applicationContext, DB_NAME, null, DB_VERSION) {
@@ -413,10 +432,10 @@ class OfferDatabase private constructor(context: Context) :
         val sql = """
             SELECT COUNT(*) AS count,
                    AVG(price_cents) AS avg_price,
-                   AVG(COALESCE(NULLIF(market_route_distance_meters, 0), NULLIF(distance_meters, 0))) AS avg_distance,
+                   AVG($TRUSTED_EFFECTIVE_DISTANCE_SQL) AS avg_distance,
                    AVG(CASE
-                       WHEN COALESCE(NULLIF(market_route_distance_meters, 0), NULLIF(distance_meters, 0)) IS NOT NULL
-                       THEN price_cents * 10.0 / COALESCE(NULLIF(market_route_distance_meters, 0), NULLIF(distance_meters, 0))
+                       WHEN ($TRUSTED_EFFECTIVE_DISTANCE_SQL) IS NOT NULL
+                       THEN price_cents * 10.0 / ($TRUSTED_EFFECTIVE_DISTANCE_SQL)
                    END) AS avg_per_km
             FROM offers
             WHERE $where
@@ -441,8 +460,8 @@ class OfferDatabase private constructor(context: Context) :
                    SUM(CASE WHEN platform = 'Bolt' THEN 1 ELSE 0 END) AS bolt_count,
                    AVG(price_cents) AS avg_price,
                    AVG(CASE
-                       WHEN COALESCE(NULLIF(market_route_distance_meters, 0), NULLIF(distance_meters, 0)) IS NOT NULL
-                       THEN price_cents * 10.0 / COALESCE(NULLIF(market_route_distance_meters, 0), NULLIF(distance_meters, 0))
+                       WHEN ($TRUSTED_EFFECTIVE_DISTANCE_SQL) IS NOT NULL
+                       THEN price_cents * 10.0 / ($TRUSTED_EFFECTIVE_DISTANCE_SQL)
                    END) AS avg_per_km
             FROM offers
             GROUP BY day
