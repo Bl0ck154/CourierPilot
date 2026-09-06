@@ -95,6 +95,7 @@ private fun OfferDetailsScreen(offer: OfferRecord, onBack: () -> Unit) {
     var rawExpanded by remember { mutableStateOf(false) }
     val merchant = offer.merchantNames.takeIf { it.isNotEmpty() }?.joinToString(", ")
         ?: offer.restaurant
+        ?: offer.pickupAddresses.firstOrNull()?.let { "Pickup · $it" }
         ?: "Venue not detected"
 
     LazyColumn(
@@ -143,7 +144,14 @@ private fun OfferDetailsScreen(offer: OfferRecord, onBack: () -> Unit) {
                     }
 
                     val facts = buildList {
-                        offer.distanceMeters?.let { add("%.2f km".format(it / 1000.0)) }
+                        val realRoute = offer.marketRouteDistanceMeters?.takeIf { it > 0 }
+                        val platformDistance = offer.distanceMeters?.takeIf { it > 0 }
+                        (realRoute ?: platformDistance)?.let { meters ->
+                            add(if (realRoute != null) "Route %.2f km".format(meters / 1000.0) else "%.2f km".format(meters / 1000.0))
+                        }
+                        if (realRoute != null && platformDistance != null && kotlin.math.abs(realRoute - platformDistance) >= 100) {
+                            add("${offer.platform} %.2f km".format(platformDistance / 1000.0))
+                        }
                         offer.deliveryCount?.let { add("$it ${if (it == 1) "delivery" else "deliveries"}") }
                         offerEta(offer)?.let { add("ETA $it") }
                         offerEurPerKm(offer)?.let { add("€%.2f/km".format(it)) }
@@ -349,7 +357,7 @@ private fun offerEta(record: OfferRecord): String? = when {
 }
 
 private fun offerEurPerKm(record: OfferRecord): Double? {
-    val distance = record.distanceMeters ?: return null
+    val distance = record.effectiveRouteDistanceMeters ?: return null
     if (distance <= 0) return null
     return record.priceCents * 10.0 / distance
 }

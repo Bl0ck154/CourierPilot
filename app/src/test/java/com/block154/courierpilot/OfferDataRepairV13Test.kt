@@ -68,6 +68,38 @@ class OfferDataRepairV13Test {
         assertFalse(OfferDataRepair.shouldDiscardUntrustedWoltCapture(record))
     }
 
+    @Test
+    fun removesScreenOnlyWoltStatsGhost() {
+        val record = offer(
+            priceCents = 435,
+            rawText = """
+                Your stats
+                WEEK
+                Deliveries completed
+                50
+                Distance on- and off-task
+                206.2 km
+                Earnings (estimate)
+                €210.26
+            """.trimIndent(),
+            distanceMeters = 5100,
+            captureKey = "screen:stale-compose-offer",
+        )
+        assertTrue(OfferDataRepair.shouldDiscardWoltNavigationGhost(record))
+    }
+
+    @Test
+    fun preservesNotificationBackedOfferWhenNavigationTextLeakedIn() {
+        val record = offer(
+            priceCents = 435,
+            rawText = "Your stats\nDeliveries completed\nDistance on- and off-task\nAccept\nDecline",
+            distanceMeters = 5100,
+            restaurant = "Real venue",
+            captureKey = "incoming_task:123",
+        )
+        assertFalse(OfferDataRepair.shouldDiscardWoltNavigationGhost(record))
+    }
+
     private fun offer(
         priceCents: Int,
         currencyCode: String = "EUR",
@@ -77,6 +109,7 @@ class OfferDataRepairV13Test {
         merchantNames: List<String> = emptyList(),
         pickupAddresses: List<String> = emptyList(),
         dropoffAddresses: List<String> = emptyList(),
+        captureKey: String = "",
     ) = OfferRecord(
         capturedAt = 1_000L,
         platform = "Wolt",
@@ -91,5 +124,6 @@ class OfferDataRepairV13Test {
         merchantNames = merchantNames,
         pickupAddresses = pickupAddresses,
         dropoffAddresses = dropoffAddresses,
+        captureKey = captureKey,
     )
 }

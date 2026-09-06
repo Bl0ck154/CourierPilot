@@ -460,6 +460,7 @@ class CourierPilotHomeActivity : Activity() {
 
             val merchant = record.merchantNames.takeIf { it.isNotEmpty() }?.joinToString(", ")
                 ?: displayRestaurant(record.restaurant)
+                ?: record.pickupAddresses.firstOrNull()?.let { "Pickup · $it" }
                 ?: "Venue not detected"
             addView(text(merchant, 15f, TEXT, true).withTop(dp(11)))
 
@@ -475,7 +476,7 @@ class CourierPilotHomeActivity : Activity() {
             }
 
             val details = mutableListOf(formatClock(record.capturedAt))
-            record.distanceMeters?.let { details += String.format(Locale.US, "%.2f km", it / 1000.0) }
+            record.effectiveRouteDistanceMeters?.let { details += String.format(Locale.US, "%.2f km", it / 1000.0) }
             eta(record)?.let { details += it }
             addView(text(details.joinToString("  ·  ") + "  ›", 12f, MUTED).withTop(dp(6)))
         }
@@ -486,7 +487,7 @@ class CourierPilotHomeActivity : Activity() {
         if (query.isBlank()) return true
         val priceDot = String.format(Locale.US, "%.2f", record.priceCents / 100.0)
         val priceComma = priceDot.replace('.', ',')
-        val distanceKm = record.distanceMeters?.let { String.format(Locale.US, "%.2f km", it / 1000.0) }.orEmpty()
+        val distanceKm = record.effectiveRouteDistanceMeters?.let { String.format(Locale.US, "%.2f km", it / 1000.0) }.orEmpty()
         val searchable = buildString {
             appendLine(record.platform)
             appendLine(record.packageName)
@@ -499,6 +500,7 @@ class CourierPilotHomeActivity : Activity() {
             appendLine(record.screenshotFilename)
             appendLine("€$priceDot $priceDot $priceComma")
             appendLine(distanceKm)
+            appendLine(record.effectiveRouteDistanceMeters?.toString().orEmpty())
             appendLine(record.distanceMeters?.toString().orEmpty())
             appendLine(record.deliveryCount?.toString().orEmpty())
             appendLine(record.estimatedMinutesMin?.toString().orEmpty())
