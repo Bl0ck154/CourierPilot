@@ -48,4 +48,21 @@ class LiveAdvisorStabilityPolicyTest {
             ) == null,
         )
     }
+    @Test
+    fun singleTransientWoltHomeFrameDoesNotEndOffer() {
+        val confirmation = WoltHomeEndConfirmation(graceMs = 650L, minChecks = 2)
+
+        assertFalse(confirmation.observe(true, 1_000L))
+        assertFalse(confirmation.observe(false, 1_300L))
+        assertFalse(confirmation.observe(true, 2_000L))
+    }
+
+    @Test
+    fun stableWoltHomeEndsOfferAfterShortConfirmation() {
+        val confirmation = WoltHomeEndConfirmation(graceMs = 650L, minChecks = 2)
+
+        assertFalse(confirmation.observe(true, 1_000L))
+        assertTrue(confirmation.observe(true, 1_750L))
+    }
+
 }

@@ -33,6 +33,37 @@ internal class OfferDifferenceConfirmation(
     }
 }
 
+internal class WoltHomeEndConfirmation(
+    private val graceMs: Long = DEFAULT_GRACE_MS,
+    private val minChecks: Int = DEFAULT_MIN_CHECKS,
+) {
+    private var sinceElapsedMs = 0L
+    private var checks = 0
+
+    fun observe(homeWithoutOfferControls: Boolean, nowElapsedMs: Long): Boolean {
+        if (!homeWithoutOfferControls) {
+            reset()
+            return false
+        }
+        if (sinceElapsedMs == 0L) sinceElapsedMs = nowElapsedMs.coerceAtLeast(1L)
+        checks += 1
+        return checks >= minChecks && nowElapsedMs - sinceElapsedMs >= graceMs
+    }
+
+    fun reset() {
+        sinceElapsedMs = 0L
+        checks = 0
+    }
+
+    private companion object {
+        // One Wolt Compose frame can expose the city-home `Delivery demand` node while the offer
+        // sheet is still visibly present. Two watchdog observations across a short grace period are
+        // enough to distinguish a real return home without making the overlay linger.
+        const val DEFAULT_GRACE_MS = 650L
+        const val DEFAULT_MIN_CHECKS = 2
+    }
+}
+
 
 internal object LiveAdvisorRestorePolicy {
     const val WOLT_UNCONFIRMED_RECOVERY_MS = 6_000L
