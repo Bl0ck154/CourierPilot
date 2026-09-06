@@ -575,7 +575,15 @@ internal object OfferParser {
         if (!Regex("\\d").containsMatchIn(line)) return false
         val lower = line.lowercase(Locale.ROOT)
         return lower.contains(" gatv") ||
-            Regex("(?i)\\bg\\.\\s*\\d").containsMatchIn(line) ||
+            lower.contains(" prospekt") ||
+            lower.contains(" plentas") ||
+            lower.contains(" alėja") ||
+            lower.contains(" aleja") ||
+            lower.contains(" skersgatv") ||
+            lower.contains(" kelias") ||
+            lower.contains(" takas") ||
+            lower.contains(" aikšt") ||
+            Regex("(?i)\\b(?:g|pr|pl|al|skg)\\.\\s*\\d").containsMatchIn(line) ||
             Regex("(?i)\\bstr\\.?\\s*\\d").containsMatchIn(line) ||
             lower.contains(" street ") ||
             lower.contains(" avenue ") ||
