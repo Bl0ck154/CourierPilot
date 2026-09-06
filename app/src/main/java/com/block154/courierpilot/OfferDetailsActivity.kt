@@ -93,10 +93,7 @@ private fun OfferDetailsScreen(offer: OfferRecord, onBack: () -> Unit) {
     val context = LocalContext.current
     val meta = CourierMetaDatabase.get(context)
     var rawExpanded by remember { mutableStateOf(false) }
-    val merchant = offer.merchantNames.takeIf { it.isNotEmpty() }?.joinToString(", ")
-        ?: offer.restaurant
-        ?: offer.pickupAddresses.firstOrNull()?.let { "Pickup · $it" }
-        ?: "Venue not detected"
+    val merchant = OfferPresentation.merchantTitle(offer)
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -144,13 +141,11 @@ private fun OfferDetailsScreen(offer: OfferRecord, onBack: () -> Unit) {
                     }
 
                     val facts = buildList {
-                        val realRoute = offer.marketRouteDistanceMeters?.takeIf { it > 0 }
+                        val realRoute = offer.trustedMarketRouteDistanceMeters
                         val platformDistance = offer.distanceMeters?.takeIf { it > 0 }
-                        (realRoute ?: platformDistance)?.let { meters ->
-                            add(if (realRoute != null) "Route %.2f km".format(meters / 1000.0) else "%.2f km".format(meters / 1000.0))
-                        }
-                        if (realRoute != null && platformDistance != null && kotlin.math.abs(realRoute - platformDistance) >= 100) {
-                            add("${offer.platform} %.2f km".format(platformDistance / 1000.0))
+                        platformDistance?.let { add("${offer.platform} %.2f km".format(it / 1000.0)) }
+                        if (realRoute != null && (platformDistance == null || kotlin.math.abs(realRoute - platformDistance) >= 100)) {
+                            add("Calculated %.2f km".format(realRoute / 1000.0))
                         }
                         offer.deliveryCount?.let { add("$it ${if (it == 1) "delivery" else "deliveries"}") }
                         offerEta(offer)?.let { add("ETA $it") }

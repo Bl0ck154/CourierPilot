@@ -12,10 +12,9 @@ import android.net.Uri
 internal object OfferDataRepair {
     private const val PREFS = "courier_offer_repairs"
     private const val KEY_REVISION = "parser_repair_revision"
-    // Revision 15 removes Wolt screen-only ghost captures persisted after the courier had already
-    // navigated to Stats/History/Settings. Those rows came from stale Compose offer semantics and
-    // polluted History, averages and market learning.
-    private const val CURRENT_REVISION = 15
+    // Revision 16 also clears historical calculated routes that are wildly inconsistent with the
+    // captured platform distance, so old geocoder jumps cannot keep poisoning History/Stats.
+    private const val CURRENT_REVISION = 16
     private const val LIST_SEPARATOR = "\u001F"
 
     @Synchronized
@@ -48,7 +47,15 @@ internal object OfferDataRepair {
 
                 val reparsed = original.withCurrentParsedStructure()
                 val visualFingerprint = original.visualFingerprint.ifBlank { visualBackfills[original.id].orEmpty() }
-                val repaired = reparsed.copy(visualFingerprint = visualFingerprint)
+                val rejectedHistoricalRoute = OfferRouteDistancePolicy.calculatedRouteWasRejected(
+                    reparsed.distanceMeters,
+                    original.marketRouteDistanceMeters,
+                )
+                val repaired = reparsed.copy(
+                    visualFingerprint = visualFingerprint,
+                    marketRouteDistanceMeters = if (rejectedHistoricalRoute) null else original.marketRouteDistanceMeters,
+                    marketRouteSource = if (rejectedHistoricalRoute) "" else original.marketRouteSource,
+                )
                 val values = ContentValues().apply {
                     put("price_cents", repaired.priceCents)
                     repaired.distanceMeters?.let { put("distance_meters", it) } ?: putNull("distance_meters")
@@ -61,8 +68,13 @@ internal object OfferDataRepair {
                     repaired.estimatedMinutesMin?.let { put("estimated_min", it) } ?: putNull("estimated_min")
                     repaired.estimatedMinutesMax?.let { put("estimated_max", it) } ?: putNull("estimated_max")
                     repaired.visualFingerprint.takeIf(String::isNotBlank)?.let { put("visual_fingerprint", it) } ?: putNull("visual_fingerprint")
+                    repaired.marketRouteDistanceMeters?.let { put("market_route_distance_meters", it) } ?: putNull("market_route_distance_meters")
+                    repaired.marketRouteSource.takeIf(String::isNotBlank)?.let { put("market_route_source", it) } ?: putNull("market_route_source")
                 }
                 sqlite.update("offers", values, "id = ?", arrayOf(original.id.toString()))
+                if (rejectedHistoricalRoute) {
+                    sqlite.delete("market_observations", "offer_id = ?", arrayOf(original.id.toString()))
+                }
 
                 recentSurvivors.removeAll { previous ->
                     repaired.capturedAt - previous.capturedAt > OfferDedupeIdentity.PERSIST_DEDUPE_WINDOW_MS

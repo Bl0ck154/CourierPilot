@@ -26,10 +26,10 @@ internal fun OfferRecord.withCurrentParsedStructure(): OfferRecord {
     }
     val parsed = parseText.takeIf(String::isNotBlank)?.let(OfferParser::parse)
 
-    val sourceMerchants = parsed?.merchantNames?.takeIf { it.isNotEmpty() } ?: merchantNames
-    val sourcePickups = parsed?.pickupAddresses?.takeIf { it.isNotEmpty() } ?: pickupAddresses
-    val sourceCustomers = parsed?.customerNames?.takeIf { it.isNotEmpty() } ?: customerNames
-    val sourceDropoffs = parsed?.dropoffAddresses?.takeIf { it.isNotEmpty() } ?: dropoffAddresses
+    val sourceMerchants = chooseBetterNameList(parsed?.merchantNames.orEmpty(), merchantNames)
+    val sourcePickups = chooseBetterAddressList(parsed?.pickupAddresses.orEmpty(), pickupAddresses)
+    val sourceCustomers = chooseBetterNameList(parsed?.customerNames.orEmpty(), customerNames, customerNames = true)
+    val sourceDropoffs = chooseBetterAddressList(parsed?.dropoffAddresses.orEmpty(), dropoffAddresses)
 
     val normalizedPickups = canonicalDistinctAddresses(sourcePickups, bolt = packageName == CourierSignals.BOLT_PACKAGE)
     val normalizedDropoffs = canonicalDistinctAddresses(sourceDropoffs, bolt = packageName == CourierSignals.BOLT_PACKAGE)
@@ -69,7 +69,7 @@ internal fun OfferRecord.withCurrentParsedStructure(): OfferRecord {
         // replace it with a later OCR interpretation.
         priceCents = priceCents,
         distanceMeters = parsed?.distanceMeters ?: distanceMeters,
-        restaurant = parsed?.restaurant ?: normalizedMerchants.takeIf { it.isNotEmpty() }?.joinToString(", ") ?: safeStoredRestaurant,
+        restaurant = normalizedMerchants.takeIf { it.isNotEmpty() }?.joinToString(", ") ?: safeStoredRestaurant,
         merchantNames = normalizedMerchants,
         pickupAddresses = normalizedPickups,
         customerNames = normalizedCustomers,
@@ -78,6 +78,55 @@ internal fun OfferRecord.withCurrentParsedStructure(): OfferRecord {
         estimatedMinutesMin = parsed?.estimatedMinutesMin ?: estimatedMinutesMin,
         estimatedMinutesMax = parsed?.estimatedMinutesMax ?: estimatedMinutesMax,
     )
+}
+
+private fun chooseBetterAddressList(parsed: List<String>, stored: List<String>): List<String> {
+    if (parsed.isEmpty()) return stored
+    if (stored.isEmpty()) return parsed
+    fun score(values: List<String>): Int {
+        val quality = values.sumOf(::addressQualityScore)
+        return (quality * 10 / values.size.coerceAtLeast(1)) + values.size * 8
+    }
+    return if (score(stored) > score(parsed)) stored else parsed
+}
+
+private fun addressQualityScore(value: String): Int {
+    val clean = value.trim()
+    if (clean.isBlank()) return -100
+    val lower = clean.lowercase(Locale.ROOT)
+    var score = 0
+    if (clean.firstOrNull()?.isUpperCase() == true) score += 8 else if (clean.firstOrNull()?.isLowerCase() == true) score -= 6
+    if (lower.contains(" gatv") || Regex("(?i)\\b(?:g|pr|pl|al|skg)\\.\\s*\\d").containsMatchIn(clean)) score += 8
+    if (lower.contains("vilnius")) score += 5
+    if (Regex("(?i)\\b(?:LT[- ]?)?\\d{5}\\b").containsMatchIn(clean)) score += 4
+    if (Regex("\\d").containsMatchIn(clean)) score += 3
+    if (clean.length >= 12) score += 2
+    return score
+}
+
+private fun chooseBetterNameList(
+    parsed: List<String>,
+    stored: List<String>,
+    customerNames: Boolean = false,
+): List<String> {
+    if (parsed.isEmpty()) return stored
+    if (stored.isEmpty()) return parsed
+    fun score(values: List<String>): Int = values.sumOf { nameQualityScore(it, customerNames) }
+    return if (score(stored) > score(parsed)) stored else parsed
+}
+
+private fun nameQualityScore(value: String, customerName: Boolean): Int {
+    val clean = value.trim()
+    if (clean.isBlank()) return -50
+    if (clean.length < 2) return -30
+    if (customerName && isGenericCustomer(clean)) return 1
+    var score = 10
+    if (clean.firstOrNull()?.isUpperCase() == true) score += 3
+    if (clean.firstOrNull()?.isDigit() == true) score -= 20
+    if (Regex("^[A-Za-zĄČĘĖĮŠŲŪŽąčęėįšųūž]\\s+.+$").matches(clean)) score -= 5
+    if (addressQualityScore(clean) >= 10) score -= 20
+    if (clean.length >= 4) score += 2
+    return score
 }
 
 private val gluedStreetMarkerBeforeHouse = Regex(
