@@ -115,4 +115,39 @@ class WoltAccessibilityDropoffRecoveryTest {
         assertEquals(2, result.candidateCount)
     }
 
+    @Test
+    fun recoveredHiddenStopsImmediatelyCompleteCurrentFourStopRoute() {
+        val collapsedCard = """
+            €4.08
+            4 stops (3.6 km) • 13–20 min
+            Crustum (Vokiečių g.)
+            Vokiečių g. 18a, Vilnius, LT01130
+            Ponas Mėsainis (Kauno g.)
+            Kauno g. 13, Vilnius, LT03128
+            Multiple drop-offs (2 stops)
+            Accept
+            Decline
+        """.trimIndent()
+        val recovered = WoltAccessibilityDropoffRecovery.recover(
+            hiddenTextPieces = listOf(
+                "Multiple drop-offs",
+                "2 stops",
+                "Liepkalnio gatvė 22",
+                "Vilnius, 02105",
+                "Bartų g. 30",
+                "Vilnius, 03153",
+                "Done",
+            ),
+            excludedAddresses = listOf("Vokiečių g. 18a", "Kauno g. 13"),
+            expectedCount = 2,
+        )
+        val merged = collapsedCard + "\n" +
+            WoltAccessibilityDropoffRecovery.expandedFrame(recovered.resolvedAddresses, 2)
+        val parsed = OfferParser.parse(merged)
+
+        assertEquals(2, parsed.pickupAddresses.size)
+        assertEquals(2, parsed.dropoffAddresses.size)
+        assertTrue(AutomaticWoltRouteCoordinator.routeFingerprint(parsed) != null)
+    }
+
 }
