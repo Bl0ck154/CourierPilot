@@ -329,9 +329,6 @@ internal object MarketIntelligence {
             else -> "valhalla_walk"
         }
         val app = context.applicationContext
-        // Update the hot local estimator before any city/geocoder/network work. The next offer can
-        // therefore use this completed route immediately even if market persistence is still queued.
-        LiveRouteDistanceEstimator.record(app, record.platform, record.distanceMeters, routeMeters)
         MarketCityResolver.resolve(app) { city ->
             if (city == null) return@resolve
             executor.execute {

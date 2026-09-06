@@ -233,6 +233,19 @@ internal object CourierSignals {
         return PresenceSignal.UNKNOWN
     }
 
+    /**
+     * Strong evidence that Wolt has returned to its idle/home map after an offer ended. This is
+     * deliberately checked only after live offer controls are ruled out because Compose can keep
+     * background home nodes in the Accessibility tree underneath a visible incoming-order sheet.
+     */
+    fun looksLikeIdleHomeScreen(packageName: String, text: String): Boolean {
+        if (packageName != WOLT_PACKAGE) return false
+        val lower = text.lowercase(Locale.ROOT)
+        return lower.contains("delivery demand") ||
+            lower.contains("pristatymo paklausa") ||
+            lower.contains("paklausa pristatymams")
+    }
+
     fun looksLikeOfferScreen(text: String, parsed: ParsedOffer): Boolean {
         val lower = text.lowercase(Locale.ROOT)
         val hasDecision = decisionPhrases.any(lower::contains)

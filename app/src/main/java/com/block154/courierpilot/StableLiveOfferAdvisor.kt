@@ -351,8 +351,15 @@ internal class StableLiveOfferAdvisor(
         val expectedGeneration = generation
         handler.post {
             if (dismissed || generation != expectedGeneration) return@post
-            setDecisionUnavailable()
-            setRouteContent("⚠️ Route unavailable")
+            val parsed = currentParsed
+            if (parsed != null && renderProvisionalProfitability(parsed, marker = "⚠️")) {
+                parsed.distanceMeters?.takeIf { it > 0 }?.let { meters ->
+                    setRouteContent(LiveAdvisorPresentation.platformDistanceLine(meters))
+                }
+            } else {
+                setDecisionUnavailable()
+                setRouteContent("⚠️ Route unavailable")
+            }
             CaptureEventLog.append(service, "route_failed", reason, currentPlatform)
         }
     }
@@ -422,19 +429,17 @@ internal class StableLiveOfferAdvisor(
     }
 
     /**
-     * Show money/km as soon as the offer exposes price + platform distance. This never triggers a
-     * network request: it uses the user's locally learned platform->Valhalla distance ratio (or the
-     * platform distance itself until enough history exists). No rating emoji is shown until the full
-     * route is verified, so a provisional estimate cannot masquerade as the final verdict.
+     * Show money/km as soon as the offer exposes price + its own displayed distance. This path is
+     * zero-latency and deliberately never rewrites that distance from historical route samples. No
+     * rating emoji is shown until the full Valhalla route is verified.
      */
-    private fun renderProvisionalProfitability(parsed: ParsedOffer): Boolean {
+    private fun renderProvisionalProfitability(parsed: ParsedOffer, marker: String = "⏳"): Boolean {
         val money = parsed.money ?: return false
         val estimate = LiveRouteDistanceEstimator.estimate(
-            service,
             currentPlatform,
             parsed.distanceMeters,
         ) ?: return false
-        val line = LiveAdvisorPresentation.provisionalRateLine(money, estimate.distanceMeters) ?: return false
+        val line = LiveAdvisorPresentation.provisionalRateLine(money, estimate.distanceMeters, marker) ?: return false
         cachedDecisionLine = line
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
         cachedDecisionLoading = false
@@ -994,6 +999,13 @@ internal class StableLiveOfferAdvisor(
                 boltBaselineSurface = inspection.snapshot
             }
             if (temporarilyHidden) restoreFromCache("same offer returned to foreground")
+            return
+        }
+
+        // Once the offer controls are gone, Wolt's normal city/home card is decisive end-of-offer
+        // evidence even if Android has not removed the incoming-task notification yet.
+        if (CourierSignals.looksLikeIdleHomeScreen(expected, visibleText)) {
+            suppressCurrentOffer("offer replaced by Wolt home screen", animate = false)
             return
         }
 
