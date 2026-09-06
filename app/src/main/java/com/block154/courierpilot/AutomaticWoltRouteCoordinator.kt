@@ -36,6 +36,28 @@ internal data class PreparedWoltRoute(
     val directChainMeters: Int?,
 )
 
+internal object WoltRoutePlausibility {
+    /**
+     * The straight-line chain through current -> pickup(s) -> drop-off(s) is a mathematical lower
+     * bound for the real route. If it is already far longer than Wolt's displayed full distance,
+     * at least one resolved coordinate is wrong. Keep a generous allowance for Wolt rounding and a
+     * slightly different location fix, but never publish multi-kilometre geocoder jumps as €/km.
+     */
+    fun coordinateMismatchReason(platformMeters: Int?, directChainMeters: Int?): String? {
+        val platform = platformMeters?.takeIf { it >= MIN_PLATFORM_DISTANCE_METERS } ?: return null
+        val chain = directChainMeters?.takeIf { it > 0 } ?: return null
+        val allowance = maxOf(ABSOLUTE_ALLOWANCE_METERS, (platform * RELATIVE_ALLOWANCE).roundToInt())
+        val maximumPlausibleChain = platform + allowance
+        return if (chain > maximumPlausibleChain) {
+            "resolved stop chain ${chain}m exceeds Wolt ${platform}m sanity bound ${maximumPlausibleChain}m"
+        } else null
+    }
+
+    private const val MIN_PLATFORM_DISTANCE_METERS = 500
+    private const val ABSOLUTE_ALLOWANCE_METERS = 700
+    private const val RELATIVE_ALLOWANCE = 0.35
+}
+
 /**
  * Wolt route pipeline. A complete address set can be routed before Wolt exposes the price; the
  * priced offer then consumes that exact prepared result instead of launching a second route job.
@@ -289,6 +311,80 @@ internal object AutomaticWoltRouteCoordinator {
                 provenance = CoordinateProvenance.DEVICE_GPS,
                 confidence = locationConfidence(fix),
             )
+
+            fun finishWithWaypoints(waypoints: List<ResolvedWaypoint>, strictRecovery: Boolean) {
+                val chainMeters = directChainMeters(waypoints)
+                val mismatch = WoltRoutePlausibility.coordinateMismatchReason(parsed.distanceMeters, chainMeters)
+                if (mismatch != null && !strictRecovery) {
+                    CaptureEventLog.append(
+                        app,
+                        stage = "route_geocode_sanity_retry",
+                        platform = "Wolt",
+                        message = "primary_direct_m=${chainMeters ?: -1}; platform_m=${parsed.distanceMeters ?: -1}; retrying all stops with strict Photon",
+                        dedupeWindowMs = 500L,
+                    )
+                    resolveAllStrictPhoton(app, stopSpecs, listOf(current)) { strictResult ->
+                        strictResult.onFailure { failure ->
+                            callback(
+                                PreparedWoltRoute(
+                                    fingerprint, listOf(current), null,
+                                    "geocoder sanity recovery failed: ${failure.message ?: failure.javaClass.simpleName}",
+                                    fix.accuracyMeters, fix.ageMillis, chainMeters,
+                                )
+                            )
+                        }.onSuccess { recovered -> finishWithWaypoints(recovered, strictRecovery = true) }
+                    }
+                    return
+                }
+                if (mismatch != null) {
+                    CaptureEventLog.append(
+                        app,
+                        stage = "route_geocode_sanity_failed",
+                        platform = "Wolt",
+                        message = "strict_direct_m=${chainMeters ?: -1}; platform_m=${parsed.distanceMeters ?: -1}; route rejected",
+                        dedupeWindowMs = 500L,
+                    )
+                    callback(
+                        PreparedWoltRoute(
+                            fingerprint, waypoints, null,
+                            "resolved stop coordinates are inconsistent with Wolt distance",
+                            fix.accuracyMeters, fix.ageMillis, chainMeters,
+                        )
+                    )
+                    return
+                }
+                if (strictRecovery) {
+                    CaptureEventLog.append(
+                        app,
+                        stage = "route_geocode_sanity_recovered",
+                        platform = "Wolt",
+                        message = "strict_direct_m=${chainMeters ?: -1}; platform_m=${parsed.distanceMeters ?: -1}; recovered=true",
+                        dedupeWindowMs = 500L,
+                    )
+                }
+
+                executor.execute {
+                    val comparison = runCatching {
+                        RouteComparisonEngine(ValhallaRouteProvider(config)).compare(waypoints.map { it.point })
+                    }.getOrElse { failure ->
+                        RouteComparison(Result.failure(failure), Result.failure(failure))
+                    }
+                    val anySuccess = comparison.pedestrian.isSuccess || comparison.cycleway.isSuccess
+                    val reason = if (anySuccess) null
+                    else comparison.pedestrian.exceptionOrNull()?.javaClass?.simpleName ?: "route failed"
+                    val prepared = PreparedWoltRoute(
+                        fingerprint = fingerprint,
+                        waypoints = waypoints,
+                        comparison = comparison.takeIf { anySuccess },
+                        failureReason = reason,
+                        locationAccuracyMeters = fix.accuracyMeters,
+                        locationAgeMillis = fix.ageMillis,
+                        directChainMeters = chainMeters,
+                    )
+                    app.mainExecutor.execute { callback(prepared) }
+                }
+            }
+
             resolveAll(app, stopSpecs, listOf(current)) { resolution ->
                 resolution.onFailure { failure ->
                     callback(
@@ -298,28 +394,7 @@ internal object AutomaticWoltRouteCoordinator {
                             fix.accuracyMeters, fix.ageMillis, null,
                         )
                     )
-                }.onSuccess { waypoints ->
-                    executor.execute {
-                        val comparison = runCatching {
-                            RouteComparisonEngine(ValhallaRouteProvider(config)).compare(waypoints.map { it.point })
-                        }.getOrElse { failure ->
-                            RouteComparison(Result.failure(failure), Result.failure(failure))
-                        }
-                        val anySuccess = comparison.pedestrian.isSuccess || comparison.cycleway.isSuccess
-                        val reason = if (anySuccess) null
-                        else comparison.pedestrian.exceptionOrNull()?.javaClass?.simpleName ?: "route failed"
-                        val prepared = PreparedWoltRoute(
-                            fingerprint = fingerprint,
-                            waypoints = waypoints,
-                            comparison = comparison.takeIf { anySuccess },
-                            failureReason = reason,
-                            locationAccuracyMeters = fix.accuracyMeters,
-                            locationAgeMillis = fix.ageMillis,
-                            directChainMeters = directChainMeters(waypoints),
-                        )
-                        app.mainExecutor.execute { callback(prepared) }
-                    }
-                }
+                }.onSuccess { waypoints -> finishWithWaypoints(waypoints, strictRecovery = false) }
             }
         }
     }
@@ -404,6 +479,49 @@ internal object AutomaticWoltRouteCoordinator {
                         label = item.label ?: item.address,
                         provenance = CoordinateProvenance.GEOCODED_ADDRESS,
                         confidence = 0.85,
+                    )
+                }
+                complete(Result.success(current + ordered))
+            }
+        }
+    }
+
+    private fun resolveAllStrictPhoton(
+        context: Context,
+        specs: List<StopSpec>,
+        current: List<ResolvedWaypoint>,
+        complete: (Result<List<ResolvedWaypoint>>) -> Unit,
+    ) {
+        if (specs.isEmpty()) {
+            complete(Result.success(current))
+            return
+        }
+        val results = arrayOfNulls<Result<RoutePoint>>(specs.size)
+        val remaining = AtomicInteger(specs.size)
+        val reference = current.firstOrNull()?.point
+        specs.forEachIndexed { index, spec ->
+            RouteResearchGeocoder.resolveStrictPhoton(context, spec.address, reference) { result ->
+                results[index] = result
+                if (remaining.decrementAndGet() != 0) return@resolveStrictPhoton
+
+                val failureIndex = results.indexOfFirst { it == null || it.isFailure }
+                if (failureIndex >= 0) {
+                    val failedSpec = specs[failureIndex]
+                    complete(Result.failure(IllegalStateException(
+                        "Could not strictly geocode ${failedSpec.kind.name.lowercase()} stop",
+                        results[failureIndex]?.exceptionOrNull(),
+                    )))
+                    return@resolveStrictPhoton
+                }
+
+                val ordered = specs.indices.map { i ->
+                    val item = specs[i]
+                    ResolvedWaypoint(
+                        kind = item.kind,
+                        point = results[i]!!.getOrThrow(),
+                        label = item.label ?: item.address,
+                        provenance = CoordinateProvenance.GEOCODED_ADDRESS,
+                        confidence = 0.9,
                     )
                 }
                 complete(Result.success(current + ordered))

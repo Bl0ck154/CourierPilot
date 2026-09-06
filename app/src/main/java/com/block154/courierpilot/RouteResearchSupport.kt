@@ -200,6 +200,33 @@ internal object RouteResearchGeocoder {
             .forEach { address -> resolve(context, address) { /* populate cache */ } }
     }
 
+    /**
+     * Recovery path for an implausible live route. It intentionally bypasses the hybrid cache and
+     * Android Geocoder, because either can be the source of a bad coordinate. Photon still receives
+     * only the textual address + city; the phone coordinate is used locally to rank returned places.
+     */
+    fun resolveStrictPhoton(
+        context: Context,
+        address: String,
+        reference: RoutePoint?,
+        callback: (Result<RoutePoint>) -> Unit,
+    ) {
+        val query = address.trim()
+        if (query.isBlank()) {
+            callback(Result.failure(IllegalArgumentException("Address is empty")))
+            return
+        }
+        val app = context.applicationContext
+        val city = MarketCityResolver.cached(app)
+        photonExecutor.execute {
+            val point = PhotonAddressGeocoder.resolve(query, city, reference)
+            app.mainExecutor.execute {
+                if (point != null) callback(Result.success(point))
+                else callback(Result.failure(IllegalArgumentException("Strict Photon address lookup failed")))
+            }
+        }
+    }
+
     fun resolve(context: Context, address: String, callback: (Result<RoutePoint>) -> Unit) {
         val query = address.trim()
         if (query.isBlank()) {
@@ -230,7 +257,8 @@ internal object RouteResearchGeocoder {
 
         // ColorOS/Android 16 occasionally never calls the platform Geocoder callback. Race it
         // against Photon so one broken backend cannot make an otherwise trivial Wolt route fail.
-        startPhotonLookup(app, key, query, city)
+        val reference = RouteResearchLocation.bestLastKnown(app)?.point
+        startPhotonLookup(app, key, query, city, reference)
         mainHandler.postDelayed({
             if (isInFlight(key)) {
                 complete(key, Result.failure(IllegalStateException("Address geocoding timed out")))
@@ -243,7 +271,6 @@ internal object RouteResearchGeocoder {
         }
 
         val geocoder = Geocoder(app, Locale.getDefault())
-        val reference = RouteResearchLocation.bestLastKnown(app)?.point
 
         if (Build.VERSION.SDK_INT >= 33) {
             fun attempt(index: Int) {
@@ -294,9 +321,15 @@ internal object RouteResearchGeocoder {
         }
     }
 
-    private fun startPhotonLookup(context: Context, key: String, query: String, city: MarketCity?) {
+    private fun startPhotonLookup(
+        context: Context,
+        key: String,
+        query: String,
+        city: MarketCity?,
+        reference: RoutePoint?,
+    ) {
         photonExecutor.execute {
-            val point = PhotonAddressGeocoder.resolve(query, city)
+            val point = PhotonAddressGeocoder.resolve(query, city, reference)
             context.mainExecutor.execute {
                 if (!isInFlight(key)) return@execute
                 if (point != null) {

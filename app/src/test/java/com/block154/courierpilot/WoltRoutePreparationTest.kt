@@ -70,6 +70,31 @@ class WoltRoutePreparationTest {
     }
 
     @Test
+    fun rejectsImpossibleGeocodedChainComparedWithWoltDistance() {
+        val reason = WoltRoutePlausibility.coordinateMismatchReason(
+            platformMeters = 2_900,
+            directChainMeters = 7_472,
+        )
+        assertNotNull(reason)
+    }
+
+    @Test
+    fun acceptsNormalGeocodedChainWithinGenerousWoltTolerance() {
+        assertNull(
+            WoltRoutePlausibility.coordinateMismatchReason(
+                platformMeters = 2_900,
+                directChainMeters = 2_450,
+            ),
+        )
+        assertNull(
+            WoltRoutePlausibility.coordinateMismatchReason(
+                platformMeters = 5_100,
+                directChainMeters = 5_650,
+            ),
+        )
+    }
+
+    @Test
     fun apartmentSuffixFallsBackToBuildingAddress() {
         val city = MarketCity("lt-vilnius", "Vilnius", "LT", 1L)
         assertEquals(
