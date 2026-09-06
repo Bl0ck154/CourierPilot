@@ -46,6 +46,22 @@ class CourierSignalsTest {
     }
 
     @Test
+    fun woltIdleHomeScreenIsStrongEndOfOfferEvidence() {
+        assertTrue(
+            CourierSignals.looksLikeIdleHomeScreen(
+                CourierSignals.WOLT_PACKAGE,
+                "Vilnius\nDelivery demand\nHigh\n15% Didesnės pajamos from 17:00",
+            ),
+        )
+        assertFalse(
+            CourierSignals.looksLikeIdleHomeScreen(
+                CourierSignals.BOLT_PACKAGE,
+                "Vilnius\nDelivery demand\nHigh",
+            ),
+        )
+    }
+
+    @Test
     fun woltOfferScreenCanBeDetectedWithoutNotification() {
         val text = """
             Delivery from

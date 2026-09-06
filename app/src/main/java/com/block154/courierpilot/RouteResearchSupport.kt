@@ -11,6 +11,7 @@ import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
 import java.util.Locale
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 internal data class CurrentLocationFix(
@@ -184,6 +185,12 @@ internal object RouteResearchGeocoder {
     private val lock = Any()
     private val cache = mutableMapOf<String, CachedPoint>()
     private val inFlight = mutableMapOf<String, MutableList<(Result<RoutePoint>) -> Unit>>()
+    private val androidFailures = mutableMapOf<String, Throwable>()
+    private val photonFailures = mutableMapOf<String, Throwable>()
+    private val photonExecutor = Executors.newFixedThreadPool(2) { runnable ->
+        Thread(runnable, "CourierPilot-PhotonGeocoder").apply { isDaemon = true }
+    }
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     fun prewarm(context: Context, addresses: List<String>) {
         addresses
@@ -197,10 +204,6 @@ internal object RouteResearchGeocoder {
         val query = address.trim()
         if (query.isBlank()) {
             callback(Result.failure(IllegalArgumentException("Address is empty")))
-            return
-        }
-        if (!Geocoder.isPresent()) {
-            callback(Result.failure(IllegalStateException("Android geocoder is not available on this device")))
             return
         }
 
@@ -221,6 +224,22 @@ internal object RouteResearchGeocoder {
                 return
             }
             inFlight[key] = mutableListOf(callback)
+            androidFailures.remove(key)
+            photonFailures.remove(key)
+        }
+
+        // ColorOS/Android 16 occasionally never calls the platform Geocoder callback. Race it
+        // against Photon so one broken backend cannot make an otherwise trivial Wolt route fail.
+        startPhotonLookup(app, key, query, city)
+        mainHandler.postDelayed({
+            if (isInFlight(key)) {
+                complete(key, Result.failure(IllegalStateException("Address geocoding timed out")))
+            }
+        }, HYBRID_TIMEOUT_MS)
+
+        if (!Geocoder.isPresent()) {
+            markBackendFailure(app, key, "android", IllegalStateException("Android geocoder is not available on this device"))
+            return
         }
 
         val geocoder = Geocoder(app, Locale.getDefault())
@@ -228,23 +247,25 @@ internal object RouteResearchGeocoder {
 
         if (Build.VERSION.SDK_INT >= 33) {
             fun attempt(index: Int) {
+                if (!isInFlight(key)) return
                 if (index >= candidates.size) {
-                    app.mainExecutor.execute {
-                        complete(key, Result.failure(IllegalArgumentException("Address not found")))
-                    }
+                    markBackendFailure(app, key, "android", IllegalArgumentException("Address not found"))
                     return
                 }
                 runCatching {
                     geocoder.getFromLocationName(candidates[index], MAX_RESULTS) { results ->
+                        if (!isInFlight(key)) return@getFromLocationName
                         val chosen = chooseBest(results, reference, city)
                         if (chosen == null) attempt(index + 1)
                         else app.mainExecutor.execute {
-                            complete(key, Result.success(RoutePoint(chosen.latitude, chosen.longitude)))
+                            if (isInFlight(key)) {
+                                complete(key, Result.success(RoutePoint(chosen.latitude, chosen.longitude)))
+                            }
                         }
                     }
-                }.onFailure {
+                }.onFailure { failure ->
                     if (index + 1 < candidates.size) attempt(index + 1)
-                    else app.mainExecutor.execute { complete(key, Result.failure(it)) }
+                    else markBackendFailure(app, key, "android", failure)
                 }
             }
             attempt(0)
@@ -258,7 +279,13 @@ internal object RouteResearchGeocoder {
                     }.firstOrNull()?.let { RoutePoint(it.latitude, it.longitude) }
                         ?: error("Address not found")
                 }
-                app.mainExecutor.execute { complete(key, result) }
+                app.mainExecutor.execute {
+                    result.onSuccess { point ->
+                        if (isInFlight(key)) complete(key, Result.success(point))
+                    }.onFailure { failure ->
+                        markBackendFailure(app, key, "android", failure)
+                    }
+                }
             }.apply {
                 name = "CourierPilotGeocoder"
                 isDaemon = true
@@ -266,6 +293,43 @@ internal object RouteResearchGeocoder {
             }
         }
     }
+
+    private fun startPhotonLookup(context: Context, key: String, query: String, city: MarketCity?) {
+        photonExecutor.execute {
+            val point = PhotonAddressGeocoder.resolve(query, city)
+            context.mainExecutor.execute {
+                if (!isInFlight(key)) return@execute
+                if (point != null) {
+                    CaptureEventLog.append(
+                        context,
+                        stage = "geocode_photon_fallback",
+                        platform = "",
+                        message = "Photon resolved an address while Android Geocoder was unavailable or slow",
+                        dedupeWindowMs = 1_000L,
+                    )
+                    complete(key, Result.success(point))
+                } else {
+                    markBackendFailure(context, key, "photon", IllegalArgumentException("Photon address lookup failed"))
+                }
+            }
+        }
+    }
+
+    private fun markBackendFailure(context: Context, key: String, backend: String, failure: Throwable) {
+        val bothFailed = synchronized(lock) {
+            if (key !in inFlight) return
+            if (backend == "android") androidFailures[key] = failure else photonFailures[key] = failure
+            androidFailures.containsKey(key) && photonFailures.containsKey(key)
+        }
+        if (bothFailed) {
+            val chosen = synchronized(lock) { androidFailures[key] ?: photonFailures[key] ?: failure }
+            context.mainExecutor.execute {
+                if (isInFlight(key)) complete(key, Result.failure(chosen))
+            }
+        }
+    }
+
+    private fun isInFlight(key: String): Boolean = synchronized(lock) { key in inFlight }
 
     private fun chooseBest(
         results: List<android.location.Address>,
@@ -294,6 +358,8 @@ internal object RouteResearchGeocoder {
     private fun complete(key: String, result: Result<RoutePoint>) {
         val callbacks = synchronized(lock) {
             result.getOrNull()?.let { cache[key] = CachedPoint(it, System.currentTimeMillis() + CACHE_TTL_MS) }
+            androidFailures.remove(key)
+            photonFailures.remove(key)
             inFlight.remove(key).orEmpty().toList()
         }
         callbacks.forEach { it(result) }
@@ -306,5 +372,6 @@ internal object RouteResearchGeocoder {
     }
 
     private const val MAX_RESULTS = 5
+    private const val HYBRID_TIMEOUT_MS = 6_200L
     private const val CACHE_TTL_MS = 6L * 60L * 60L * 1000L
 }

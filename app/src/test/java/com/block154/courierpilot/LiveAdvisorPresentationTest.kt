@@ -55,6 +55,18 @@ class LiveAdvisorPresentationTest {
     }
 
     @Test
+    fun failedRealRouteKeepsVisibleWoltDistanceFallback() {
+        val line = LiveAdvisorPresentation.provisionalRateLine(
+            money = MoneyAmount(667, "EUR", 2),
+            estimatedRouteMeters = 9100,
+            marker = "⚠️",
+        )
+
+        assertEquals("≈ €0.73/km  ⚠️", line)
+        assertEquals("📍 9.10 km", LiveAdvisorPresentation.platformDistanceLine(9100))
+    }
+
+    @Test
     fun routeLineShowsOnlyWalkingAndCyclingProfiles() {
         val walking = RouteResult(
             provider = "test",

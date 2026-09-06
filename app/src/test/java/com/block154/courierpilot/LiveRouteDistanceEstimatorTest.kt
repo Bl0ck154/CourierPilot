@@ -6,16 +6,17 @@ import org.junit.Test
 
 class LiveRouteDistanceEstimatorTest {
     @Test
-    fun historicalFactorUsesMedianInsteadOfSingleOutlier() {
-        val factor = LiveRouteDistanceEstimator.historicalFactor(
-            listOf(0.54, 0.56, 0.55, 2.80, 0.53),
-        )
+    fun visiblePlatformDistanceIsNeverRewritten() {
+        val estimate = LiveRouteDistanceEstimator.estimate("Wolt", 9100)
 
-        assertEquals(0.55, factor!!, 0.0001)
+        assertEquals(9100, estimate!!.distanceMeters)
+        assertEquals("platform_distance", estimate.source)
+        assertEquals(0, estimate.sampleCount)
     }
 
     @Test
-    fun historicalFactorRejectsImplausibleRatios() {
-        assertNull(LiveRouteDistanceEstimator.historicalFactor(listOf(0.05, 4.5)))
+    fun missingOrUnknownPlatformDistanceHasNoEstimate() {
+        assertNull(LiveRouteDistanceEstimator.estimate("Wolt", null))
+        assertNull(LiveRouteDistanceEstimator.estimate("Other", 9100))
     }
 }
