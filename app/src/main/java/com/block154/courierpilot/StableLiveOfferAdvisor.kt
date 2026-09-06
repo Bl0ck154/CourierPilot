@@ -348,6 +348,37 @@ internal class StableLiveOfferAdvisor(
         }
     }
 
+    /**
+     * Last-resort history recovery when the detailed research-route snapshot is unavailable but the
+     * offer row already contains a trusted full-route distance. Profitability is restored instantly
+     * without pretending that we know separate walking/cycling legs.
+     */
+    fun updateHistoricalRouteDistance(routeMeters: Int) {
+        if (dismissed || routeMeters <= 0 || !LiveAdvisorSettings.enabled(service)) return
+        val expectedGeneration = generation
+        handler.post {
+            if (dismissed || generation != expectedGeneration) return@post
+            val route = RouteResult(
+                provider = "history-cache",
+                profile = RouteProfile.CYCLEWAY_BIASED,
+                distanceMeters = routeMeters,
+                durationSeconds = 0,
+                legShapes = emptyList(),
+            )
+            cachedPedestrianRoute = null
+            cachedCyclewayRoute = route
+            currentParsed?.let { parsed -> renderProfitability(parsed, null, route) }
+            setRouteContent(LiveAdvisorPresentation.platformDistanceLine(routeMeters))
+            CaptureEventLog.append(
+                service,
+                stage = "route_history_distance",
+                platform = currentPlatform,
+                message = "Restored trusted full-route distance from persisted offer history; route_m=$routeMeters",
+                dedupeWindowMs = 1_000L,
+            )
+        }
+    }
+
     fun updateRouteUnavailable(reason: String) {
         if (dismissed || !LiveAdvisorSettings.enabled(service)) return
         val expectedGeneration = generation
