@@ -71,7 +71,19 @@ internal object LiveAdvisorHub {
             val started = AutomaticWoltRouteCoordinator.prepare(service, key, parsed) { prepared ->
                 val active = pendingPreview
                 if (active?.key != key || active.packageName != pending.packageName) return@prepare
-                val comparison = prepared.comparison ?: return@prepare
+                val comparison = prepared.comparison
+                if (comparison == null) {
+                    val reason = prepared.failureReason ?: "unknown route preparation failure"
+                    CaptureEventLog.append(
+                        service,
+                        stage = "route_prepare_failed",
+                        platform = platform,
+                        message = reason,
+                        dedupeWindowMs = 500L,
+                    )
+                    advisor?.updateRouteUnavailable(reason)
+                    return@prepare
+                }
                 val walking = comparison.pedestrian.getOrNull()?.distanceMeters
                 val cycling = comparison.cycleway.getOrNull()?.distanceMeters
                 val average = OfferDecisionEngine.averageValhallaDistanceMeters(

@@ -28,6 +28,11 @@ internal object LiveOfferResumePolicy {
         val visiblePrice = visible.priceCents
         if (expectedPrice != null && visiblePrice != null && expectedPrice != visiblePrice) return true
 
+        // Accessibility/OCR can briefly produce a bogus merchant title while Wolt recomposes the
+        // same card. A matching pickup/drop-off is stronger identity evidence than that noisy text.
+        if (setOverlaps(expected.pickupAddresses, visible.pickupAddresses)) return false
+        if (setOverlaps(expected.dropoffAddresses, visible.dropoffAddresses)) return false
+
         val expectedRestaurant = normalize(expected.restaurant)
         val visibleRestaurant = normalize(visible.restaurant)
         if (expectedRestaurant != null && visibleRestaurant != null && !looselyMatches(expectedRestaurant, visibleRestaurant)) return true

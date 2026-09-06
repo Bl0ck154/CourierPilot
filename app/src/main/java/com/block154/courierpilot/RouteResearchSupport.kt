@@ -145,14 +145,28 @@ internal object RouteGeocodeQueryPolicy {
     fun candidates(address: String, city: MarketCity?): List<String> {
         val raw = address.trim().replace(Regex("\\s+"), " ")
         if (raw.isBlank()) return emptyList()
+
+        // Wolt commonly renders Lithuanian apartment addresses as `house-unit` (for example
+        // `9a-15`). Android's Geocoder is inconsistent with that full form on some OEM backends.
+        // Always try the exact address first, then fall back to the building-only form.
+        val rawCandidates = listOf(raw, withoutUnitSuffix(raw)).distinct()
         val cityName = city?.name?.trim().orEmpty()
-        if (cityName.isBlank() || containsToken(raw, cityName)) return listOf(raw)
+        if (cityName.isBlank() || containsToken(raw, cityName)) return rawCandidates
+
         val country = city?.countryCode?.trim()?.uppercase(Locale.ROOT).orEmpty()
-        val qualified = listOf(raw, cityName, country.takeIf { it.length == 2 })
-            .filterNotNull()
-            .joinToString(", ")
-        return listOf(qualified, raw).distinct()
+        val qualified = rawCandidates.map { candidate ->
+            listOf(candidate, cityName, country.takeIf { it.length == 2 })
+                .filterNotNull()
+                .joinToString(", ")
+        }
+        return (qualified + rawCandidates).distinct()
     }
+
+    private fun withoutUnitSuffix(value: String): String =
+        value.replace(
+            Regex("""(?i)(\b\d+\p{L}?)\s*-\s*\d+\p{L}?(?=\s*(?:,|$))"""),
+            "$1",
+        )
 
     private fun containsToken(value: String, token: String): Boolean {
         fun normalize(v: String) = v.lowercase(Locale.ROOT)

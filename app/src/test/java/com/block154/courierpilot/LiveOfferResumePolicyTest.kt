@@ -76,4 +76,15 @@ class LiveOfferResumePolicyTest {
         )
         assertFalse(LiveOfferResumePolicy.hasMatchingIdentity(expected, visible))
     }
+
+    @Test
+    fun stablePickupPreventsNoisyMerchantOcrFromRearmingSameWoltOffer() {
+        val visible = expected.copy(
+            restaurant = "OCR garbage",
+            merchantNames = listOf("OCR garbage"),
+            pickupAddresses = listOf("Vokiečių g. 12"),
+        )
+        assertFalse(LiveOfferResumePolicy.definitelyDifferent(expected, visible))
+        assertTrue(LiveOfferResumePolicy.hasMatchingIdentity(expected, visible))
+    }
 }
