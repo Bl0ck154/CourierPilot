@@ -71,6 +71,11 @@ class CourierPilotNotificationListener : NotificationListenerService() {
             )
 
             val shouldAct = armResult != ArmResult.DUPLICATE_UPDATE && armResult != ArmResult.QUEUED_OTHER_PLATFORM
+            if (LiveOfferTransactionPolicy.startsNewCapture(armResult)) {
+                // The notification is the earliest reliable transaction boundary. Reset the old
+                // card here, before Accessibility can feed the new price into a stale cached route.
+                OfferState.pending(this)?.let { pending -> LiveAdvisorHub.hideForCapture(this, pending) }
+            }
             if (shouldAct && OfferState.wakeScreen(this)) wakeScreenBriefly(platform)
             if (shouldAct && OfferState.autoOpen(this)) {
                 openOriginalNotification(

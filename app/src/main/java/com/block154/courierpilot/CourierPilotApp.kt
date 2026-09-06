@@ -19,5 +19,8 @@ class CourierPilotApp : Application() {
         // City resolution/profile refresh and optional anonymous market upload use their own worker.
         // No network or geocoder work runs on this Application caller thread.
         MarketIntelligence.resume(this)
+        // Precompute the local platform-distance -> real-route ratio off the startup thread so the
+        // live card can show a provisional €/km immediately, before geocoding/Valhalla finishes.
+        LiveRouteDistanceEstimator.resume(this)
     }
 }

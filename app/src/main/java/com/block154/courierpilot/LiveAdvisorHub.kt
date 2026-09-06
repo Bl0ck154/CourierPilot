@@ -120,6 +120,25 @@ internal object LiveAdvisorHub {
     fun onOfferPersisted(offerId: Long, record: OfferRecord) {
         val service = serviceRef.get() ?: return
         val currentAdvisor = advisor ?: return
+        val activePending = OfferState.pending(service)
+        if (activePending != null &&
+            activePending.packageName == record.packageName &&
+            activePending.notificationKey.isNotBlank() &&
+            record.captureKey.isNotBlank() &&
+            activePending.notificationKey != record.captureKey
+        ) {
+            // A new notification can arrive during the tiny DB-insert window after persistOffer's
+            // stale-callback check. Never let the just-finished old insert promote itself over the
+            // newer transaction that already owns the live card.
+            CaptureEventLog.append(
+                service,
+                stage = "advisor_stale_persist_ignored",
+                platform = record.platform,
+                message = "Persisted offer belongs to a superseded notification; live advisor left on the newer offer",
+                dedupeWindowMs = 1_000L,
+            )
+            return
+        }
         // Reparse the same captured screen text here so the sequential Timeline stop order remains
         // available to the router without changing the stable offer-history DB schema.
         val parsedFromScreen = OfferParser.parse(record.rawText)

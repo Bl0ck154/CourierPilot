@@ -472,6 +472,34 @@ class OfferDatabase private constructor(context: Context) :
         ) > 0
     }
 
+    internal fun recentRouteDistanceRatios(
+        platform: String,
+        since: Long,
+        limit: Int = 80,
+    ): List<Double> {
+        if (platform.isBlank()) return emptyList()
+        val ratios = mutableListOf<Double>()
+        readableDatabase.query(
+            "offers",
+            arrayOf("distance_meters", "market_route_distance_meters"),
+            "captured_at >= ? AND platform = ? AND distance_meters > 0 AND market_route_distance_meters > 0",
+            arrayOf(since.toString(), platform),
+            null,
+            null,
+            "captured_at DESC",
+            limit.coerceIn(1, 500).toString(),
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val platformMeters = cursor.getInt(0)
+                val routeMeters = cursor.getInt(1)
+                if (platformMeters <= 0 || routeMeters <= 0) continue
+                val ratio = routeMeters.toDouble() / platformMeters.toDouble()
+                if (ratio in 0.20..3.00) ratios += ratio
+            }
+        }
+        return ratios
+    }
+
     internal fun localMarketSamplesSince(
         since: Long,
         cityKey: String,

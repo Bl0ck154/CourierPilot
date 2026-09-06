@@ -235,6 +235,20 @@ class OfferAccessibilityService : AccessibilityService() {
             LiveAdvisorSettings.automaticWoltRouting(this) &&
             (parsed.deliveryCount ?: 0) > 1 &&
             AutomaticWoltRouteCoordinator.routeFingerprint(parsed) == null
+        if (woltBatchRouteIncomplete && parsed.priceCents != null && parsed.money != null) {
+            // Preserve the priced top-level card in the live advisor *before* opening Wolt's hidden
+            // drop-off sheet. That sheet can remove the price node from Accessibility entirely; the
+            // 0.15.42 trace had a full 9/10 km route but no €/km because we clicked first and tried
+            // to rediscover the price afterwards.
+            LiveAdvisorHub.showPendingOffer(this, pending, parsed)
+            CaptureEventLog.append(
+                this,
+                stage = "price_before_dropoff_expand",
+                platform = "Wolt",
+                message = "Pushed priced batch offer to live card before opening hidden destinations",
+                dedupeWindowMs = 1_500L,
+            )
+        }
         if (woltBatchRouteIncomplete && maybeResolveWoltHiddenDropoffs(target.root, pending, parsed)) {
             CaptureEventLog.append(
                 this,
@@ -731,6 +745,9 @@ class OfferAccessibilityService : AccessibilityService() {
 
         val result = OfferState.arm(this, packageName, resolveAppName(packageName), "screen:$fingerprint")
         val armed = result == ArmResult.ARMED || result == ArmResult.REPLACED_SAME_PLATFORM
+        if (LiveOfferTransactionPolicy.startsNewCapture(result)) {
+            OfferState.pending(this)?.let { pending -> LiveAdvisorHub.hideForCapture(this, pending) }
+        }
         if (armed) {
             CaptureEventLog.append(
                 this,
