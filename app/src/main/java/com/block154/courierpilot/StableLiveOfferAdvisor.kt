@@ -894,17 +894,17 @@ internal class StableLiveOfferAdvisor(
 
     private fun decisionThresholdSnapshotFor(currencyCode: String): DecisionThresholdSnapshot {
         decisionThresholdSnapshot?.takeIf { it.currencyCode.equals(currencyCode, ignoreCase = true) }?.let { return it }
-        val adaptive = MarketIntelligence.thresholdsFor(service, currentPlatform, currencyCode)
+
+        // Never scan the local market database on the UI thread just to show €/km. The numeric rate
+        // depends only on price + Valhalla distance, so use the cheap currency fallback immediately
+        // while the adaptive thresholds continue warming in the background.
+        prewarmDecisionThresholds()
         val coldStart = LiveOfferColdStartThresholds.forCurrency(currencyCode)
         return DecisionThresholdSnapshot(
             currencyCode = currencyCode,
-            thresholds = adaptive ?: coldStart,
-            source = when {
-                adaptive != null -> "adaptive"
-                coldStart != null -> "currency_cold_start"
-                else -> "none"
-            },
-        ).also { decisionThresholdSnapshot = it }
+            thresholds = coldStart,
+            source = if (coldStart != null) "currency_cold_start_pending_adaptive" else "none_pending_adaptive",
+        )
     }
 
     private fun prewarmDecisionThresholds() {
@@ -929,8 +929,12 @@ internal class StableLiveOfferAdvisor(
                 },
             )
             handler.post {
-                if (!dismissed && generation == expectedGeneration && decisionThresholdSnapshot == null) {
+                if (!dismissed && generation == expectedGeneration) {
                     decisionThresholdSnapshot = snapshot
+                    val parsed = currentParsed
+                    if (parsed != null && (cachedPedestrianRoute != null || cachedCyclewayRoute != null)) {
+                        renderProfitability(parsed, cachedPedestrianRoute, cachedCyclewayRoute)
+                    }
                 }
             }
         }

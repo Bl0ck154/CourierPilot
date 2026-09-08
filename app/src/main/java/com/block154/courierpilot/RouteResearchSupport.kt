@@ -137,8 +137,8 @@ internal object RouteResearchLocation {
 
     private const val CURRENT_LOCATION_TIMEOUT_MS = 8_000L
     private const val EARLY_ACCEPT_ACCURACY_METERS = 25f
-    private const val LIVE_FIX_MAX_AGE_MS = 8_000L
-    private const val LIVE_FIX_MAX_ACCURACY_METERS = 60f
+    private const val LIVE_FIX_MAX_AGE_MS = 30_000L
+    private const val LIVE_FIX_MAX_ACCURACY_METERS = 80f
     private val TIMEOUT_TOKEN = Any()
 }
 
