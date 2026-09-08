@@ -86,6 +86,22 @@ internal class StableLiveOfferAdvisor(
     private var gestureStartY = 0
     private var gesturePendingY = 0
     private var gestureMode = GESTURE_NONE
+    private var gestureTouchActive = false
+    private var gestureStartedAtElapsed = 0L
+    private var gestureLastMoveAtElapsed = 0L
+    private var gestureMoveEvents = 0
+    private var gestureMaxMoveGapMs = 0L
+    private var courierEventCheckScheduled = false
+    private var courierEventCheckDeferred = false
+
+    private val courierWindowCheck = Runnable {
+        courierEventCheckScheduled = false
+        if (gestureTouchActive) {
+            courierEventCheckDeferred = true
+            return@Runnable
+        }
+        if (!dismissed && currentParsed != null) checkOfferStillVisible()
+    }
 
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -94,7 +110,9 @@ internal class StableLiveOfferAdvisor(
     private val visibilityWatchdog = object : Runnable {
         override fun run() {
             if (dismissed || currentParsed == null) return
-            checkOfferStillVisible()
+            // Accessibility tree inspection is relatively expensive on Compose-heavy Wolt screens.
+            // Never compete with touch delivery while the courier is physically dragging the card.
+            if (!gestureTouchActive) checkOfferStillVisible()
             if (!dismissed && currentParsed != null) {
                 handler.postDelayed(this, if (temporarilyHidden) HIDDEN_VISIBILITY_CHECK_MS else VISIBILITY_CHECK_MS)
             }
@@ -401,9 +419,17 @@ internal class StableLiveOfferAdvisor(
     /** Accessibility events make resume nearly immediate; the watchdog remains the fallback. */
     fun onCourierWindowEvent(packageName: String) {
         if (dismissed || currentParsed == null || packageName != expectedPackageName) return
-        handler.post {
-            if (!dismissed && currentParsed != null) checkOfferStillVisible()
+        if (gestureTouchActive) {
+            courierEventCheckDeferred = true
+            return
         }
+        scheduleCourierWindowCheck()
+    }
+
+    private fun scheduleCourierWindowCheck(delayMs: Long = COURIER_EVENT_CHECK_DELAY_MS) {
+        if (courierEventCheckScheduled) return
+        courierEventCheckScheduled = true
+        handler.postDelayed(courierWindowCheck, delayMs)
     }
 
     /** A real foreign window-state event is stronger than rootInActiveWindow on overlay-heavy OEMs. */
@@ -704,7 +730,8 @@ internal class StableLiveOfferAdvisor(
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
             android.graphics.PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
@@ -852,6 +879,10 @@ internal class StableLiveOfferAdvisor(
 
     private fun clearOfferViewState(animate: Boolean = true) {
         handler.removeCallbacks(visibilityWatchdog)
+        handler.removeCallbacks(courierWindowCheck)
+        courierEventCheckScheduled = false
+        courierEventCheckDeferred = false
+        gestureTouchActive = false
         detachView(animate = animate)
         resetMissingEvidence()
         boltBaselineSurface = null
@@ -1289,12 +1320,24 @@ internal class StableLiveOfferAdvisor(
                 gestureStartY = windowParams?.y ?: dp(DEFAULT_Y_DP)
                 gesturePendingY = gestureStartY
                 gestureMode = GESTURE_NONE
+                gestureTouchActive = true
+                gestureStartedAtElapsed = SystemClock.elapsedRealtime()
+                gestureLastMoveAtElapsed = gestureStartedAtElapsed
+                gestureMoveEvents = 0
+                gestureMaxMoveGapMs = 0L
                 view?.animate()?.cancel()
                 view?.translationX = 0f
                 view?.translationY = 0f
                 view?.alpha = 1f
             }
             MotionEvent.ACTION_MOVE -> {
+                val now = SystemClock.elapsedRealtime()
+                if (gestureMoveEvents > 0) {
+                    gestureMaxMoveGapMs = maxOf(gestureMaxMoveGapMs, now - gestureLastMoveAtElapsed)
+                }
+                gestureLastMoveAtElapsed = now
+                gestureMoveEvents++
+
                 val dx = event.rawX - gestureDownX
                 val dy = event.rawY - gestureDownY
                 if (gestureMode == GESTURE_NONE && (abs(dx) > touchSlop || abs(dy) > touchSlop)) {
@@ -1304,20 +1347,23 @@ internal class StableLiveOfferAdvisor(
                     view?.translationX = dx
                     view?.alpha = (1f - abs(dx) / ((view?.width ?: 1).coerceAtLeast(1) * 1.1f)).coerceIn(0.3f, 1f)
                 } else if (gestureMode == GESTURE_VERTICAL && view != null) {
-                    // Relayout through WindowManager on every MotionEvent is expensive on ColorOS and
-                    // makes the card visibly trail the finger. Translate the already-rendered view
-                    // locally while dragging, then commit the real overlay Y only when the gesture ends.
+                    // WindowManager relayouts are avoided until ACTION_UP. With the accelerated
+                    // overlay window this stays a cheap compositor translation.
                     gesturePendingY = clampY(gestureStartY + dy.toInt(), view)
                     view.translationY = (gesturePendingY - gestureStartY).toFloat()
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 val dx = event.rawX - gestureDownX
+                val dy = event.rawY - gestureDownY
                 val mode = gestureMode
                 gestureMode = GESTURE_NONE
+                gestureTouchActive = false
                 if (mode == GESTURE_HORIZONTAL) {
                     val threshold = maxOf(dp(SWIPE_MIN_DP).toFloat(), (view?.width ?: 1) * SWIPE_FRACTION)
                     if (event.actionMasked == MotionEvent.ACTION_UP && abs(dx) >= threshold) {
+                        logGesturePerformance(mode, dy, event.actionMasked == MotionEvent.ACTION_CANCEL)
+                        flushDeferredCourierWindowCheck()
                         suppressCurrentOffer("swiped by user")
                         return true
                     }
@@ -1325,9 +1371,31 @@ internal class StableLiveOfferAdvisor(
                 } else if (mode == GESTURE_VERTICAL) {
                     commitVerticalDrag(gesturePendingY)
                 }
+                logGesturePerformance(mode, dy, event.actionMasked == MotionEvent.ACTION_CANCEL)
+                flushDeferredCourierWindowCheck()
             }
         }
         return true
+    }
+
+    private fun flushDeferredCourierWindowCheck() {
+        if (!courierEventCheckDeferred) return
+        courierEventCheckDeferred = false
+        scheduleCourierWindowCheck(0L)
+    }
+
+    private fun logGesturePerformance(mode: Int, dy: Float, cancelled: Boolean) {
+        if (mode == GESTURE_NONE || gestureStartedAtElapsed <= 0L) return
+        val durationMs = (SystemClock.elapsedRealtime() - gestureStartedAtElapsed).coerceAtLeast(0L)
+        val axis = if (mode == GESTURE_VERTICAL) "vertical" else "horizontal"
+        val distanceDp = (abs(dy) / service.resources.displayMetrics.density).toInt()
+        CaptureEventLog.append(
+            service,
+            stage = "overlay_drag",
+            platform = currentPlatform,
+            message = "axis=$axis; duration_ms=$durationMs; moves=$gestureMoveEvents; max_move_gap_ms=$gestureMaxMoveGapMs; distance_dp=$distanceDp; cancelled=$cancelled",
+            dedupeWindowMs = 250L,
+        )
     }
 
     private fun commitVerticalDrag(targetY: Int) {
@@ -1414,6 +1482,7 @@ internal class StableLiveOfferAdvisor(
         const val SWIPE_FRACTION = 0.16f
         const val SNAP_BACK_MS = 140L
         const val NOTIFICATION_REMOVAL_RECHECK_MS = 60L
+        const val COURIER_EVENT_CHECK_DELAY_MS = 48L
         const val GESTURE_NONE = 0
         const val GESTURE_HORIZONTAL = 1
         const val GESTURE_VERTICAL = 2

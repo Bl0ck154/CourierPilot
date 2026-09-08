@@ -33,7 +33,9 @@ import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Euro
 import androidx.compose.material.icons.rounded.Home
 import androidx.compose.material.icons.rounded.Map
 import androidx.compose.material.icons.rounded.NotificationsActive
@@ -205,7 +207,7 @@ private fun DashboardRoot(
                         Triple(DashboardScreen.HISTORY, "History", Icons.Rounded.History),
                         Triple(DashboardScreen.ADDRESSES, "Addresses", Icons.Rounded.Place),
                         Triple(DashboardScreen.STATS, "Stats", Icons.Rounded.BarChart),
-                        Triple(DashboardScreen.MARKET, "Pay", Icons.Rounded.Storefront),
+                        Triple(DashboardScreen.MARKET, "Pay", Icons.Rounded.Euro),
                     ).forEach { (target, label, icon) ->
                         NavigationBarItem(
                             selected = screen == target,
@@ -574,6 +576,11 @@ private fun DashboardHistory(
     }
 }
 
+private data class DashboardAddressRow(
+    val address: AddressRecord,
+    val codes: List<String>,
+)
+
 @Composable
 private fun DashboardAddresses(
     meta: CourierMetaDatabase,
@@ -582,11 +589,34 @@ private fun DashboardAddresses(
 ) {
     var query by remember { mutableStateOf("") }
     var page by remember { mutableIntStateOf(0) }
+    var total by remember { mutableIntStateOf(0) }
+    var rows by remember { mutableStateOf<List<DashboardAddressRow>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
     val context = LocalContext.current
-    val total = meta.addressCount(query)
+
+    LaunchedEffect(query, page) {
+        loading = true
+        if (query.isNotBlank()) delay(160L)
+        val requestedPage = page
+        val loaded = withContext(Dispatchers.IO) {
+            val count = meta.addressCount(query)
+            val pageCount = maxOf(1, ceil(count / ADDRESS_PAGE_SIZE.toDouble()).toInt())
+            val safePage = requestedPage.coerceIn(0, pageCount - 1)
+            val pageRows = meta.searchAddresses(query, ADDRESS_PAGE_SIZE, safePage * ADDRESS_PAGE_SIZE).map { address ->
+                DashboardAddressRow(
+                    address = address,
+                    codes = meta.codesForBuilding(address.buildingKey, 3).map { it.code }.distinct(),
+                )
+            }
+            Triple(count, safePage, pageRows)
+        }
+        total = loaded.first
+        if (page != loaded.second) page = loaded.second
+        rows = loaded.third
+        loading = false
+    }
+
     val pageCount = maxOf(1, ceil(total / ADDRESS_PAGE_SIZE.toDouble()).toInt())
-    if (page >= pageCount) page = pageCount - 1
-    val records = meta.searchAddresses(query, ADDRESS_PAGE_SIZE, page * ADDRESS_PAGE_SIZE)
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -608,11 +638,12 @@ private fun DashboardAddresses(
                 leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
             )
         }
-        if (records.isEmpty()) {
-            item { DashboardEmpty(if (query.isBlank()) "No addresses captured yet." else "No addresses match this search.") }
-        } else {
-            items(records, key = { it.id }) { address ->
-                val codes = meta.codesForBuilding(address.buildingKey, 3).map { it.code }.distinct()
+        when {
+            loading && rows.isEmpty() -> item { DashboardEmpty("Loading addresses…") }
+            rows.isEmpty() -> item { DashboardEmpty(if (query.isBlank()) "No addresses captured yet." else "No addresses match this search.") }
+            else -> items(rows, key = { it.address.id }) { row ->
+                val address = row.address
+                val codes = row.codes
                 Card(onClick = { onOpenAddress(address.id) }, shape = RoundedCornerShape(18.dp)) {
                     Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.primaryContainer) {
@@ -650,13 +681,25 @@ private fun DashboardAddresses(
                 PaginationRow(
                     page = page,
                     pageCount = pageCount,
-                    onPrevious = { if (page > 0) page-- },
-                    onNext = { if (page + 1 < pageCount) page++ },
+                    onPrevious = { if (!loading && page > 0) page-- },
+                    onNext = { if (!loading && page + 1 < pageCount) page++ },
                 )
             }
         }
     }
 }
+
+private data class DashboardStatsData(
+    val today: OfferSummary,
+    val seven: OfferSummary,
+    val thirty: OfferSummary,
+    val workToday: AutomaticWorkSummary,
+    val workSeven: AutomaticWorkSummary,
+    val workThirty: AutomaticWorkSummary,
+    val wolt: OfferSummary,
+    val bolt: OfferSummary,
+    val days: List<DaySummary>,
+)
 
 @Composable
 private fun DashboardStats(
@@ -666,39 +709,51 @@ private fun DashboardStats(
     onHistory: () -> Unit,
     onAddresses: () -> Unit,
 ) {
-    val today = offers.summarySince(dashStartOfDay(0))
-    val seven = offers.summarySince(dashStartOfDay(6))
-    val thirty = offers.summarySince(dashStartOfDay(29))
-    val workToday = meta.workSummarySince(dashStartOfDay(0))
-    val workSeven = meta.workSummarySince(dashStartOfDay(6))
-    val workThirty = meta.workSummarySince(dashStartOfDay(29))
-    val wolt = offers.summarySince(dashStartOfDay(29), "Wolt")
-    val bolt = offers.summarySince(dashStartOfDay(29), "Bolt")
-    val days = offers.dailyStats(14)
+    var stats by remember { mutableStateOf<DashboardStatsData?>(null) }
 
+    LaunchedEffect(Unit) {
+        stats = withContext(Dispatchers.IO) {
+            DashboardStatsData(
+                today = offers.summarySince(dashStartOfDay(0)),
+                seven = offers.summarySince(dashStartOfDay(6)),
+                thirty = offers.summarySince(dashStartOfDay(29)),
+                workToday = meta.workSummarySince(dashStartOfDay(0)),
+                workSeven = meta.workSummarySince(dashStartOfDay(6)),
+                workThirty = meta.workSummarySince(dashStartOfDay(29)),
+                wolt = offers.summarySince(dashStartOfDay(29), "Wolt"),
+                bolt = offers.summarySince(dashStartOfDay(29), "Bolt"),
+                days = offers.dailyStats(14),
+            )
+        }
+    }
+
+    val loaded = stats
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp, padding.calculateTopPadding() + 12.dp, 16.dp, padding.calculateBottomPadding() + 20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item { DashboardSection("Statistics", "Tap any period to open offer history") }
-        item { StatsPeriod("Today", today, workToday, onHistory) }
-        item { StatsPeriod("Last 7 days", seven, workSeven, onHistory) }
-        item { StatsPeriod("Last 30 days", thirty, workThirty, onHistory) }
-
-        item { DashboardSection("Platforms", "Last 30 days") }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                DashboardMetric("Wolt", wolt.count.toString(), dashAveragePrice(wolt), BrandCyan, Modifier.weight(1f), onHistory)
-                DashboardMetric("Bolt", bolt.count.toString(), dashAveragePrice(bolt), Success, Modifier.weight(1f), onHistory)
-            }
-        }
-
-        item { DashboardSection("Recent days", "Captured offers by day") }
-        if (days.isEmpty()) {
-            item { DashboardEmpty("No daily statistics yet.") }
+        if (loaded == null) {
+            item { DashboardEmpty("Loading statistics…") }
         } else {
-            items(days, key = { it.day }) { day ->
+            item { StatsPeriod("Today", loaded.today, loaded.workToday, onHistory) }
+            item { StatsPeriod("Last 7 days", loaded.seven, loaded.workSeven, onHistory) }
+            item { StatsPeriod("Last 30 days", loaded.thirty, loaded.workThirty, onHistory) }
+
+            item { DashboardSection("Platforms", "Last 30 days") }
+            item {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    DashboardMetric("Wolt", loaded.wolt.count.toString(), dashAveragePrice(loaded.wolt), BrandCyan, Modifier.weight(1f), onHistory)
+                    DashboardMetric("Bolt", loaded.bolt.count.toString(), dashAveragePrice(loaded.bolt), Success, Modifier.weight(1f), onHistory)
+                }
+            }
+
+            item { DashboardSection("Recent days", "Captured offers by day") }
+            if (loaded.days.isEmpty()) {
+                item { DashboardEmpty("No daily statistics yet.") }
+            } else {
+                items(loaded.days, key = { it.day }) { day ->
                 Card(onClick = onHistory, shape = RoundedCornerShape(18.dp)) {
                     Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
@@ -722,6 +777,7 @@ private fun DashboardStats(
                     }
                 }
             }
+        }
         }
 
         item {
@@ -794,10 +850,19 @@ private fun DashboardSettings(
     var boltRoute by remember { mutableStateOf(LiveAdvisorSettings.automaticBoltRouting(context)) }
     var saveScreenshots by remember { mutableStateOf(CaptureStorageSettings.saveOfferScreenshots(context)) }
     var marketSharing by remember { mutableStateOf(MarketIntelligence.sharingEnabled(context)) }
+    var remoteDiagnostics by remember { mutableStateOf(RemoteDiagnostics.enabled(context)) }
+    var remoteStatus by remember { mutableStateOf(RemoteDiagnostics.status(context)) }
     var developerTaps by remember { mutableIntStateOf(0) }
     var developerEnabled by remember { mutableStateOf(DeveloperModeSettings.enabled(context)) }
     val routeReady = runCatching { RouteEndpointSettings.load(context).validated() }.isSuccess
     val marketStatus = MarketIntelligence.status(context)
+
+    LaunchedEffect(remoteDiagnostics) {
+        while (true) {
+            remoteStatus = RemoteDiagnostics.status(context)
+            delay(5_000L)
+        }
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -810,7 +875,9 @@ private fun DashboardSettings(
                     Text("Settings", fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
                     Text("Updates, offers, routes, storage and Android access", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                TextButton(onClick = onBack) { Text("Done") }
+                FilledTonalIconButton(onClick = onBack) {
+                    Icon(Icons.Rounded.Close, contentDescription = "Close settings")
+                }
             }
         }
 
@@ -932,14 +999,46 @@ private fun DashboardSettings(
                 context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             }
         }
+
+        item { DashboardSection("Diagnostics", "Performance and reliability logs without delivery content") }
         item {
-            FilledTonalButton(
-                onClick = { context.startActivity(Intent(context, ReliabilityActivity::class.java)) },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Icon(Icons.Rounded.Shield, contentDescription = null)
-                Spacer(Modifier.size(8.dp))
-                Text("Reliability Center")
+            Card(shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.padding(16.dp)) {
+                    SettingsSwitchRow(
+                        "Send diagnostics",
+                        "Uploads app lifecycle, capture, route and performance events. No screenshots, addresses, customer text or exact GPS.",
+                        remoteDiagnostics,
+                    ) { enabled ->
+                        if (RemoteDiagnostics.setEnabled(context, enabled)) {
+                            remoteDiagnostics = enabled
+                            remoteStatus = RemoteDiagnostics.status(context)
+                        } else {
+                            remoteDiagnostics = RemoteDiagnostics.enabled(context)
+                        }
+                    }
+                    HorizontalDivider(Modifier.padding(vertical = 12.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Rounded.BugReport, contentDescription = null)
+                        Spacer(Modifier.size(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("Server logging", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                diagnosticsStatusText(remoteStatus),
+                                color = if (remoteStatus.lastError.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                                fontSize = 12.sp,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.size(12.dp))
+                    FilledTonalButton(
+                        onClick = { context.startActivity(Intent(context, ReliabilityActivity::class.java)) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Rounded.Shield, contentDescription = null)
+                        Spacer(Modifier.size(8.dp))
+                        Text("Reliability Center")
+                    }
+                }
             }
         }
 
@@ -997,6 +1096,17 @@ private fun SettingsStatusCard(
             Icon(Icons.Rounded.ChevronRight, contentDescription = null)
         }
     }
+}
+
+
+private fun diagnosticsStatusText(status: RemoteDiagnosticsStatus): String = when {
+    !status.enabled -> "Off · nothing is uploaded"
+    status.lastError.isNotBlank() -> "Upload error: ${status.lastError} · ${status.queued} queued"
+    status.lastUploadAt > 0L -> {
+        val time = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(status.lastUploadAt))
+        "Connected · last upload $time · ${status.queued} queued"
+    }
+    else -> "Enabled · waiting for the first upload · ${status.queued} queued"
 }
 
 private fun formatMarketMoneyRate(value: Double, currencyCode: String): String =

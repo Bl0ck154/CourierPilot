@@ -48,6 +48,7 @@ internal object RemoteDiagnostics {
     }
     private var scheduledFlush: ScheduledFuture<*>? = null
     private var retryDelayMs = 30_000L
+    private val lastQueuedNoisyStageAt = mutableMapOf<String, Long>()
 
     fun enabled(context: Context): Boolean =
         context.getSharedPreferences(SETTINGS_PREFS, Context.MODE_PRIVATE)
@@ -113,6 +114,7 @@ internal object RemoteDiagnostics {
 
     private fun persistEvent(context: Context, event: CaptureEvent) {
         if (!enabled(context)) return
+        if (!shouldQueueEvent(event)) return
         val prefs = context.getSharedPreferences(QUEUE_PREFS, Context.MODE_PRIVATE)
         val queue = readArray(prefs.getString(KEY_QUEUE, null))
         queue.put(
@@ -130,6 +132,20 @@ internal object RemoteDiagnostics {
             queue.optJSONObject(i)?.let(trimmed::put)
         }
         prefs.edit().putString(KEY_QUEUE, trimmed.toString()).apply()
+    }
+
+    /**
+     * Keep full local diagnostics, but sample repetitive polling states before they consume the
+     * bounded remote queue. Transition/failure/route/gesture events are never sampled here.
+     */
+    private fun shouldQueueEvent(event: CaptureEvent): Boolean {
+        val intervalMs = RemoteDiagnosticsSampling.minIntervalMs(event.stage)
+        if (intervalMs <= 0L) return true
+        val key = "${event.platform}|${event.stage}"
+        val previous = lastQueuedNoisyStageAt[key]
+        if (previous != null && event.timestamp - previous in 0 until intervalMs) return false
+        lastQueuedNoisyStageAt[key] = event.timestamp
+        return true
     }
 
     private fun scheduleFlushOnExecutor(context: Context, delayMs: Long) {
@@ -300,6 +316,16 @@ internal object RemoteDiagnostics {
         if (raw.isNullOrBlank()) JSONArray() else JSONArray(raw)
     } catch (_: Throwable) {
         JSONArray()
+    }
+}
+
+internal object RemoteDiagnosticsSampling {
+    fun minIntervalMs(stage: String): Long = when (stage) {
+        "window_missing" -> 30_000L
+        "address_memory_skipped" -> 60_000L
+        "screen_on" -> 60_000L
+        "ocr_price_probe" -> 10_000L
+        else -> 0L
     }
 }
 
