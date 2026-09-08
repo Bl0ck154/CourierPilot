@@ -299,11 +299,15 @@ internal object AutomaticWoltRouteCoordinator {
             return
         }
         val stopSpecs = buildStopSpecs(parsed)
-        RouteResearchLocation.requestForLiveOffer(app) { locationResult ->
-            val fix = locationResult.getOrElse { failure ->
-                callback(PreparedWoltRoute(fingerprint, emptyList(), null, failure.message ?: "current location unavailable", null, null, null))
-                return@requestForLiveOffer
-            }
+
+        // GPS acquisition and address geocoding are independent. Running them serially made the
+        // live card pay both waits before the first Valhalla request (several seconds on ColorOS).
+        // Start both immediately and join only when both inputs are ready.
+        var locationResult: Result<CurrentLocationFix>? = null
+        var stopResult: Result<List<ResolvedWaypoint>>? = null
+        var joined = false
+
+        fun continueWithInputs(fix: CurrentLocationFix, stops: List<ResolvedWaypoint>) {
             val current = ResolvedWaypoint(
                 kind = WaypointKind.CURRENT_LOCATION,
                 point = fix.point,
@@ -385,17 +389,42 @@ internal object AutomaticWoltRouteCoordinator {
                 }
             }
 
-            resolveAll(app, stopSpecs, listOf(current)) { resolution ->
-                resolution.onFailure { failure ->
-                    callback(
-                        PreparedWoltRoute(
-                            fingerprint, listOf(current), null,
-                            failure.message ?: "stop geocoding failed",
-                            fix.accuracyMeters, fix.ageMillis, null,
-                        )
-                    )
-                }.onSuccess { waypoints -> finishWithWaypoints(waypoints, strictRecovery = false) }
+            finishWithWaypoints(listOf(current) + stops, strictRecovery = false)
+        }
+
+        fun joinInputsIfReady() {
+            if (joined) return
+            val location = locationResult ?: return
+            val stops = stopResult ?: return
+            joined = true
+            val fix = location.getOrElse { failure ->
+                callback(PreparedWoltRoute(fingerprint, emptyList(), null, failure.message ?: "current location unavailable", null, null, null))
+                return
             }
+            val resolvedStops = stops.getOrElse { failure ->
+                callback(
+                    PreparedWoltRoute(
+                        fingerprint,
+                        emptyList(),
+                        null,
+                        failure.message ?: "stop geocoding failed",
+                        fix.accuracyMeters,
+                        fix.ageMillis,
+                        null,
+                    )
+                )
+                return
+            }
+            continueWithInputs(fix, resolvedStops)
+        }
+
+        RouteResearchLocation.requestForLiveOffer(app) { result ->
+            locationResult = result
+            joinInputsIfReady()
+        }
+        resolveAll(app, stopSpecs, emptyList()) { result ->
+            stopResult = result
+            joinInputsIfReady()
         }
     }
 
