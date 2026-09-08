@@ -2,6 +2,8 @@ package com.block154.courierpilot
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import java.lang.ref.WeakReference
 
 /**
@@ -24,11 +26,14 @@ internal object LiveAdvisorHub {
         val parsed: ParsedOffer,
     )
 
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var serviceRef = WeakReference<AccessibilityService>(null)
     private var advisor: StableLiveOfferAdvisor? = null
     private var currentOffer: CurrentAdvisorOffer? = null
     private var pendingPreview: PendingAdvisorOffer? = null
     private var captureOfferKey: String? = null
+    private var currentOfferHasResolvedRoute = false
+    private var currentWoltRouteRetryCount = 0
 
     fun attach(context: Context) {
         val service = context as? AccessibilityService ?: return
@@ -36,6 +41,11 @@ internal object LiveAdvisorHub {
         advisor?.destroy()
         serviceRef = WeakReference(service)
         advisor = StableLiveOfferAdvisor(service)
+        currentOffer = null
+        pendingPreview = null
+        captureOfferKey = null
+        currentOfferHasResolvedRoute = false
+        currentWoltRouteRetryCount = 0
     }
 
     /**
@@ -49,6 +59,8 @@ internal object LiveAdvisorHub {
         captureOfferKey = key
         pendingPreview = null
         currentOffer = null
+        currentOfferHasResolvedRoute = false
+        currentWoltRouteRetryCount = 0
         advisor?.suppressCurrentOffer("new offer capture started", animate = false)
     }
 
@@ -78,10 +90,12 @@ internal object LiveAdvisorHub {
                         service,
                         stage = "route_prepare_failed",
                         platform = platform,
-                        message = reason,
+                        message = "$reason; preview kept loading for fresh persisted retry",
                         dedupeWindowMs = 500L,
                     )
-                    advisor?.updateRouteUnavailable(reason)
+                    // A pre-price route preparation failure is not final. start() deliberately runs
+                    // a fresh route after persistence, so never poison the visible preview with a
+                    // sticky `—/km` state while the same offer can still recover.
                     return@prepare
                 }
                 val walking = comparison.pedestrian.getOrNull()?.distanceMeters
@@ -178,13 +192,21 @@ internal object LiveAdvisorHub {
         currentOffer = CurrentAdvisorOffer(historical.id, activeRecord, merged)
         pendingPreview = null
         captureOfferKey = null
+        currentOfferHasResolvedRoute = false
+        currentWoltRouteRetryCount = 0
 
         currentAdvisor.showBase(historical.platform, merged, syntheticCaptureKey)
         val route = runCatching { RouteResearchDatabase.get(service).latestSuccessfulAdvisorRoute(historical.id) }.getOrNull()
         val historicalRouteMeters = historical.trustedMarketRouteDistanceMeters
         when {
-            route != null -> currentAdvisor.updateRoute(route.comparison, route.waypointCount)
-            historicalRouteMeters != null -> currentAdvisor.updateHistoricalRouteDistance(historicalRouteMeters)
+            route != null -> {
+                currentOfferHasResolvedRoute = true
+                currentAdvisor.updateRoute(route.comparison, route.waypointCount)
+            }
+            historicalRouteMeters != null -> {
+                currentOfferHasResolvedRoute = true
+                currentAdvisor.updateHistoricalRouteDistance(historicalRouteMeters)
+            }
             else -> startRouteForOffer(service, currentOffer ?: return, preparedKey = null)
         }
         CaptureEventLog.append(
@@ -258,6 +280,8 @@ internal object LiveAdvisorHub {
         currentOffer = current
         pendingPreview = null
         captureOfferKey = null
+        currentOfferHasResolvedRoute = false
+        currentWoltRouteRetryCount = 0
 
         DeliveryLifecycleTracking.onOfferCaptured(service, record.packageName, offerId, record.capturedAt)
 
@@ -324,11 +348,59 @@ internal object LiveAdvisorHub {
                 preparedKey = preparedKey,
             ) { outcome ->
                 val comparison = outcome.comparison
-                // Render first so the candidate cannot train the thresholds used to judge itself.
                 if (isCurrentOffer(current)) {
-                    if (comparison != null) advisor?.updateRoute(comparison, outcome.waypoints.size)
-                    else advisor?.updateRouteUnavailable(outcome.failureReason ?: "unknown failure")
+                    if (comparison != null) {
+                        currentOfferHasResolvedRoute = true
+                        currentWoltRouteRetryCount = 0
+                        advisor?.updateRoute(comparison, outcome.waypoints.size)
+                    } else {
+                        val reason = outcome.failureReason ?: "unknown failure"
+                        when (LiveAdvisorRouteFailurePolicy.decideWoltFinalFailure(
+                            hasResolvedRoute = currentOfferHasResolvedRoute,
+                            retryCount = currentWoltRouteRetryCount,
+                            reason = reason,
+                        )) {
+                            WoltRouteFailureAction.PRESERVE_LAST_GOOD -> {
+                                CaptureEventLog.append(
+                                    service,
+                                    stage = "route_failure_preserved",
+                                    platform = record.platform,
+                                    message = "$reason; kept last verified route presentation",
+                                    dedupeWindowMs = 500L,
+                                )
+                            }
+                            WoltRouteFailureAction.RETRY -> {
+                                currentWoltRouteRetryCount += 1
+                                CaptureEventLog.append(
+                                    service,
+                                    stage = "route_retry_scheduled",
+                                    platform = record.platform,
+                                    message = "$reason; retry=$currentWoltRouteRetryCount/${LiveAdvisorRouteFailurePolicy.MAX_WOLT_RETRIES}",
+                                    dedupeWindowMs = 500L,
+                                )
+                                mainHandler.postDelayed({
+                                    if (isCurrentOffer(current) && !currentOfferHasResolvedRoute) {
+                                        startRouteForOffer(service, current, preparedKey = null)
+                                    }
+                                }, LiveAdvisorRouteFailurePolicy.WOLT_RETRY_DELAY_MS)
+                            }
+                            WoltRouteFailureAction.DISMISS -> {
+                                CaptureEventLog.append(
+                                    service,
+                                    stage = "route_failure_dismissed",
+                                    platform = record.platform,
+                                    message = "$reason; no verified score available",
+                                    dedupeWindowMs = 500L,
+                                )
+                                // Do not pin a useless `⚠️ 5.70 km | —/km` shell over the courier
+                                // app. If no trustworthy rate survived and recovery is exhausted,
+                                // removing the card is safer than presenting a dead result.
+                                advisor?.suppressCurrentOffer("route unavailable without usable score: $reason", animate = false)
+                            }
+                        }
+                    }
                 }
+                // Render first so the candidate cannot train the thresholds used to judge itself.
                 if (comparison != null) {
                     MarketIntelligence.onRouteResolved(
                         service,
