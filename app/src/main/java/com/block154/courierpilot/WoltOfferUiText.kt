@@ -34,6 +34,15 @@ internal object WoltOfferUiText {
                 singleCustomerDropoffRegex.matches(line)
         }
 
+    /** Service labels shown on restricted-item offers are card metadata, never venue names. */
+    fun isMerchantUiNoise(line: String): Boolean {
+        val normalized = normalize(line)
+        return normalized in MERCHANT_UI_NOISE ||
+            normalized.startsWith("id check ") ||
+            normalized.startsWith("id verification ") ||
+            normalized.startsWith("age verification ")
+    }
+
     fun hasCollapsedMultipleDropoffs(text: String): Boolean = text.lineSequence()
         .map(String::trim)
         .any(collapsedMultipleDropoffsRegex::matches)
@@ -45,6 +54,15 @@ internal object WoltOfferUiText {
                 lines.drop(index + 1).take(6).any(standaloneStopsRegex::matches)
         }
     }
+
+    private val MERCHANT_UI_NOISE = setOf(
+        "id check",
+        "id verification",
+        "verify id",
+        "age check",
+        "age verification",
+        "verification required",
+    )
 
     private fun normalize(value: String): String = value
         .lowercase()

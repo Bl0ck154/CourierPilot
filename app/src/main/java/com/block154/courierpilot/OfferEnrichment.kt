@@ -35,6 +35,7 @@ internal fun OfferRecord.withCurrentParsedStructure(): OfferRecord {
     val normalizedDropoffs = canonicalDistinctAddresses(sourceDropoffs, bolt = packageName == CourierSignals.BOLT_PACKAGE)
     val normalizedMerchants = normalizedNames(sourceMerchants)
         .filterNot { packageName == CourierSignals.BOLT_PACKAGE && BoltOfferTextSanitizer.isOrphanBranchFragment(it) }
+        .filterNot { packageName == CourierSignals.WOLT_PACKAGE && WoltOfferUiText.isMerchantUiNoise(it) }
         .let { names ->
             if (normalizedPickups.size == 1 && names.isNotEmpty()) listOf(names.first()) else names
         }
@@ -60,8 +61,9 @@ internal fun OfferRecord.withCurrentParsedStructure(): OfferRecord {
         ?: parsed?.deliveryCount
         ?: deliveryCount
 
-    val safeStoredRestaurant = restaurant?.takeUnless {
-        packageName == CourierSignals.BOLT_PACKAGE && BoltOfferTextSanitizer.isOrphanBranchFragment(it)
+    val safeStoredRestaurant = restaurant?.takeUnless { value ->
+        (packageName == CourierSignals.BOLT_PACKAGE && BoltOfferTextSanitizer.isOrphanBranchFragment(value)) ||
+            (packageName == CourierSignals.WOLT_PACKAGE && WoltOfferUiText.isMerchantUiNoise(value))
     }
 
     return copy(

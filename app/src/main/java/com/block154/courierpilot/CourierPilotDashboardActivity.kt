@@ -87,6 +87,9 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import kotlin.math.ceil
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 class CourierPilotDashboardActivity : ComponentActivity() {
     private val refreshVersion = mutableIntStateOf(0)
@@ -202,7 +205,7 @@ private fun DashboardRoot(
                         Triple(DashboardScreen.HISTORY, "History", Icons.Rounded.History),
                         Triple(DashboardScreen.ADDRESSES, "Addresses", Icons.Rounded.Place),
                         Triple(DashboardScreen.STATS, "Stats", Icons.Rounded.BarChart),
-                        Triple(DashboardScreen.MARKET, "Market", Icons.Rounded.Storefront),
+                        Triple(DashboardScreen.MARKET, "Pay", Icons.Rounded.Storefront),
                     ).forEach { (target, label, icon) ->
                         NavigationBarItem(
                             selected = screen == target,
@@ -327,13 +330,17 @@ private fun DashboardMarket(padding: PaddingValues) {
         personalHistory = personalHistory,
         cityHistory = cityHistory,
     )
-    Column(Modifier.fillMaxSize().padding(padding)) {
-        MarketScreen(
-            state = state,
-            onPlatformSelected = { platform = it },
-            onPeriodSelected = { period = it },
-        )
-    }
+    MarketScreen(
+        state = state,
+        contentPadding = PaddingValues(
+            start = 16.dp,
+            end = 16.dp,
+            top = padding.calculateTopPadding() + 12.dp,
+            bottom = padding.calculateBottomPadding() + 20.dp,
+        ),
+        onPlatformSelected = { platform = it },
+        onPeriodSelected = { period = it },
+    )
 }
 
 
@@ -503,11 +510,29 @@ private fun DashboardHistory(
 ) {
     var query by remember { mutableStateOf("") }
     var page by remember { mutableIntStateOf(0) }
-    val total = offers.offerCount(query)
+    var total by remember { mutableIntStateOf(0) }
+    var records by remember { mutableStateOf<List<OfferRecord>>(emptyList()) }
+    var loading by remember { mutableStateOf(true) }
+
+    LaunchedEffect(query, page) {
+        loading = true
+        if (query.isNotBlank()) delay(160L)
+        val requestedPage = page
+        val loaded = withContext(Dispatchers.IO) {
+            val count = offers.offerCount(query)
+            val pageCount = maxOf(1, ceil(count / HISTORY_PAGE_SIZE.toDouble()).toInt())
+            val safePage = requestedPage.coerceIn(0, pageCount - 1)
+            val pageRecords = offers.searchPage(query, HISTORY_PAGE_SIZE, safePage * HISTORY_PAGE_SIZE)
+                .map { it.withCurrentParsedStructure() }
+            Triple(count, safePage, pageRecords)
+        }
+        total = loaded.first
+        if (page != loaded.second) page = loaded.second
+        records = loaded.third
+        loading = false
+    }
+
     val pageCount = maxOf(1, ceil(total / HISTORY_PAGE_SIZE.toDouble()).toInt())
-    if (page >= pageCount) page = pageCount - 1
-    val records = offers.searchPage(query, HISTORY_PAGE_SIZE, page * HISTORY_PAGE_SIZE)
-        .map { it.withCurrentParsedStructure() }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -529,10 +554,10 @@ private fun DashboardHistory(
                 leadingIcon = { Icon(Icons.Rounded.Search, contentDescription = null) },
             )
         }
-        if (records.isEmpty()) {
-            item { DashboardEmpty(if (query.isBlank()) "No offers yet." else "No offers match this search.") }
-        } else {
-            items(records, key = { it.id }) { record ->
+        when {
+            loading && records.isEmpty() -> item { DashboardEmpty("Loading offers…") }
+            records.isEmpty() -> item { DashboardEmpty(if (query.isBlank()) "No offers yet." else "No offers match this search.") }
+            else -> items(records, key = { it.id }) { record ->
                 DashboardOfferCard(record) { onOpenOffer(record.id) }
             }
         }
@@ -541,8 +566,8 @@ private fun DashboardHistory(
                 PaginationRow(
                     page = page,
                     pageCount = pageCount,
-                    onPrevious = { if (page > 0) page-- },
-                    onNext = { if (page + 1 < pageCount) page++ },
+                    onPrevious = { if (!loading && page > 0) page-- },
+                    onNext = { if (!loading && page + 1 < pageCount) page++ },
                 )
             }
         }
@@ -819,7 +844,7 @@ private fun DashboardSettings(
             }
         }
 
-        item { DashboardSection("City market", "Adaptive €/km scoring from recent anonymous city offers") }
+        item { DashboardSection("Pay comparison", "Adaptive €/km scoring from recent anonymous city offers") }
         item {
             Card(shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.padding(16.dp)) {

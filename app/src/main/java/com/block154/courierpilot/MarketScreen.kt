@@ -2,24 +2,35 @@ package com.block154.courierpilot
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.block154.courierpilot.ui.BrandBlue
+import com.block154.courierpilot.ui.BrandCyan
+import com.block154.courierpilot.ui.Purple
 
 enum class MarketPlatform { WOLT, BOLT }
 enum class MarketHistoryPeriod(val label: String) { DAY("Day"), WEEK("Week"), MONTH("Month") }
@@ -59,62 +70,226 @@ data class MarketScreenState(
 @Composable
 fun MarketScreen(
     state: MarketScreenState,
+    contentPadding: PaddingValues = PaddingValues(16.dp),
     onPlatformSelected: (MarketPlatform) -> Unit = {},
     onPeriodSelected: (MarketHistoryPeriod) -> Unit = {},
     onRetry: () -> Unit = {},
 ) {
     when {
-        state.loading -> Column(Modifier.fillMaxSize(), Arrangement.Center) { CircularProgressIndicator(Modifier.padding(24.dp)) }
-        state.offline -> OfflineMarketState(onRetry)
-        else -> LazyColumn(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            item { Text("Market / Pay trends", style = MaterialTheme.typography.headlineMedium) }
+        state.loading -> Column(
+            Modifier.fillMaxSize().padding(contentPadding),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) { CircularProgressIndicator() }
+
+        state.offline -> OfflineMarketState(contentPadding, onRetry)
+
+        else -> LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = contentPadding,
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            item { SectionHeader("Pay trends", "Your real €/km compared with recent offers") }
             item { PlatformSelector(state.platform, onPlatformSelected) }
-            item { OverviewCard(state) }
+            item { PayOverviewCard(state) }
+            item { SectionHeader("History", "How pay changed over time") }
             item { HistorySelector(state.period, onPeriodSelected) }
-            item { Text("Your history", style = MaterialTheme.typography.titleMedium) }
-            if (state.personalHistory.isEmpty()) item { Text("No personal history yet", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            else items(state.personalHistory) { HistoryRow(it, state.currencyCode) }
-            item { Text("City history", style = MaterialTheme.typography.titleMedium) }
-            if (state.cityHistory.isEmpty()) item { Text("No collective city history yet", color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            else items(state.cityHistory) { HistoryRow(it, state.currencyCode) }
+
+            item { HistoryHeader("Your offers", state.personalHistory.size) }
+            if (state.personalHistory.isEmpty()) {
+                item { EmptyCard("Not enough personal route data yet.") }
+            } else {
+                items(state.personalHistory, key = { "personal:${it.label}" }) { HistoryRow(it, state.currencyCode) }
+            }
+
+            item { HistoryHeader("City", state.cityHistory.size) }
+            if (state.cityHistory.isEmpty()) {
+                item { EmptyCard("City comparison is still learning.") }
+            } else {
+                items(state.cityHistory, key = { "city:${it.label}" }) { HistoryRow(it, state.currencyCode) }
+            }
         }
     }
 }
 
-@Composable private fun PlatformSelector(selected: MarketPlatform, onSelect: (MarketPlatform) -> Unit) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { MarketPlatform.entries.forEach { platform ->
-        FilterChip(selected == platform, { onSelect(platform) }, label = { Text(platform.name) })
-    } }
+@Composable
+private fun SectionHeader(title: String, subtitle: String) {
+    Column {
+        Text(title, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+        Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+    }
 }
 
-@Composable private fun OverviewCard(state: MarketScreenState) {
-    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("${state.platform.name} market", style = MaterialTheme.typography.titleLarge)
-        MedianLine("Personal median", state.personalMedian)
-        MedianLine("City median", state.cityMedian)
-        Text("Source: ${state.source.displayName()} · Confidence: ${state.confidence.displayName()}")
-        Text("${state.sampleCount} eligible offers${state.percentile?.let { " · ${it}th percentile" } ?: ""}")
-        if (state.source == MarketSource.LEARNING) Text("Learning ${state.sampleCount.coerceAtMost(state.learningTarget)} / ${state.learningTarget}")
-        state.trend?.let { Text("7d trend ${it.label}", color = if (it.improving) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error) }
-    } }
+@Composable
+private fun PlatformSelector(selected: MarketPlatform, onSelect: (MarketPlatform) -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        MarketPlatform.entries.forEach { platform ->
+            FilterChip(
+                selected = selected == platform,
+                onClick = { onSelect(platform) },
+                label = { Text(if (platform == MarketPlatform.WOLT) "Wolt" else "Bolt") },
+            )
+        }
+    }
 }
 
-@Composable private fun MedianLine(label: String, median: MarketMedian?) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(label); Text(median?.let { "${it.value} ${it.currencyCode}/km" } ?: "—") }
-}
-@Composable private fun HistorySelector(selected: MarketHistoryPeriod, onSelect: (MarketHistoryPeriod) -> Unit) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { MarketHistoryPeriod.entries.forEach { FilterChip(selected == it, { onSelect(it) }, label = { Text(it.label) }) } }
-}
-@Composable private fun HistoryRow(bucket: MarketHistoryBucket, currencyCode: String) {
-    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text(bucket.label); Text("${bucket.sampleCount} offers") }
-        Text("Median ${bucket.median} $currencyCode/km · P25–P75 ${bucket.p25}–${bucket.p75}", color = MaterialTheme.colorScheme.onSurfaceVariant)
-    } }
-}
-@Composable private fun OfflineMarketState(onRetry: () -> Unit) { Column(Modifier.fillMaxSize().padding(24.dp), Arrangement.Center) { Text("Market data is offline"); Spacer(Modifier.height(12.dp)); Button(onRetry) { Text("Retry") } } }
+@Composable
+private fun PayOverviewCard(state: MarketScreenState) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                PayMetric(
+                    label = "Your median",
+                    value = state.personalMedian?.display() ?: "—",
+                    accent = BrandBlue,
+                    modifier = Modifier.weight(1f),
+                )
+                PayMetric(
+                    label = "City median",
+                    value = state.cityMedian?.display() ?: "—",
+                    accent = BrandCyan,
+                    modifier = Modifier.weight(1f),
+                )
+            }
 
-private fun MarketSource.displayName() = when (this) { MarketSource.PERSONAL_AND_CITY -> "Personal + City"; else -> name.lowercase().replaceFirstChar { it.uppercase() } }
-private fun MarketUiConfidence.displayName() = name.lowercase().replace('_', ' ').replaceFirstChar { it.uppercase() }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        when (state.source) {
+                            MarketSource.PERSONAL_AND_CITY -> "Personal + city model"
+                            MarketSource.PERSONAL -> "Your offer history"
+                            MarketSource.CITY -> "City comparison"
+                            MarketSource.LEARNING -> "Learning your pay baseline"
+                        },
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp,
+                    )
+                    Text(
+                        "${state.sampleCount} eligible offers · ${state.confidence.displayName()}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp,
+                    )
+                }
+                state.trend?.let { trend ->
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (trend.improving) BrandBlue.copy(alpha = 0.10f) else MaterialTheme.colorScheme.error.copy(alpha = 0.10f),
+                    ) {
+                        Text(
+                            trend.label,
+                            Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            color = if (trend.improving) BrandBlue else MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 12.sp,
+                        )
+                    }
+                }
+            }
+
+            if (state.source == MarketSource.LEARNING) {
+                Text(
+                    "Learning ${state.sampleCount.coerceAtMost(state.learningTarget)} / ${state.learningTarget} before a stable personal baseline.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PayMetric(label: String, value: String, accent: Color, modifier: Modifier = Modifier) {
+    Surface(modifier = modifier, shape = RoundedCornerShape(18.dp), color = accent.copy(alpha = 0.09f)) {
+        Column(Modifier.padding(14.dp)) {
+            Surface(shape = RoundedCornerShape(50), color = accent, modifier = Modifier.size(8.dp)) {}
+            Spacer(Modifier.size(10.dp))
+            Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+            Text(value, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+        }
+    }
+}
+
+@Composable
+private fun HistorySelector(selected: MarketHistoryPeriod, onSelect: (MarketHistoryPeriod) -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        MarketHistoryPeriod.entries.forEach { period ->
+            FilterChip(selected == period, { onSelect(period) }, label = { Text(period.label) })
+        }
+    }
+}
+
+@Composable
+private fun HistoryHeader(title: String, bucketCount: Int) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(title, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+        if (bucketCount > 0) Text("$bucketCount periods", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+    }
+}
+
+@Composable
+private fun HistoryRow(bucket: MarketHistoryBucket, currencyCode: String) {
+    Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(bucket.label, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                Text("${bucket.median} $currencyCode/km", fontWeight = FontWeight.SemiBold, color = Purple)
+            }
+            Text(
+                "${bucket.sampleCount} offers · usual range ${bucket.p25}–${bucket.p75} $currencyCode/km",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+            )
+        }
+    }
+}
+
+@Composable
+private fun EmptyCard(text: String) {
+    Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surface) {
+        Text(text, Modifier.fillMaxWidth().padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+    }
+}
+
+@Composable
+private fun OfflineMarketState(contentPadding: PaddingValues, onRetry: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().padding(contentPadding),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("Pay trends are offline")
+        Spacer(Modifier.size(12.dp))
+        Button(onRetry) { Text("Retry") }
+    }
+}
+
+private fun MarketMedian.display(): String = "$value $currencyCode/km"
+private fun MarketUiConfidence.displayName() = when (this) {
+    MarketUiConfidence.NOT_READY -> "learning"
+    MarketUiConfidence.LOW -> "low confidence"
+    MarketUiConfidence.MEDIUM -> "medium confidence"
+    MarketUiConfidence.HIGH -> "high confidence"
+}
 
 @Preview(showBackground = true)
-@Composable private fun MarketScreenPreview() { MarketScreen(MarketScreenState(personalMedian = MarketMedian("1.24", "EUR"), cityMedian = MarketMedian("1.31", "EUR"), percentile = 68, rating = "GOOD", source = MarketSource.PERSONAL_AND_CITY, confidence = MarketUiConfidence.MEDIUM, sampleCount = 14, trend = MarketUiTrend(8.4, true), personalHistory = listOf(MarketHistoryBucket("Mon", "1.30", "1.05", "1.56", 8)), cityHistory = listOf(MarketHistoryBucket("Mon", "1.34", "1.10", "1.61", 42)))) }
+@Composable
+private fun MarketScreenPreview() {
+    MarketScreen(
+        MarketScreenState(
+            personalMedian = MarketMedian("1.24", "EUR"),
+            cityMedian = MarketMedian("1.31", "EUR"),
+            percentile = 68,
+            rating = "GOOD",
+            source = MarketSource.PERSONAL_AND_CITY,
+            confidence = MarketUiConfidence.MEDIUM,
+            sampleCount = 14,
+            trend = MarketUiTrend(8.4, true),
+            personalHistory = listOf(MarketHistoryBucket("Mon", "1.30", "1.05", "1.56", 8)),
+            cityHistory = listOf(MarketHistoryBucket("Mon", "1.34", "1.10", "1.61", 42)),
+        )
+    )
+}

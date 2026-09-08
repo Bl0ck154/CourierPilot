@@ -8,6 +8,7 @@ internal object OfferPresentation {
         val candidates = (record.merchantNames + listOfNotNull(record.restaurant))
             .map(::cleanMerchant)
             .filter(::isCredibleMerchant)
+            .filterNot { record.packageName == CourierSignals.WOLT_PACKAGE && WoltOfferUiText.isMerchantUiNoise(it) }
             .distinctBy { it.lowercase(Locale.ROOT) }
 
         val first = candidates.firstOrNull()?.let { stripLeakedBuildingSuffixPrefix(it, record.dropoffAddresses) }
