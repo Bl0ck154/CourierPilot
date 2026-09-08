@@ -191,6 +191,7 @@ internal object DeliveryMemory {
             )
             if (!sameSuggestion) {
                 AccessCodeSuggestions.save(context, suggestion)
+                AccessCodeNotifier.show(context, suggestion)
                 Toast.makeText(
                     context,
                     "Possible door code · ${canonical.second}: ${codes.joinToString(" / ")}",

@@ -3,6 +3,7 @@ package com.block154.courierpilot
 import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.Executors
 
 data class CaptureEvent(
     val timestamp: Long,
@@ -17,6 +18,9 @@ internal object CaptureEventLog {
     private const val MAX_EVENTS = 160
     private const val MAX_DEDUPE_KEYS = 256
     private val lastDedupeAt = LinkedHashMap<String, Long>(MAX_DEDUPE_KEYS, 0.75f, true)
+    private val persistenceExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "CourierPilot-CaptureLog").apply { isDaemon = true }
+    }
 
     @Synchronized
     fun append(
@@ -44,30 +48,17 @@ internal object CaptureEventLog {
             }
         }
 
-        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        val events = readArray(prefs.getString(KEY_EVENTS, null))
         val event = CaptureEvent(
             timestamp = now,
             stage = normalizedStage,
             platform = normalizedPlatform,
             message = normalizedMessage,
         )
-        events.put(
-            JSONObject()
-                .put("timestamp", event.timestamp)
-                .put("stage", event.stage)
-                .put("platform", event.platform)
-                .put("message", event.message)
-        )
-
-        val trimmed = JSONArray()
-        val start = (events.length() - MAX_EVENTS).coerceAtLeast(0)
-        for (i in start until events.length()) trimmed.put(events.optJSONObject(i))
-        prefs.edit().putString(KEY_EVENTS, trimmed.toString()).apply()
-
-        // This method only hands the already-sanitized event to a dedicated executor. No HTTP or
-        // remote queue serialization runs on the notification/accessibility caller thread.
-        RemoteDiagnostics.enqueue(context, event)
+        val app = context.applicationContext
+        // Diagnostics must never sit in the live offer UI path. Persist/trim the local JSON history
+        // on one background thread; RemoteDiagnostics already has its own executor.
+        persistenceExecutor.execute { persistEvent(app, event) }
+        RemoteDiagnostics.enqueue(app, event)
     }
 
     fun recent(context: Context, limit: Int = 80): List<CaptureEvent> {
@@ -105,6 +96,22 @@ internal object CaptureEventLog {
             append('\n')
         }
     }.trimEnd()
+
+    private fun persistEvent(context: Context, event: CaptureEvent) {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val events = readArray(prefs.getString(KEY_EVENTS, null))
+        events.put(
+            JSONObject()
+                .put("timestamp", event.timestamp)
+                .put("stage", event.stage)
+                .put("platform", event.platform)
+                .put("message", event.message)
+        )
+        val trimmed = JSONArray()
+        val start = (events.length() - MAX_EVENTS).coerceAtLeast(0)
+        for (i in start until events.length()) trimmed.put(events.optJSONObject(i))
+        prefs.edit().putString(KEY_EVENTS, trimmed.toString()).apply()
+    }
 
     private fun readArray(raw: String?): JSONArray = try {
         if (raw.isNullOrBlank()) JSONArray() else JSONArray(raw)

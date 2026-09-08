@@ -363,6 +363,16 @@ class OfferAccessibilityService : AccessibilityService() {
             message = "Hot Accessibility price watcher pushed price directly into the live card",
             dedupeWindowMs = 3_000L,
         )
+        if (WoltOfferTextRecoveryPolicy.needsOcrBeforePersist(
+                parsed,
+                automaticRouting = LiveAdvisorSettings.automaticWoltRouting(this),
+            )
+        ) {
+            // Price readiness is not capture completeness. Wolt may expose money before the merchant
+            // or destination semantics settle; immediately wake the capture loop instead of waiting
+            // for an unrelated Accessibility event (live 0.15.55 traces showed a ~27 s gap here).
+            scheduleAttempt(WOLT_FAST_PRICE_POLL_MS)
+        }
         return true
     }
 
@@ -1150,6 +1160,7 @@ class OfferAccessibilityService : AccessibilityService() {
                     handleScreenshotFailure(errorCode, retry = true, pending = pending)
                 }
             },
+            preferDisplay = pending.packageName == CourierSignals.WOLT_PACKAGE,
         )
     }
 
@@ -1162,6 +1173,19 @@ class OfferAccessibilityService : AccessibilityService() {
                 override fun onSuccess(screenshot: ScreenshotResult) {
                     if (!isCaptureCurrent(captureToken)) {
                         discardScreenshot(screenshot)
+                        return
+                    }
+                    if (pending.packageName == CourierSignals.WOLT_PACKAGE && !isVisibleWoltOfferSurface(pending)) {
+                        discardScreenshot(screenshot)
+                        finishCapture(captureToken)
+                        CaptureEventLog.append(
+                            this@OfferAccessibilityService,
+                            stage = "screenshot_stale_offer_discarded",
+                            platform = platform,
+                            message = "Discarded screenshot because the Wolt offer surface had already disappeared",
+                            dedupeWindowMs = 2_000L,
+                        )
+                        persistOffer(null, pending, text, parsed)
                         return
                     }
                     val bitmap = screenshotToBitmap(screenshot)
@@ -1212,6 +1236,7 @@ class OfferAccessibilityService : AccessibilityService() {
                     }
                 }
             },
+            preferDisplay = pending.packageName == CourierSignals.WOLT_PACKAGE,
         )
     }
 
@@ -1252,7 +1277,11 @@ class OfferAccessibilityService : AccessibilityService() {
         runCatching { screenshot.hardwareBuffer.close() }
     }
 
-    private fun takeTargetScreenshot(windowId: Int, callback: TakeScreenshotCallback) {
+    private fun takeTargetScreenshot(
+        windowId: Int,
+        callback: TakeScreenshotCallback,
+        preferDisplay: Boolean = false,
+    ) {
         if (Build.VERSION.SDK_INT < 34) {
             LiveAdvisorHub.setCaptureSuppressed(this, true)
             val cleanCallback = object : TakeScreenshotCallback {
@@ -1277,6 +1306,15 @@ class OfferAccessibilityService : AccessibilityService() {
                     )
                     callback.onFailure(ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR)
                 }
+            return
+        }
+
+        // On the real Android 16/ColorOS courier device takeScreenshotOfWindow can sit for several
+        // seconds and fail only after Wolt has already replaced the offer. A display capture returns
+        // much sooner and the overlay is suppressed around it, so use that direct path for
+        // time-critical Wolt OCR/proof frames.
+        if (preferDisplay) {
+            requestDisplayScreenshot(callback, fallback = false)
             return
         }
 
@@ -1305,7 +1343,7 @@ class OfferAccessibilityService : AccessibilityService() {
                     "Window screenshot failed with Android error $errorCode; retrying as display capture",
                     dedupeWindowMs = 2_000L,
                 )
-                handler.postDelayed({ requestDisplayScreenshotFallback(callback) }, delay)
+                handler.postDelayed({ requestDisplayScreenshot(callback, fallback = true) }, delay)
             }
         }
 
@@ -1318,21 +1356,21 @@ class OfferAccessibilityService : AccessibilityService() {
                     dedupeWindowMs = 3_000L,
                 )
                 handler.postDelayed(
-                    { requestDisplayScreenshotFallback(callback) },
+                    { requestDisplayScreenshot(callback, fallback = true) },
                     DISPLAY_SCREENSHOT_FALLBACK_DELAY_MS,
                 )
             }
     }
 
-    private fun requestDisplayScreenshotFallback(callback: TakeScreenshotCallback) {
+    private fun requestDisplayScreenshot(callback: TakeScreenshotCallback, fallback: Boolean) {
         LiveAdvisorHub.setCaptureSuppressed(this, true)
         val displayCallback = object : TakeScreenshotCallback {
             override fun onSuccess(screenshot: ScreenshotResult) {
                 LiveAdvisorHub.setCaptureSuppressed(this@OfferAccessibilityService, false)
                 CaptureEventLog.append(
                     this@OfferAccessibilityService,
-                    "screenshot_display_fallback_ok",
-                    "Display screenshot fallback succeeded",
+                    if (fallback) "screenshot_display_fallback_ok" else "screenshot_display_direct_ok",
+                    if (fallback) "Display screenshot fallback succeeded" else "Direct display screenshot succeeded",
                     dedupeWindowMs = 3_000L,
                 )
                 callback.onSuccess(screenshot)
@@ -1342,8 +1380,12 @@ class OfferAccessibilityService : AccessibilityService() {
                 LiveAdvisorHub.setCaptureSuppressed(this@OfferAccessibilityService, false)
                 CaptureEventLog.append(
                     this@OfferAccessibilityService,
-                    "screenshot_display_fallback_failed",
-                    "Display screenshot fallback failed with Android error $displayErrorCode",
+                    if (fallback) "screenshot_display_fallback_failed" else "screenshot_display_direct_failed",
+                    if (fallback) {
+                        "Display screenshot fallback failed with Android error $displayErrorCode"
+                    } else {
+                        "Direct display screenshot failed with Android error $displayErrorCode"
+                    },
                     dedupeWindowMs = 3_000L,
                 )
                 callback.onFailure(displayErrorCode)
@@ -1366,6 +1408,14 @@ class OfferAccessibilityService : AccessibilityService() {
         if (errorCode == ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS) return false
         if (Build.VERSION.SDK_INT >= 34 && errorCode == ERROR_TAKE_SCREENSHOT_SECURE_WINDOW) return false
         return true
+    }
+
+    private fun isVisibleWoltOfferSurface(pending: PendingOffer): Boolean {
+        if (pending.packageName != CourierSignals.WOLT_PACKAGE) return true
+        val target = findCourierWindow(pending) ?: return false
+        val text = collectStrictlyVisibleText(target.root)
+        if (text.isBlank()) return false
+        return CourierSignals.looksLikeOfferScreen(text, OfferParser.parse(text))
     }
 
     private fun persistOffer(bitmap: Bitmap?, pending: PendingOffer, rawText: String, parsed: ParsedOffer) {

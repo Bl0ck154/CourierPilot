@@ -190,6 +190,9 @@ internal object RouteResearchGeocoder {
     private val photonExecutor = Executors.newFixedThreadPool(2) { runnable ->
         Thread(runnable, "CourierPilot-PhotonGeocoder").apply { isDaemon = true }
     }
+    private val registryExecutor = Executors.newFixedThreadPool(2) { runnable ->
+        Thread(runnable, "CourierPilot-LtAddressRegistry").apply { isDaemon = true }
+    }
     private val mainHandler = Handler(Looper.getMainLooper())
 
     fun prewarm(context: Context, addresses: List<String>) {
@@ -238,6 +241,10 @@ internal object RouteResearchGeocoder {
         val city = MarketCityResolver.cached(app)
         val candidates = RouteGeocodeQueryPolicy.candidates(query, city)
         val key = cacheKey(app, query)
+        RouteGeocodePersistentCache.get(app, key)?.let { cached ->
+            callback(Result.success(cached))
+            return
+        }
         val now = System.currentTimeMillis()
         synchronized(lock) {
             cache[key]?.takeIf { it.expiresAt > now }?.let { cached ->
@@ -258,6 +265,7 @@ internal object RouteResearchGeocoder {
         // ColorOS/Android 16 occasionally never calls the platform Geocoder callback. Race it
         // against Photon so one broken backend cannot make an otherwise trivial Wolt route fail.
         val reference = RouteResearchLocation.bestLastKnown(app)?.point
+        startLithuanianRegistryLookup(app, key, query, city)
         startPhotonLookup(app, key, query, city, reference)
         mainHandler.postDelayed({
             if (isInFlight(key)) {
@@ -286,7 +294,9 @@ internal object RouteResearchGeocoder {
                         if (chosen == null) attempt(index + 1)
                         else app.mainExecutor.execute {
                             if (isInFlight(key)) {
-                                complete(key, Result.success(RoutePoint(chosen.latitude, chosen.longitude)))
+                                val point = RoutePoint(chosen.latitude, chosen.longitude)
+                                RouteGeocodePersistentCache.put(app, key, point)
+                                complete(key, Result.success(point))
                             }
                         }
                     }
@@ -308,7 +318,10 @@ internal object RouteResearchGeocoder {
                 }
                 app.mainExecutor.execute {
                     result.onSuccess { point ->
-                        if (isInFlight(key)) complete(key, Result.success(point))
+                        if (isInFlight(key)) {
+                            RouteGeocodePersistentCache.put(app, key, point)
+                            complete(key, Result.success(point))
+                        }
                     }.onFailure { failure ->
                         markBackendFailure(app, key, "android", failure)
                     }
@@ -317,6 +330,31 @@ internal object RouteResearchGeocoder {
                 name = "CourierPilotGeocoder"
                 isDaemon = true
                 start()
+            }
+        }
+    }
+
+    private fun startLithuanianRegistryLookup(
+        context: Context,
+        key: String,
+        query: String,
+        city: MarketCity?,
+    ) {
+        if (!city?.countryCode.equals("LT", ignoreCase = true)) return
+        if (LithuanianAddressRegistryGeocoder.parseHouseAndPostcode(query) == null) return
+        registryExecutor.execute {
+            val resolution = LithuanianAddressRegistryGeocoder.resolve(query, city)
+            context.mainExecutor.execute {
+                if (!isInFlight(key) || resolution == null) return@execute
+                RouteGeocodePersistentCache.put(context, key, resolution.point)
+                CaptureEventLog.append(
+                    context,
+                    stage = "geocode_lt_registry",
+                    platform = "",
+                    message = "Lithuanian Address Register resolved house + postcode directly",
+                    dedupeWindowMs = 1_000L,
+                )
+                complete(key, Result.success(resolution.point))
             }
         }
     }
@@ -333,6 +371,7 @@ internal object RouteResearchGeocoder {
             context.mainExecutor.execute {
                 if (!isInFlight(key)) return@execute
                 if (point != null) {
+                    RouteGeocodePersistentCache.put(context, key, point)
                     CaptureEventLog.append(
                         context,
                         stage = "geocode_photon_fallback",

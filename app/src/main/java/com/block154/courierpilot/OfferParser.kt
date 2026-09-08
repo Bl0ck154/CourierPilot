@@ -564,6 +564,7 @@ internal object OfferParser {
             WoltOfferUiText.collapsedMultipleDropoffsRegex.matches(line) ||
             WoltOfferUiText.standaloneStopsRegex.matches(line)
         ) return false
+        if (WoltOfferUiText.isMerchantUiNoise(line)) return false
         if (boltDropoffCountRegex.matches(line)) return false
         if (lower in GENERIC_LINES) return false
         if (lower.startsWith("pickup ") || lower.startsWith("delivery ")) return false

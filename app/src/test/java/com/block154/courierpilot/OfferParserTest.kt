@@ -1,6 +1,7 @@
 package com.block154.courierpilot
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -504,6 +505,30 @@ class OfferParserTest {
         assertNull(parsed.money)
         assertNull(parsed.priceCents)
         assertEquals(1000, parsed.distanceMeters)
+    }
+
+    @Test
+    fun ignoresWoltIdCheckServiceLabelAsMerchant() {
+        val parsed = OfferParser.parse(
+            """
+            €6.94
+            Expected earnings for the full delivery
+            Delivery from
+            ID check
+            Sushi Lounge (Dominikonų g.)
+            Route distance
+            13.0 km
+            Timeline
+            Sushi Lounge (Dominikonų g.)
+            Dominikonų g. 6, Vilnius, LT-01131
+            Customer drop-off
+            55, Vilnius, 09110
+            Accept
+            """.trimIndent()
+        )
+
+        assertFalse(parsed.merchantNames.any { it.equals("ID check", ignoreCase = true) })
+        assertEquals("Sushi Lounge (Dominikonų g.)", parsed.merchantNames.firstOrNull())
     }
 
     @Test
