@@ -50,6 +50,7 @@ class RemoteDiagnosticsPrivacyTest {
         assertEquals(10_000L, RemoteDiagnosticsSampling.minIntervalMs("ocr_price_probe"))
         assertEquals(0L, RemoteDiagnosticsSampling.minIntervalMs("route_ready"))
         assertEquals(0L, RemoteDiagnosticsSampling.minIntervalMs("overlay_drag"))
+        assertEquals(10_000L, RemoteDiagnosticsSampling.minIntervalMs("overlay_tree_slow"))
     }
 
 }

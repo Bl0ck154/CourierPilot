@@ -325,6 +325,7 @@ internal object RemoteDiagnosticsSampling {
         "address_memory_skipped" -> 60_000L
         "screen_on" -> 60_000L
         "ocr_price_probe" -> 10_000L
+        "overlay_tree_slow" -> 10_000L
         else -> 0L
     }
 }
