@@ -537,6 +537,16 @@ internal object LiveAdvisorHub {
                                     }
                                 }, LiveAdvisorRouteFailurePolicy.WOLT_RETRY_DELAY_MS)
                             }
+                            WoltRouteFailureAction.RETAIN_UNAVAILABLE -> {
+                                CaptureEventLog.append(
+                                    service,
+                                    stage = "route_failure_retained",
+                                    platform = record.platform,
+                                    message = "$reason; kept one stable advisor owner to prevent same-screen re-arm",
+                                    dedupeWindowMs = 500L,
+                                )
+                                advisor?.updateRouteUnavailable(reason)
+                            }
                             WoltRouteFailureAction.DISMISS -> {
                                 CaptureEventLog.append(
                                     service,
