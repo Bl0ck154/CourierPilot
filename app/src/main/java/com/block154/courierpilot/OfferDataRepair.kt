@@ -12,9 +12,10 @@ import android.net.Uri
 internal object OfferDataRepair {
     private const val PREFS = "courier_offer_repairs"
     private const val KEY_REVISION = "parser_repair_revision"
-    // Revision 16 also clears historical calculated routes that are wildly inconsistent with the
-    // captured platform distance, so old geocoder jumps cannot keep poisoning History/Stats.
-    private const val CURRENT_REVISION = 16
+    // Revision 17 also repairs pre-0.15.59 Wolt incremental/add-on rows. Those captures could save
+    // a postcode as the price and classify an existing/new customer as pickup data. Full Valhalla
+    // chains from incremental offers are also removed because they are not the incremental detour.
+    private const val CURRENT_REVISION = 17
     private const val LIST_SEPARATOR = "\u001F"
 
     @Synchronized
@@ -45,12 +46,42 @@ internal object OfferDataRepair {
                     return@forEach
                 }
 
-                val reparsed = original.withCurrentParsedStructure()
+                val rawParsed = original.rawText.takeIf(String::isNotBlank)?.let(OfferParser::parse)
+                val trustedIncrementalMoney = trustedHistoricalIncrementalMoney(original, rawParsed)
+                val reparsed = if (trustedIncrementalMoney != null && rawParsed != null) {
+                    // The old persisted arrays for this exact offer family are known to be unsafe:
+                    // 0.15.58 could promote a customer stop to pickup and keep the old destination
+                    // as the only drop-off. The current parser is anchored to explicit Wolt labels,
+                    // so use its route structure directly instead of preferring the richer bad list.
+                    original.copy(
+                        priceCents = trustedIncrementalMoney.amountMinor.toInt(),
+                        currencyCode = trustedIncrementalMoney.currencyCode,
+                        currencyFractionDigits = trustedIncrementalMoney.fractionDigits,
+                        distanceMeters = rawParsed.distanceMeters ?: original.distanceMeters,
+                        restaurant = rawParsed.restaurant ?: original.restaurant,
+                        merchantNames = rawParsed.merchantNames.ifEmpty { original.merchantNames },
+                        pickupAddresses = rawParsed.pickupAddresses.ifEmpty { original.pickupAddresses },
+                        customerNames = rawParsed.customerNames.ifEmpty { original.customerNames },
+                        dropoffAddresses = rawParsed.dropoffAddresses.ifEmpty { original.dropoffAddresses },
+                        deliveryCount = rawParsed.deliveryCount ?: original.deliveryCount,
+                        estimatedMinutesMin = rawParsed.estimatedMinutesMin ?: original.estimatedMinutesMin,
+                        estimatedMinutesMax = rawParsed.estimatedMinutesMax ?: original.estimatedMinutesMax,
+                    )
+                } else {
+                    original.withCurrentParsedStructure()
+                }
                 val visualFingerprint = original.visualFingerprint.ifBlank { visualBackfills[original.id].orEmpty() }
-                val rejectedHistoricalRoute = OfferRouteDistancePolicy.calculatedRouteWasRejected(
-                    reparsed.distanceMeters,
-                    original.marketRouteDistanceMeters,
-                )
+                val repairedIncrementalMoney = trustedIncrementalMoney != null &&
+                    (reparsed.priceCents != original.priceCents ||
+                        reparsed.currencyCode != original.currencyCode ||
+                        reparsed.currencyFractionDigits != original.currencyFractionDigits)
+                val incrementalFullRouteIsUntrusted = rawParsed?.isIncrementalOffer == true &&
+                    original.marketRouteDistanceMeters != null
+                val rejectedHistoricalRoute = incrementalFullRouteIsUntrusted ||
+                    OfferRouteDistancePolicy.calculatedRouteWasRejected(
+                        reparsed.distanceMeters,
+                        original.marketRouteDistanceMeters,
+                    )
                 val repaired = reparsed.copy(
                     visualFingerprint = visualFingerprint,
                     marketRouteDistanceMeters = if (rejectedHistoricalRoute) null else original.marketRouteDistanceMeters,
@@ -58,6 +89,8 @@ internal object OfferDataRepair {
                 )
                 val values = ContentValues().apply {
                     put("price_cents", repaired.priceCents)
+                    put("currency_code", repaired.currencyCode)
+                    put("currency_fraction_digits", repaired.currencyFractionDigits)
                     repaired.distanceMeters?.let { put("distance_meters", it) } ?: putNull("distance_meters")
                     repaired.restaurant?.let { put("restaurant", it) } ?: putNull("restaurant")
                     put("merchant_names", encodeList(repaired.merchantNames))
@@ -72,7 +105,7 @@ internal object OfferDataRepair {
                     repaired.marketRouteSource.takeIf(String::isNotBlank)?.let { put("market_route_source", it) } ?: putNull("market_route_source")
                 }
                 sqlite.update("offers", values, "id = ?", arrayOf(original.id.toString()))
-                if (rejectedHistoricalRoute) {
+                if (rejectedHistoricalRoute || repairedIncrementalMoney) {
                     sqlite.delete("market_observations", "offer_id = ?", arrayOf(original.id.toString()))
                 }
 
@@ -149,6 +182,25 @@ internal object OfferDataRepair {
         if (!record.captureKey.startsWith("screen:")) return false
         if (record.rawText.isBlank()) return false
         return CourierSignals.looksLikeWoltNonOfferNavigationScreen(record.packageName, record.rawText)
+    }
+
+    /**
+     * Pre-0.15.59 Wolt add-on captures could persist a postcode-derived amount even though the raw
+     * card still contained an explicit `+€x.xx` line. Only repair money when the current parser
+     * recognizes the card as incremental and that explicit plus-prefixed money line agrees with
+     * the parser's anchored result. Ordinary historical offers keep capture-time money immutable.
+     */
+    internal fun trustedHistoricalIncrementalMoney(record: OfferRecord, parsed: ParsedOffer?): MoneyAmount? {
+        if (record.packageName != CourierSignals.WOLT_PACKAGE || parsed?.isIncrementalOffer != true) return null
+        val money = parsed.money ?: return null
+        if (money.amountMinor !in 1L..Int.MAX_VALUE.toLong()) return null
+        val hasExplicitIncrementalMoney = record.rawText.lineSequence()
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .any { line ->
+                line.startsWith("+") && MarketCurrencyParser.parse(line) == money
+            }
+        return money.takeIf { hasExplicitIncrementalMoney }
     }
 
     private fun deleteDuplicateRow(sqlite: android.database.sqlite.SQLiteDatabase, offerId: Long) {

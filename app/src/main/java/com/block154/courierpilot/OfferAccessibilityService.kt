@@ -710,6 +710,7 @@ class OfferAccessibilityService : AccessibilityService() {
         if (AutomaticWoltRouteCoordinator.routeFingerprint(recovered) == null) return false
 
         OfferState.saveUiText(this, mergedText)
+        enrichPersistedWoltRouteIfPresent(pending, recovered, mergedText)
         LiveAdvisorHub.showPendingOffer(this, pending, recovered)
         CaptureEventLog.append(
             this,
@@ -721,6 +722,45 @@ class OfferAccessibilityService : AccessibilityService() {
             dedupeWindowMs = 1_000L,
         )
         return true
+    }
+
+    private fun enrichPersistedWoltRouteIfPresent(
+        pending: PendingOffer,
+        recovered: ParsedOffer,
+        mergedText: String,
+    ) {
+        val money = recovered.money ?: return
+        val priceCents = recovered.priceCents ?: return
+        val candidate = OfferRecord(
+            capturedAt = pending.armedAt,
+            platform = OfferParser.platformName(pending.packageName, pending.sourceName),
+            packageName = pending.packageName,
+            priceCents = priceCents,
+            currencyCode = money.currencyCode,
+            currencyFractionDigits = money.fractionDigits,
+            distanceMeters = recovered.distanceMeters,
+            restaurant = recovered.restaurant,
+            screenshotUri = "",
+            screenshotFilename = "",
+            rawText = mergedText,
+            merchantNames = recovered.merchantNames,
+            pickupAddresses = recovered.pickupAddresses,
+            customerNames = recovered.customerNames,
+            dropoffAddresses = recovered.dropoffAddresses,
+            deliveryCount = recovered.deliveryCount,
+            estimatedMinutesMin = recovered.estimatedMinutesMin,
+            estimatedMinutesMax = recovered.estimatedMinutesMax,
+            captureKey = pending.notificationKey,
+        )
+        val enrichedId = OfferDatabase.get(this).enrichRecentWoltDuplicateRoute(candidate, recovered, mergedText)
+            ?: return
+        CaptureEventLog.append(
+            this,
+            stage = "history_route_enriched",
+            platform = "Wolt",
+            message = "Upgraded persisted record #$enrichedId with recovered customer stops",
+            dedupeWindowMs = 1_000L,
+        )
     }
 
     /**
