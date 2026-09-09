@@ -2,6 +2,7 @@ package com.block154.courierpilot
 
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class RemoteDiagnosticsPrivacyTest {
@@ -42,4 +43,13 @@ class RemoteDiagnosticsPrivacyTest {
         assertTrue(sanitized.contains("[email]"))
         assertTrue(sanitized.contains("[phone]") || sanitized.contains("[coords]"))
     }
+    @Test
+    fun remoteSamplingOnlyThrottlesRepetitivePollingStages() {
+        assertEquals(30_000L, RemoteDiagnosticsSampling.minIntervalMs("window_missing"))
+        assertEquals(60_000L, RemoteDiagnosticsSampling.minIntervalMs("address_memory_skipped"))
+        assertEquals(10_000L, RemoteDiagnosticsSampling.minIntervalMs("ocr_price_probe"))
+        assertEquals(0L, RemoteDiagnosticsSampling.minIntervalMs("route_ready"))
+        assertEquals(0L, RemoteDiagnosticsSampling.minIntervalMs("overlay_drag"))
+    }
+
 }
