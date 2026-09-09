@@ -736,7 +736,7 @@ private fun DashboardAddresses(
                             Text(address.displayAddress, fontWeight = FontWeight.SemiBold)
                             val customer = address.latestCustomerName?.takeIf(String::isNotBlank)
                             if (customer != null) {
-                                Text(customer, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+                                Text(customer, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                             }
                             Text(
                                 buildString {
@@ -745,7 +745,7 @@ private fun DashboardAddresses(
                                     if (codes.isNotEmpty()) append(" · ${codes.joinToString(" / ")}")
                                 },
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 11.sp,
+                                fontSize = 12.sp,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -844,7 +844,7 @@ private fun DashboardStats(
                             Text(
                                 "Wolt ${day.woltCount} · Bolt ${day.boltCount}",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 11.sp,
+                                fontSize = 12.sp,
                             )
                         }
                         Column(horizontalAlignment = Alignment.End) {
@@ -852,7 +852,7 @@ private fun DashboardStats(
                             Text(
                                 day.averagePriceCents?.let { "€%.2f avg".format(it / 100.0) } ?: "—",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 11.sp,
+                                fontSize = 12.sp,
                             )
                         }
                         Spacer(Modifier.size(8.dp))
@@ -961,16 +961,13 @@ private fun DashboardSettings(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Settings", fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
-                    Text("Updates, offers, routes, storage and Android access", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Offer behavior, routes, data and Android access", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 FilledTonalIconButton(onClick = onBack) {
                     Icon(Icons.Rounded.Close, contentDescription = "Close settings")
                 }
             }
         }
-
-        item { DashboardSection("App updates", "Version, manual check and automatic update options") }
-        item { AppUpdateSettingsSummaryCard() }
 
         item { DashboardSection("Offers", "What CourierPilot does when an offer appears") }
         item {
@@ -1033,7 +1030,7 @@ private fun DashboardSettings(
             }
         }
 
-        item { DashboardSection("Calculated routes", if (routeReady) "Private route service ready" else "Route service needs developer provisioning") }
+        item { DashboardSection("Routing", if (routeReady) "Private route service ready" else "Route service needs developer provisioning") }
         item {
             Card(shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.padding(16.dp)) {
@@ -1060,13 +1057,13 @@ private fun DashboardSettings(
             }
         }
 
-        item { DashboardSection("Storage", "OCR does not require saving images to your gallery") }
+        item { DashboardSection("Screenshots", "OCR works even when gallery copies are disabled") }
         item {
             Card(shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.padding(16.dp)) {
                     SettingsSwitchRow(
                         "Save offer screenshots",
-                        "On by default. Turn it off only if you do not want PNG copies in Pictures/CourierOffers; OCR still works in memory.",
+                        "Save PNG copies in Pictures/CourierOffers. OCR continues to work when this is off.",
                         saveScreenshots,
                     ) {
                         saveScreenshots = it
@@ -1129,6 +1126,9 @@ private fun DashboardSettings(
                 }
             }
         }
+
+        item { DashboardSection("App updates", "Version, manual check and automatic update options") }
+        item { AppUpdateSettingsSummaryCard() }
 
         if (developerEnabled) {
             item {
@@ -1257,7 +1257,7 @@ private fun DashboardMetric(
             Spacer(Modifier.height(10.dp))
             Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
             Text(value, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-            Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp)
+            Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
         }
     }
 }
@@ -1287,7 +1287,7 @@ private fun DashboardOfferCard(record: OfferRecord, onClick: () -> Unit) {
                 )
                 val route = record.dropoffAddresses.firstOrNull() ?: record.pickupAddresses.firstOrNull()
                 if (route != null) {
-                    Text(route, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(route, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 Text(
                     "${record.platform} · ${dashShortDate(record.capturedAt)}" +
@@ -1295,7 +1295,7 @@ private fun DashboardOfferCard(record: OfferRecord, onClick: () -> Unit) {
                             ?: record.trustedMarketRouteDistanceMeters?.let { " · ~${"%.1f".format(it / 1000.0)} km" }
                             ?: ""),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 11.sp,
+                    fontSize = 12.sp,
                 )
             }
             Text("€${"%.2f".format(record.priceCents / 100.0)}", fontWeight = FontWeight.Bold, fontSize = 18.sp)
