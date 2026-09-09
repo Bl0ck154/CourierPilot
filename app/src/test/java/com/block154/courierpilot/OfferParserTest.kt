@@ -645,4 +645,30 @@ class OfferParserTest {
         assertEquals(176, parsed.priceCents)
     }
 
+    @Test
+    fun ignoresWoltBoostMetadataAndKeepsRealVenueAndCustomer() {
+        val parsed = OfferParser.parse(
+            """
+            ✨ 10% boost included
+            €1.98
+            2 stops (1.4 km) • 3–10 min
+            Sushi City (Mindaugo g.)
+            Mindaugo g. 11, Vilnius, LT-03225
+            Customer drop-off
+            Cyber City, Vilnius, 03230
+            Accept
+            """.trimIndent()
+        )
+
+        assertEquals(198, parsed.priceCents)
+        assertEquals(1_400, parsed.distanceMeters)
+        assertEquals(listOf("Sushi City (Mindaugo g.)"), parsed.merchantNames)
+        assertEquals(listOf("Mindaugo g. 11, Vilnius, LT-03225"), parsed.pickupAddresses)
+        assertEquals(listOf("Cyber City, Vilnius, 03230"), parsed.dropoffAddresses)
+        assertEquals(1, parsed.deliveryCount)
+        assertFalse(parsed.merchantNames.any(WoltOfferUiText::isMerchantUiNoise))
+        assertTrue(WoltOfferUiText.isMerchantUiNoise("✨ 10% boost included"))
+        assertTrue(WoltOfferUiText.isMerchantUiNoise("25% boost applied"))
+    }
+
 }

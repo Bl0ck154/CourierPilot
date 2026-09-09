@@ -12,10 +12,10 @@ import android.net.Uri
 internal object OfferDataRepair {
     private const val PREFS = "courier_offer_repairs"
     private const val KEY_REVISION = "parser_repair_revision"
-    // Revision 17 also repairs pre-0.15.59 Wolt incremental/add-on rows. Those captures could save
-    // a postcode as the price and classify an existing/new customer as pickup data. Full Valhalla
-    // chains from incremental offers are also removed because they are not the incremental detour.
-    private const val CURRENT_REVISION = 17
+    // Revision 18 also removes Wolt boost/promo card metadata from persisted merchant identity and
+    // re-runs the current route parser so old 0.15.58 rows can recover the real venue/drop-off from
+    // their stored raw card text.
+    private const val CURRENT_REVISION = 18
     private const val LIST_SEPARATOR = "\u001F"
 
     @Synchronized
