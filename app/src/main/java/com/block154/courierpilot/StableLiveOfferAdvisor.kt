@@ -1354,8 +1354,12 @@ internal class StableLiveOfferAdvisor(
 
                 val dx = event.rawX - gestureDownX
                 val dy = event.rawY - gestureDownY
-                if (gestureMode == GESTURE_NONE && (abs(dx) > touchSlop || abs(dy) > touchSlop)) {
-                    gestureMode = if (abs(dx) >= abs(dy)) GESTURE_HORIZONTAL else GESTURE_VERTICAL
+                if (gestureMode == GESTURE_NONE) {
+                    gestureMode = when (OverlayGestureAxisPolicy.classify(dx, dy, touchSlop)) {
+                        OverlayGestureAxis.HORIZONTAL -> GESTURE_HORIZONTAL
+                        OverlayGestureAxis.VERTICAL -> GESTURE_VERTICAL
+                        null -> GESTURE_NONE
+                    }
                 }
                 if (gestureMode == GESTURE_HORIZONTAL) {
                     view?.translationX = dx
