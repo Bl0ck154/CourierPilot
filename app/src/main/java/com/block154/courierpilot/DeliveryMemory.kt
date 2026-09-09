@@ -171,7 +171,7 @@ internal object DeliveryMemory {
             }
             .distinctBy { "${it.buildingKey}|${it.code}" }
 
-        val currentOrderShowsAccessInfo = extractedCodeObservations.isNotEmpty() ||
+        val currentOrderShowsAccessInfo = observations.isNotEmpty() ||
             AccessCodeHintPolicy.screenContainsAccessCodeInfo(text)
         if (currentOrderShowsAccessInfo) {
             AccessCodeSuggestions.clear(context)
