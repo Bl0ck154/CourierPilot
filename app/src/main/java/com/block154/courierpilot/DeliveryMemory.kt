@@ -134,11 +134,21 @@ internal object DeliveryMemory {
             }
         }
 
+        fun unitHintFor(address: String): String? = screenDetails?.takeIf { details ->
+            val detailsAddress = details.address ?: return@takeIf false
+            DeliveryAddressNormalizer.matchScore(detailsAddress, address) >= 0.86
+        }?.apartment
+
         val deliveryKeys = detectedAddresses.mapNotNull { address ->
             val canonical = AddressMemoryResolver.canonicalize(context, database, address)
                 ?: DeliveryAddressNormalizer.normalize(address)
                 ?: return@mapNotNull null
-            AccessCodeNotificationGate.deliveryKey(packageName, canonical.first, address)
+            AccessCodeNotificationGate.deliveryKey(
+                packageName = packageName,
+                buildingKey = canonical.first,
+                rawAddress = address,
+                unitHint = unitHintFor(address),
+            )
         }.distinct()
 
         // Code extraction is only a best-effort derived view over the raw snapshot. Never let a
@@ -198,7 +208,12 @@ internal object DeliveryMemory {
             val known = database.codesForBuilding(canonical.first)
             if (known.isEmpty()) continue
 
-            val deliveryKey = AccessCodeNotificationGate.deliveryKey(packageName, canonical.first, address)
+            val deliveryKey = AccessCodeNotificationGate.deliveryKey(
+                packageName = packageName,
+                buildingKey = canonical.first,
+                rawAddress = address,
+                unitHint = unitHintFor(address),
+            )
             val codes = known
                 .map { it.code }
                 .distinct()
