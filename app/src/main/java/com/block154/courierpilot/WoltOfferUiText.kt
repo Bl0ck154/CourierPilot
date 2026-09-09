@@ -13,6 +13,13 @@ internal object WoltOfferUiText {
     val standaloneMultipleDropoffsRegex = Regex("(?i)^\\s*multiple\\s+drop[- ]?offs?\\s*$")
     val singleCustomerDropoffRegex = Regex("(?i)^\\s*customer\\s+drop[- ]?off\\s*$")
     val standaloneStopsRegex = Regex("(?i)^\\s*(\\d+)\\s+stops?\\s*$")
+    private val compactRouteStopCountRegex = Regex(
+        "(?i)^\\s*\\+?\\s*(\\d+)\\s+stops?\\b(?:\\s*\\([^)]*\\))?.*$"
+    )
+
+    fun routeStopCount(line: String): Int? =
+        modernRouteSummaryRegex.matchEntire(line)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            ?: compactRouteStopCountRegex.matchEntire(line)?.groupValues?.getOrNull(1)?.toIntOrNull()
 
     fun isEarningsLabel(line: String): Boolean {
         val normalized = normalize(line)

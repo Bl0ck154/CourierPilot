@@ -285,7 +285,16 @@ internal object OfferParser {
         val expectedTotalStops = summaryIndexes.mapNotNull { index ->
             WoltOfferUiText.modernRouteSummaryRegex.matchEntire(lines[index])
                 ?.groupValues?.getOrNull(1)?.toIntOrNull()
-        }.maxOrNull()
+        }.maxOrNull() ?: run {
+            // Accessibility/ML Kit can split `2 stops (4.3 km) • 11–18 min` into separate nodes.
+            // Recover the stop count from the compact route fragment before the earnings footer so
+            // single-offer structure does not depend on the entire summary surviving as one line.
+            val earningsIndex = lines.indexOfFirst(WoltOfferUiText::isEarningsLabel)
+                .takeIf { it >= 0 } ?: lines.size
+            lines.take(earningsIndex)
+                .mapNotNull(WoltOfferUiText::routeStopCount)
+                .maxOrNull()
+        }
         val pickupLimit = expectedTotalStops
             ?.let { (it - dropoffs.size).coerceAtLeast(1) }
             ?: Int.MAX_VALUE
@@ -316,18 +325,24 @@ internal object OfferParser {
         }
 
         // Wolt can OCR all addresses while dropping every literal "Customer drop-off" label.
-        // For a same-venue offer the route shape is still deterministic: one unique pickup followed
-        // by every remaining route stop. Generalize the old two-stop recovery to any number of
-        // customer stops instead of hard-coding one destination. Multi-merchant cards stay on the
-        // explicit/Accessibility path because duplicate pickup addresses make blind inference unsafe.
-        if (expectedTotalStops != null &&
+        // A two-stop ordinary offer is structurally unambiguous: one pickup + one customer. Do not
+        // require merchant parsing to be perfect here because the customer row itself can be
+        // misread as a second merchant-like label. For larger batches keep the stricter same-venue
+        // rule; otherwise a genuine multi-merchant pickup could be mistaken for a customer.
+        val explicitSingleRoute = expectedTotalStops == 2 && pickups.size == 2
+        val splitSummarySingleRoute = expectedTotalStops == null &&
+            !isIncrementalOffer &&
+            lines.any(WoltOfferUiText::isEarningsLabel) &&
+            pickups.size == 2
+        val sameVenueBatchRoute = expectedTotalStops != null &&
             expectedTotalStops >= 2 &&
+            merchants.size == 1 &&
+            pickups.size == expectedTotalStops
+        if ((explicitSingleRoute || splitSummarySingleRoute || sameVenueBatchRoute) &&
             dropoffs.isEmpty() &&
             customerDropoffIndexes.isEmpty() &&
             collapsedDropoffIndexes.isEmpty() &&
-            expandedDropoffIndexes.isEmpty() &&
-            merchants.size == 1 &&
-            pickups.size == expectedTotalStops
+            expandedDropoffIndexes.isEmpty()
         ) {
             val inferredDropoffs = pickups.drop(1)
             while (pickups.size > 1) pickups.removeAt(1)

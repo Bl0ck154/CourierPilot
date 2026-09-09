@@ -43,7 +43,7 @@ class LiveAdvisorRouteFailurePolicyTest {
         assertFalse(LiveAdvisorRouteFailurePolicy.isRetryableWoltFailure("incomplete textual Wolt route"))
         assertFalse(LiveAdvisorRouteFailurePolicy.isRetryableWoltFailure("location permission missing"))
         assertEquals(
-            WoltRouteFailureAction.DISMISS,
+            WoltRouteFailureAction.RETAIN_UNAVAILABLE,
             LiveAdvisorRouteFailurePolicy.decideWoltFinalFailure(
                 hasResolvedRoute = false,
                 retryCount = 0,
