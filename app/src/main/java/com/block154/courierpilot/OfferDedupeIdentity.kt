@@ -69,6 +69,18 @@ internal object OfferDedupeIdentity {
         if (elapsed > PERSIST_DEDUPE_WINDOW_MS) return false
         val pricesMatch = first.priceCents == second.priceCents
 
+        // Wolt add-on offers can preserve the original customer stop and append N more stops. When
+        // two distinct capture transactions form that strict superset, never collapse the expanded
+        // route as a duplicate merely because the old drop-off still overlaps.
+        val distinctCaptureTransactions = first.captureKey.isNotBlank() && second.captureKey.isNotBlank() &&
+            first.captureKey != second.captureKey
+        if (first.packageName == CourierSignals.WOLT_PACKAGE && distinctCaptureTransactions &&
+            (LiveOfferResumePolicy.isStrictRouteExtension(first.asParsedOffer(), second.asParsedOffer()) ||
+                LiveOfferResumePolicy.isStrictRouteExtension(second.asParsedOffer(), first.asParsedOffer()))
+        ) {
+            return false
+        }
+
         // Visual similarity is a final same-price Bolt guard. For different prices it is deliberately
         // not enough by itself: two consecutive offers can have visually similar bottom cards. Cross-
         // price dedupe must pass the stronger route identity below.

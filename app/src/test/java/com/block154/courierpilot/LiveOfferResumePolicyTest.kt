@@ -78,6 +78,26 @@ class LiveOfferResumePolicyTest {
     }
 
     @Test
+    fun addOnOfferWithOldDropoffPlusNewStopsIsAReplacementNotSameScreen() {
+        val single = expected.copy(
+            dropoffAddresses = listOf("Arklių gatvė 36, Vilnius"),
+            deliveryCount = 1,
+        )
+        val expanded = single.copy(
+            dropoffAddresses = listOf(
+                "Arklių gatvė 36, Vilnius",
+                "Žirmūnų g. 54, Vilnius",
+                "Ozo g. 18, Vilnius",
+            ),
+            deliveryCount = 3,
+        )
+
+        assertTrue(LiveOfferResumePolicy.isStrictRouteExtension(single, expanded))
+        assertTrue(LiveOfferResumePolicy.definitelyDifferent(single, expanded))
+        assertFalse(LiveOfferResumePolicy.hasMatchingIdentity(single, expanded))
+    }
+
+    @Test
     fun stablePickupPreventsNoisyMerchantOcrFromRearmingSameWoltOffer() {
         val visible = expected.copy(
             restaurant = "OCR garbage",

@@ -111,6 +111,69 @@ class OfferParserTest {
     }
 
     @Test
+    fun parsesSameVenueWoltOfferWithAnyNumberOfVisibleCustomerDropoffs() {
+        val parsed = OfferParser.parse(
+            """
+            €8.70
+            5 stops (8.2 km) • 21–34 min
+            Hesburger (Vokiečių)
+            Vokiečių g. 12, Vilnius, LT01130
+            Customer drop-off
+            Arklių gatvė 36, Vilnius, 01305
+            Customer drop-off
+            Žirmūnų gatvė 54, Vilnius
+            Customer drop-off
+            Kalvarijų g. 125, Vilnius
+            Customer drop-off
+            Ozo g. 18, Vilnius
+            Estimated earnings for the full delivery
+            Accept
+            """.trimIndent()
+        )
+
+        assertEquals(listOf("Vokiečių g. 12, Vilnius, LT01130"), parsed.pickupAddresses)
+        assertEquals(
+            listOf(
+                "Arklių gatvė 36, Vilnius, 01305",
+                "Žirmūnų gatvė 54, Vilnius",
+                "Kalvarijų g. 125, Vilnius",
+                "Ozo g. 18, Vilnius",
+            ),
+            parsed.dropoffAddresses,
+        )
+        assertEquals(4, parsed.deliveryCount)
+        assertTrue(AutomaticWoltRouteCoordinator.routeFingerprint(parsed) != null)
+    }
+
+    @Test
+    fun infersAnyNumberOfSameVenueDropoffsWhenWoltOmitsCustomerLabels() {
+        val parsed = OfferParser.parse(
+            """
+            €7.40
+            4 stops (6.7 km) • 18–29 min
+            Jammi (Tauro kalnas)
+            Tauro g. 3, Vilnius, LT-03106
+            Vilkpėdės gatvė 2A, Vilnius, 03151
+            Savanorių pr. 31, Vilnius
+            Naugarduko g. 32, Vilnius
+            Accept
+            """.trimIndent()
+        )
+
+        assertEquals(listOf("Tauro g. 3, Vilnius, LT-03106"), parsed.pickupAddresses)
+        assertEquals(
+            listOf(
+                "Vilkpėdės gatvė 2A, Vilnius, 03151",
+                "Savanorių pr. 31, Vilnius",
+                "Naugarduko g. 32, Vilnius",
+            ),
+            parsed.dropoffAddresses,
+        )
+        assertEquals(3, parsed.deliveryCount)
+        assertTrue(AutomaticWoltRouteCoordinator.routeFingerprint(parsed) != null)
+    }
+
+    @Test
     fun parsesRedesignedWoltCollapsedStackedOfferWithoutInventingDropoffs() {
         val parsed = OfferParser.parse(
             """

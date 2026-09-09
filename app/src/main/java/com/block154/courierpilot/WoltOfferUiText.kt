@@ -51,7 +51,8 @@ internal object WoltOfferUiText {
         val lines = text.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
         return lines.indices.any { index ->
             standaloneMultipleDropoffsRegex.matches(lines[index]) &&
-                lines.drop(index + 1).take(6).any(standaloneStopsRegex::matches)
+                lines.drop(index + 1).take(6).any(standaloneStopsRegex::matches) &&
+                lines.drop(index + 1).take(24).any { it.equals("Done", ignoreCase = true) }
         }
     }
 
