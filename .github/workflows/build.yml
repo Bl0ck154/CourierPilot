@@ -102,11 +102,12 @@ jobs:
         run: |
           set -euo pipefail
           if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" "$RELEASE_APK" "$RELEASE_APK.sha256" --repo "$GITHUB_REPOSITORY" --clobber
-          else
-            gh release create "$RELEASE_TAG" "$RELEASE_APK" "$RELEASE_APK.sha256" \
-              --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" \
-              --title "CourierPilot ${RELEASE_TAG#v}" \
-              --generate-notes
+            echo "Release $RELEASE_TAG already exists; keeping its published APK/checksum immutable."
+            echo "Bump versionName/versionCode to publish another APK."
+            exit 0
           fi
+          gh release create "$RELEASE_TAG" "$RELEASE_APK" "$RELEASE_APK.sha256" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "CourierPilot ${RELEASE_TAG#v}" \
+            --generate-notes
