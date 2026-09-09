@@ -27,7 +27,8 @@ class AccessCodeNotificationGateTest {
         val key = AccessCodeNotificationGate.deliveryKey(
             CourierSignals.BOLT_PACKAGE,
             "zirmunu g 23",
-            "Žirmūnų g. 23-145, Vilnius",
+            "Žirmūnų g. 23, Vilnius",
+            unitHint = "145",
         )
 
         assertTrue(AccessCodeNotificationGate.claim(context, key, now = 10_000L))
@@ -47,16 +48,18 @@ class AccessCodeNotificationGateTest {
     }
 
     @Test
-    fun differentApartmentAtSameBuildingGetsDifferentDeliveryKey() {
+    fun differentExplicitApartmentAtSameBuildingGetsDifferentDeliveryKey() {
         val first = AccessCodeNotificationGate.deliveryKey(
             CourierSignals.BOLT_PACKAGE,
             "zirmunu g 23",
-            "Žirmūnų g. 23-145, Vilnius",
+            "Žirmūnų g. 23, Vilnius",
+            unitHint = "145",
         )
         val second = AccessCodeNotificationGate.deliveryKey(
             CourierSignals.BOLT_PACKAGE,
             "zirmunu g 23",
-            "Žirmūnų g. 23-146, Vilnius",
+            "Žirmūnų g. 23, Vilnius",
+            unitHint = "146",
         )
 
         assertNotEquals(first, second)
