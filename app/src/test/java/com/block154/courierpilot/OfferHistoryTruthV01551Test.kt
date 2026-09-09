@@ -225,4 +225,57 @@ class OfferHistoryTruthV01551Test {
         assertEquals(278.0, database.summarySince(now - 2_000L, platform).averagePriceCents!!, 0.001)
     }
 
+    @Test
+    fun repairRevisionRemovesBoostMerchantAndRecoversSushiCityDropoff() {
+        val context: Context = RuntimeEnvironment.getApplication()
+        val database = OfferDatabase.get(context)
+        val now = System.currentTimeMillis()
+        val unique = (System.nanoTime() and 0xfffffff).coerceAtLeast(50_000L)
+        val raw = """
+            ✨ 10% boost included
+            €1.98
+            2 stops (1.4 km) • 3–10 min
+            Sushi City (Mindaugo g.)
+            Mindaugo g. 11, Vilnius, LT-03225
+            Customer drop-off
+            Cyber City, Vilnius, 03230
+            Accept
+        """.trimIndent()
+        val offerId = database.insert(
+            OfferRecord(
+                capturedAt = now,
+                platform = "Wolt",
+                packageName = CourierSignals.WOLT_PACKAGE,
+                priceCents = 198,
+                distanceMeters = 1_400,
+                restaurant = "✨ 10% boost included",
+                screenshotUri = "",
+                screenshotFilename = "",
+                rawText = raw,
+                merchantNames = listOf("✨ 10% boost included"),
+                pickupAddresses = listOf("Mindaugo g. 11, Vilnius, LT-03225"),
+                customerNames = emptyList(),
+                dropoffAddresses = emptyList(),
+                deliveryCount = 1,
+                estimatedMinutesMin = 3,
+                estimatedMinutesMax = 10,
+                captureKey = "repair-boost-$unique",
+            )
+        )
+        context.getSharedPreferences("courier_offer_repairs", Context.MODE_PRIVATE)
+            .edit()
+            .putInt("parser_repair_revision", 17)
+            .commit()
+
+        OfferDataRepair.runIfNeeded(context)
+
+        val repaired = database.findById(offerId)!!
+        assertEquals("Sushi City (Mindaugo g.)", repaired.restaurant)
+        assertEquals(listOf("Sushi City (Mindaugo g.)"), repaired.merchantNames)
+        assertEquals(listOf("Mindaugo g. 11, Vilnius, LT-03225"), repaired.pickupAddresses)
+        assertEquals(listOf("Cyber City, Vilnius, 03230"), repaired.dropoffAddresses)
+        assertEquals(1, repaired.deliveryCount)
+        assertEquals(198, repaired.priceCents)
+    }
+
 }

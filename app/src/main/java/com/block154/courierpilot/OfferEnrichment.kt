@@ -26,7 +26,16 @@ internal fun OfferRecord.withCurrentParsedStructure(): OfferRecord {
     }
     val parsed = parseText.takeIf(String::isNotBlank)?.let(OfferParser::parse)
 
-    val sourceMerchants = chooseBetterNameList(parsed?.merchantNames.orEmpty(), merchantNames)
+    val parsedMerchants = parsed?.merchantNames.orEmpty().filterNot { value ->
+        packageName == CourierSignals.WOLT_PACKAGE && WoltOfferUiText.isMerchantUiNoise(value)
+    }
+    val storedMerchants = merchantNames.filterNot { value ->
+        packageName == CourierSignals.WOLT_PACKAGE && WoltOfferUiText.isMerchantUiNoise(value)
+    }
+    // Filter Wolt card metadata before quality selection. Otherwise an old promo/status line can
+    // outscore the newly parsed venue, win chooseBetterNameList(), and only then be discarded by the
+    // final noise filter, leaving History without any merchant at all.
+    val sourceMerchants = chooseBetterNameList(parsedMerchants, storedMerchants)
     val sourcePickups = chooseBetterAddressList(parsed?.pickupAddresses.orEmpty(), pickupAddresses)
     val sourceCustomers = chooseBetterNameList(parsed?.customerNames.orEmpty(), customerNames, customerNames = true)
     val sourceDropoffs = chooseBetterAddressList(parsed?.dropoffAddresses.orEmpty(), dropoffAddresses)

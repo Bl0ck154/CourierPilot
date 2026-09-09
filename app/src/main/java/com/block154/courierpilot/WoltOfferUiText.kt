@@ -34,14 +34,19 @@ internal object WoltOfferUiText {
                 singleCustomerDropoffRegex.matches(line)
         }
 
-    /** Service labels shown on restricted-item offers are card metadata, never venue names. */
+    /** Service/promo labels shown on Wolt cards are metadata, never venue names. */
     fun isMerchantUiNoise(line: String): Boolean {
         val normalized = normalize(line)
         return normalized in MERCHANT_UI_NOISE ||
+            BOOST_METADATA_REGEX.containsMatchIn(normalized) ||
             normalized.startsWith("id check ") ||
             normalized.startsWith("id verification ") ||
             normalized.startsWith("age verification ")
     }
+
+    // Wolt may prefix this metadata with decorative glyphs (for example ✨), so match the
+    // semantic payload anywhere in the line instead of depending on its first character.
+    private val BOOST_METADATA_REGEX = Regex("(?i)\\b\\d{1,3}\\s*%\\s+boost\\b")
 
     fun hasCollapsedMultipleDropoffs(text: String): Boolean = text.lineSequence()
         .map(String::trim)
