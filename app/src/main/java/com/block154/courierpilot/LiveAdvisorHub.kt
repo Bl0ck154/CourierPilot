@@ -224,6 +224,9 @@ internal object LiveAdvisorHub {
         advisor?.setCaptureSuppressed(suppressed)
     }
 
+    /** AccessibilityService and the overlay share the main looper, so this is a cheap coordination read. */
+    fun isOverlayGestureActive(): Boolean = advisor?.isGestureTouchActive() == true
+
     fun onOfferPersisted(offerId: Long, record: OfferRecord) {
         val service = serviceRef.get() ?: return
         val currentAdvisor = advisor ?: return

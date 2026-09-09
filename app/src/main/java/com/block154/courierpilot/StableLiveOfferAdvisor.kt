@@ -799,6 +799,9 @@ internal class StableLiveOfferAdvisor(
             .start()
     }
 
+    /** Lightweight main-thread state used by capture polling to avoid competing with a finger drag. */
+    fun isGestureTouchActive(): Boolean = gestureTouchActive
+
     /**
      * Keep Wolt visible during display fallback captures. Before price the card contains no money
      * token, and after price the final proof capture is not reparsed; hiding it was pure user-visible

@@ -100,7 +100,8 @@ class OfferAccessibilityService : AccessibilityService() {
         }
         if (CourierSignals.isCourierPackage(eventPackage)) {
             LiveAdvisorHub.onCourierWindowEvent(this, eventPackage)
-            if (eventPackage == CourierSignals.WOLT_PACKAGE) {
+            val overlayDragging = LiveAdvisorHub.isOverlayGestureActive()
+            if (!overlayDragging && eventPackage == CourierSignals.WOLT_PACKAGE) {
                 OfferState.pending(this)?.takeIf { it.packageName == CourierSignals.WOLT_PACKAGE }?.let { pending ->
                     ensureWoltPricePolling(pending, expedite = true)
                 }
@@ -115,7 +116,7 @@ class OfferAccessibilityService : AccessibilityService() {
             }
             lastCourierEventAtElapsed = SystemClock.elapsedRealtime()
             lastCourierEventPackage = eventPackage
-            scheduleAttempt(80L)
+            scheduleAttempt(if (overlayDragging) OVERLAY_DRAG_CAPTURE_DEFER_MS else 80L)
             return
         }
 
@@ -156,6 +157,10 @@ class OfferAccessibilityService : AccessibilityService() {
     }
 
     private fun attemptCapture() {
+        if (LiveAdvisorHub.isOverlayGestureActive()) {
+            scheduleAttempt(OVERLAY_DRAG_CAPTURE_DEFER_MS)
+            return
+        }
         if (captureInFlight && !recoverTimedOutCaptureIfNeeded()) {
             val priceReady = probeWoltAccessibilityPrice()
             val pending = OfferState.pending(this)
@@ -392,6 +397,10 @@ class OfferAccessibilityService : AccessibilityService() {
     }
 
     private fun pollPendingWoltAccessibilityPrice() {
+        if (LiveAdvisorHub.isOverlayGestureActive()) {
+            handler.postDelayed(woltPricePollRunnable, OVERLAY_DRAG_CAPTURE_DEFER_MS)
+            return
+        }
         val pending = OfferState.pending(this)
         if (pending == null || pending.packageName != CourierSignals.WOLT_PACKAGE) {
             woltPricePollKey = ""
@@ -937,6 +946,7 @@ class OfferAccessibilityService : AccessibilityService() {
                         discardScreenshot(screenshot)
                         return
                     }
+                    if (deferScreenshotProcessingForOverlayDrag(screenshot, captureToken, platform)) return
                     val bitmap = screenshotToBitmap(screenshot)
                     if (bitmap == null) {
                         finishCapture(captureToken)
@@ -1020,6 +1030,7 @@ class OfferAccessibilityService : AccessibilityService() {
                         discardScreenshot(screenshot)
                         return
                     }
+                    if (deferScreenshotProcessingForOverlayDrag(screenshot, captureToken, platform)) return
                     val bitmap = screenshotToBitmap(screenshot)
                     if (bitmap == null) {
                         val failures = recordScreenshotFailure(pending)
@@ -1175,6 +1186,7 @@ class OfferAccessibilityService : AccessibilityService() {
                         discardScreenshot(screenshot)
                         return
                     }
+                    if (deferScreenshotProcessingForOverlayDrag(screenshot, captureToken, platform)) return
                     if (pending.packageName == CourierSignals.WOLT_PACKAGE && !isVisibleWoltOfferSurface(pending)) {
                         discardScreenshot(screenshot)
                         finishCapture(captureToken)
@@ -1270,6 +1282,25 @@ class OfferAccessibilityService : AccessibilityService() {
             message = "Recovered stuck ${timedOut.operation} after ${timedOut.ageMs} ms; capture loop resumed",
             dedupeWindowMs = 3_000L,
         )
+        return true
+    }
+
+    private fun deferScreenshotProcessingForOverlayDrag(
+        screenshot: ScreenshotResult,
+        captureToken: Long,
+        platform: String,
+    ): Boolean {
+        if (!LiveAdvisorHub.isOverlayGestureActive()) return false
+        discardScreenshot(screenshot)
+        finishCapture(captureToken)
+        CaptureEventLog.append(
+            this,
+            stage = "capture_deferred_drag",
+            platform = platform,
+            message = "Deferred screenshot bitmap/OCR work until the live card drag ends",
+            dedupeWindowMs = 2_000L,
+        )
+        scheduleAttempt(OVERLAY_DRAG_CAPTURE_DEFER_MS)
         return true
     }
 
@@ -1767,6 +1798,7 @@ class OfferAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val IDLE_WATCHDOG_MS = 8_000L
+        private const val OVERLAY_DRAG_CAPTURE_DEFER_MS = 120L
         private const val WOLT_FAST_PRICE_POLL_MS = 350L
         private const val WOLT_HOT_PRICE_POLL_MS = 220L
         private const val WOLT_PRICE_EVENT_THROTTLE_MS = 90L
