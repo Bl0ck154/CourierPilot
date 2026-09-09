@@ -935,7 +935,16 @@ private fun DashboardSettings(
     var saveScreenshots by remember { mutableStateOf(CaptureStorageSettings.saveOfferScreenshots(context)) }
     var marketSharing by remember { mutableStateOf(MarketIntelligence.sharingEnabled(context)) }
     var remoteDiagnostics by remember { mutableStateOf(RemoteDiagnostics.enabled(context)) }
-    var remoteStatus by remember { mutableStateOf(RemoteDiagnostics.status(context)) }
+    var remoteStatus by remember {
+        mutableStateOf(
+            RemoteDiagnosticsStatus(
+                enabled = remoteDiagnostics,
+                queued = 0,
+                lastUploadAt = 0L,
+                lastError = "",
+            )
+        )
+    }
     var developerTaps by remember { mutableIntStateOf(0) }
     var developerEnabled by remember { mutableStateOf(DeveloperModeSettings.enabled(context)) }
     val routeReady = runCatching { RouteEndpointSettings.load(context).validated() }.isSuccess
@@ -945,9 +954,9 @@ private fun DashboardSettings(
         marketStatus = withContext(Dispatchers.IO) { MarketIntelligence.status(context) }
     }
 
-    LaunchedEffect(remoteDiagnostics) {
+    LaunchedEffect(remoteDiagnostics, refreshToken) {
         while (true) {
-            remoteStatus = RemoteDiagnostics.status(context)
+            remoteStatus = withContext(Dispatchers.IO) { RemoteDiagnostics.status(context) }
             delay(5_000L)
         }
     }
@@ -1096,7 +1105,13 @@ private fun DashboardSettings(
                     ) { enabled ->
                         if (RemoteDiagnostics.setEnabled(context, enabled)) {
                             remoteDiagnostics = enabled
-                            remoteStatus = RemoteDiagnostics.status(context)
+                            // The LaunchedEffect above refreshes queue/upload health on Dispatchers.IO.
+                            // Keep the tap path free of JSON queue parsing.
+                            remoteStatus = remoteStatus.copy(
+                                enabled = enabled,
+                                queued = if (enabled) remoteStatus.queued else 0,
+                                lastError = if (enabled) remoteStatus.lastError else "",
+                            )
                         } else {
                             remoteDiagnostics = RemoteDiagnostics.enabled(context)
                         }
