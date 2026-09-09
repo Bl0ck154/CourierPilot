@@ -34,6 +34,12 @@ internal object LiveAdvisorHub {
     private var captureOfferKey: String? = null
     private var currentOfferHasResolvedRoute = false
     private var currentWoltRouteRetryCount = 0
+    private data class UserDismissedOffer(
+        val identity: LiveOfferDismissalIdentity,
+        val notificationKey: String,
+        val dismissedAtElapsed: Long,
+    )
+    private var userDismissedOffer: UserDismissedOffer? = null
 
     fun attach(context: Context) {
         val service = context as? AccessibilityService ?: return
@@ -54,6 +60,7 @@ internal object LiveAdvisorHub {
      */
     fun hideForCapture(context: Context, pending: PendingOffer) {
         attach(context)
+        observeIncomingCapture(pending)
         val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
         if (captureOfferKey == key) return
         captureOfferKey = key
@@ -68,6 +75,17 @@ internal object LiveAdvisorHub {
         attach(context)
         val service = serviceRef.get() ?: return
         val platform = OfferState.platformLabel(pending.packageName)
+        observeIncomingCapture(pending)
+        if (isUserDismissedOffer(pending.packageName, parsed, pending.notificationKey)) {
+            CaptureEventLog.append(
+                service,
+                stage = "overlay_user_dismiss_suppressed_reopen",
+                platform = platform,
+                message = "Ignored live-card update for the same offer the user already dismissed",
+                dedupeWindowMs = 2_000L,
+            )
+            return
+        }
         val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
         pendingPreview = PendingAdvisorOffer(key, pending.packageName, pending.notificationKey, pending.armedAt, parsed)
         advisor?.showPending(platform, parsed, pending.notificationKey)
@@ -177,6 +195,16 @@ internal object LiveAdvisorHub {
             estimatedMinutesMin = visible.estimatedMinutesMin ?: historical.estimatedMinutesMin ?: parsedFromHistory.estimatedMinutesMin,
             estimatedMinutesMax = visible.estimatedMinutesMax ?: historical.estimatedMinutesMax ?: parsedFromHistory.estimatedMinutesMax,
         )
+        if (isUserDismissedOffer(historical.packageName, merged)) {
+            CaptureEventLog.append(
+                service,
+                stage = "overlay_user_dismiss_history_restore_blocked",
+                platform = historical.platform,
+                message = "Blocked history/duplicate restore for the same offer the user dismissed",
+                dedupeWindowMs = 2_000L,
+            )
+            return
+        }
         val activeRecord = historical.copy(
             captureKey = syntheticCaptureKey,
             distanceMeters = merged.distanceMeters,
@@ -217,6 +245,86 @@ internal object LiveAdvisorHub {
                 "history_route_m=${historical.trustedMarketRouteDistanceMeters ?: -1}",
             dedupeWindowMs = 1_000L,
         )
+    }
+
+    fun onUserDismissedOffer(
+        context: Context,
+        packageName: String,
+        notificationKey: String,
+        parsed: ParsedOffer,
+    ) {
+        attach(context)
+        val service = serviceRef.get() ?: return
+        userDismissedOffer = UserDismissedOffer(
+            identity = LiveOfferUserDismissalPolicy.identity(packageName, parsed),
+            notificationKey = notificationKey,
+            dismissedAtElapsed = android.os.SystemClock.elapsedRealtime(),
+        )
+        pendingPreview = null
+        currentOffer = null
+        captureOfferKey = null
+        currentOfferHasResolvedRoute = false
+        currentWoltRouteRetryCount = 0
+        CaptureEventLog.append(
+            service,
+            stage = "overlay_user_dismissed",
+            platform = OfferState.platformLabel(packageName),
+            message = "Suppressed this live offer until a genuinely different offer or home screen appears",
+            dedupeWindowMs = 500L,
+        )
+    }
+
+    fun isUserDismissedOffer(
+        packageName: String,
+        parsed: ParsedOffer,
+        notificationKey: String = "",
+    ): Boolean {
+        val dismissed = userDismissedOffer ?: return false
+        if (android.os.SystemClock.elapsedRealtime() - dismissed.dismissedAtElapsed > USER_DISMISS_TTL_MS) {
+            userDismissedOffer = null
+            return false
+        }
+        if (packageName == dismissed.identity.packageName &&
+            notificationKey.isNotBlank() &&
+            dismissed.notificationKey.isNotBlank() &&
+            notificationKey == dismissed.notificationKey
+        ) {
+            return true
+        }
+        return LiveOfferUserDismissalPolicy.isSameOffer(
+            dismissed.identity,
+            LiveOfferUserDismissalPolicy.identity(packageName, parsed),
+        )
+    }
+
+    fun clearUserDismissal(context: Context, packageName: String, reason: String) {
+        attach(context)
+        val dismissed = userDismissedOffer ?: return
+        if (dismissed.identity.packageName != packageName) return
+        userDismissedOffer = null
+        serviceRef.get()?.let { service ->
+            CaptureEventLog.append(
+                service,
+                stage = "overlay_user_dismiss_cleared",
+                platform = OfferState.platformLabel(packageName),
+                message = reason,
+                dedupeWindowMs = 1_000L,
+            )
+        }
+    }
+
+    private fun observeIncomingCapture(pending: PendingOffer) {
+        val dismissed = userDismissedOffer ?: return
+        val key = pending.notificationKey
+        val isRealNotification = key.isNotBlank() && !key.startsWith("screen:")
+        if (!isRealNotification) return
+        // If the user dismissed a screen-discovered offer before its notification arrived, that late
+        // notification can still belong to the same card. Only a different real notification may
+        // clear a tombstone that was itself tied to a real notification instance.
+        if (dismissed.notificationKey.isBlank() || dismissed.notificationKey.startsWith("screen:")) return
+        val sameExactNotification = dismissed.identity.packageName == pending.packageName &&
+            dismissed.notificationKey == key
+        if (!sameExactNotification) userDismissedOffer = null
     }
 
     fun setCaptureSuppressed(context: Context, suppressed: Boolean) {
@@ -265,6 +373,23 @@ internal object LiveAdvisorHub {
             estimatedMinutesMin = record.estimatedMinutesMin ?: parsedFromScreen.estimatedMinutesMin,
             estimatedMinutesMax = record.estimatedMinutesMax ?: parsedFromScreen.estimatedMinutesMax,
         )
+
+        if (isUserDismissedOffer(record.packageName, parsed, record.captureKey)) {
+            pendingPreview = null
+            currentOffer = null
+            captureOfferKey = null
+            currentOfferHasResolvedRoute = false
+            currentWoltRouteRetryCount = 0
+            DeliveryLifecycleTracking.onOfferCaptured(service, record.packageName, offerId, record.capturedAt)
+            CaptureEventLog.append(
+                service,
+                stage = "overlay_user_dismiss_persisted_hidden",
+                platform = record.platform,
+                message = "Offer persisted after user dismissal; history kept but live card stayed hidden",
+                dedupeWindowMs = 1_000L,
+            )
+            return
+        }
 
         val supplementalBoltPickups = if (record.packageName == CourierSignals.BOLT_PACKAGE) {
             // Snapshot the previously accepted task before onOfferCaptured() advances the legacy
@@ -459,7 +584,8 @@ internal object LiveAdvisorHub {
 
     fun observeScreen(context: Context, packageName: String, text: String) {
         attach(context)
-        advisor?.onCourierWindowEvent(packageName)
+        advisor?.onObservedCourierScreen(packageName, text)
         DeliveryLifecycleTracking.observeScreen(context, packageName, text)
     }
+    private const val USER_DISMISS_TTL_MS = 3L * 60L * 1000L
 }

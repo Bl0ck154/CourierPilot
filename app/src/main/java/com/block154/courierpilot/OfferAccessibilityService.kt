@@ -181,6 +181,16 @@ class OfferAccessibilityService : AccessibilityService() {
                 observeCourierScreen(visible.packageName, uiText)
                 if (uiText.isNotBlank()) OfferState.saveUiText(this, uiText)
                 val parsed = OfferParser.parse(uiText)
+                if (visible.packageName == CourierSignals.WOLT_PACKAGE &&
+                    CourierSignals.looksLikeIdleHomeScreen(visible.packageName, uiText) &&
+                    !CourierSignals.looksLikeOfferScreen(uiText, parsed)
+                ) {
+                    LiveAdvisorHub.clearUserDismissal(
+                        this,
+                        visible.packageName,
+                        "Stable Wolt home screen cleared the user-dismissed offer tombstone",
+                    )
+                }
 
                 // If the live advisor already owns this courier screen, discovery OCR would only
                 // screenshot our own card, trigger ColorOS capture UI and risk re-arming the same
@@ -757,6 +767,11 @@ class OfferAccessibilityService : AccessibilityService() {
             message = "Visible Wolt home screen ended pending capture; stale accumulated offer will not be rendered again",
             dedupeWindowMs = 1_000L,
         )
+        LiveAdvisorHub.clearUserDismissal(
+            this,
+            CourierSignals.WOLT_PACKAGE,
+            "Confirmed Wolt home screen ended the manually dismissed offer",
+        )
         OfferState.clear(this)
         woltIdleHomeKey = ""
         woltIdleHomeFirstSeenAtElapsed = 0L
@@ -876,6 +891,16 @@ class OfferAccessibilityService : AccessibilityService() {
         // by Compose. Never re-arm an old offer over Stats/History/Settings-like screens.
         if (CourierSignals.looksLikeWoltNonOfferNavigationScreen(packageName, text)) return false
         if (!CourierSignals.looksLikeOfferScreen(text, parsed)) return false
+        if (LiveAdvisorHub.isUserDismissedOffer(packageName, parsed)) {
+            CaptureEventLog.append(
+                this,
+                stage = "overlay_user_dismiss_screen_rearm_blocked",
+                platform = OfferState.platformLabel(packageName),
+                message = "Same visible offer was manually dismissed; skipped screen re-arm",
+                dedupeWindowMs = 2_000L,
+            )
+            return false
+        }
         OfferOpenState.markOfferVisible(this, packageName)
 
         // Direct screen discovery is only a fallback for missed notifications. Once the live advisor
