@@ -58,7 +58,8 @@ fun CourierPilotToggleRow(
             Text(
                 subtitle,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 11.sp,
+                fontSize = 12.sp,
+                lineHeight = 16.sp,
             )
         }
         Spacer(Modifier.size(14.dp))

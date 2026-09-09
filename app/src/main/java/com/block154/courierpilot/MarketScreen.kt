@@ -171,7 +171,7 @@ private fun PayOverviewCard(state: MarketScreenState) {
                     Text(
                         "${state.sampleCount} eligible offers · ${state.confidence.displayName()}",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 11.sp,
+                        fontSize = 12.sp,
                     )
                 }
                 state.trend?.let { trend ->
@@ -194,7 +194,7 @@ private fun PayOverviewCard(state: MarketScreenState) {
                 Text(
                     "Learning ${state.sampleCount.coerceAtMost(state.learningTarget)} / ${state.learningTarget} before a stable personal baseline.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 11.sp,
+                    fontSize = 12.sp,
                 )
             }
         }
@@ -207,7 +207,7 @@ private fun PayMetric(label: String, value: String, accent: Color, modifier: Mod
         Column(Modifier.padding(14.dp)) {
             Surface(shape = RoundedCornerShape(50), color = accent, modifier = Modifier.size(8.dp)) {}
             Spacer(Modifier.size(10.dp))
-            Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+            Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
             Text(value, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
         }
     }
@@ -226,7 +226,7 @@ private fun HistorySelector(selected: MarketHistoryPeriod, onSelect: (MarketHist
 private fun HistoryHeader(title: String, bucketCount: Int) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(title, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
-        if (bucketCount > 0) Text("$bucketCount periods", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+        if (bucketCount > 0) Text("$bucketCount periods", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
     }
 }
 
@@ -236,12 +236,12 @@ private fun HistoryRow(bucket: MarketHistoryBucket, currencyCode: String) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(bucket.label, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
-                Text("${bucket.median} $currencyCode/km", fontWeight = FontWeight.SemiBold, color = Purple)
+                Text(marketRate(bucket.median, currencyCode), fontWeight = FontWeight.SemiBold, color = Purple)
             }
             Text(
-                "${bucket.sampleCount} offers · usual range ${bucket.p25}–${bucket.p75} $currencyCode/km",
+                "${bucket.sampleCount} offers · usual range ${marketRateRange(bucket.p25, bucket.p75, currencyCode)}",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 11.sp,
+                fontSize = 12.sp,
             )
         }
     }
@@ -267,7 +267,13 @@ private fun OfflineMarketState(contentPadding: PaddingValues, onRetry: () -> Uni
     }
 }
 
-private fun MarketMedian.display(): String = "$value $currencyCode/km"
+private fun MarketMedian.display(): String = marketRate(value, currencyCode)
+
+private fun marketRate(value: String, currencyCode: String): String =
+    if (currencyCode.equals("EUR", ignoreCase = true)) "€$value/km" else "$value $currencyCode/km"
+
+private fun marketRateRange(low: String, high: String, currencyCode: String): String =
+    if (currencyCode.equals("EUR", ignoreCase = true)) "€$low–€$high/km" else "$low–$high $currencyCode/km"
 private fun MarketUiConfidence.displayName() = when (this) {
     MarketUiConfidence.NOT_READY -> "learning"
     MarketUiConfidence.LOW -> "low confidence"
