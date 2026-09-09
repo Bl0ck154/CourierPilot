@@ -42,6 +42,9 @@ class OfferAccessibilityService : AccessibilityService() {
     private var woltVisibleBasePickupAddresses: List<String> = emptyList()
     private var woltDropoffProbeKey = ""
     private var woltDropoffProbeAttempts = 0
+    private var woltDropoffSemanticProbeAttempts = 0
+    private var woltDropoffResolvedKey = ""
+    private var woltDropoffResolvedCount = 0
     private var woltDropoffSheetSettleAttempts = 0
     private var woltRouteOcrRecoveryAttempts = 0
     private var woltIdleHomeKey = ""
@@ -455,6 +458,9 @@ class OfferAccessibilityService : AccessibilityService() {
             woltVisibleBasePickupAddresses = emptyList()
             woltDropoffProbeKey = key
             woltDropoffProbeAttempts = 0
+            woltDropoffSemanticProbeAttempts = 0
+            woltDropoffResolvedKey = ""
+            woltDropoffResolvedCount = 0
             woltDropoffSheetSettleAttempts = 0
             woltRouteOcrRecoveryAttempts = 0
             woltIdleHomeKey = ""
@@ -479,9 +485,9 @@ class OfferAccessibilityService : AccessibilityService() {
      * The redesigned Wolt card hides batched customer addresses behind a separate row. Prefer
      * reading already-created but non-visible Accessibility nodes first; Compose can keep the
      * collapsed sheet content in the semantics tree even though OCR cannot see it. Only if that
-     * semantic recovery is incomplete do we briefly expand the row. If Wolt stops exposing a
-     * clickable node, fail open after two attempts and preserve the existing incomplete-route
-     * fallback instead of trapping the courier UI.
+     * semantic recovery is incomplete do we briefly expand the row. One physical expansion is the
+     * maximum for a capture transaction; if it is insufficient, preserve the non-invasive fallback
+     * instead of touching the courier UI a second time.
      */
     private fun maybeResolveWoltHiddenDropoffs(
         root: AccessibilityNodeInfo,
@@ -492,6 +498,11 @@ class OfferAccessibilityService : AccessibilityService() {
         if (!LiveAdvisorSettings.automaticWoltRouting(this)) return false
 
         val expectedDropoffs = parsed.deliveryCount?.coerceAtLeast(1) ?: return false
+        val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
+        // Once this exact capture has recovered a complete route, never touch Wolt's disclosure
+        // again merely because the collapsed card hides those destinations on a later frame. A
+        // genuinely larger route (for example an add-on increasing N) may recover again.
+        if (woltDropoffResolvedKey == key && woltDropoffResolvedCount >= expectedDropoffs) return false
         val strictlyVisiblePieces = collectStrictlyVisibleAccessibilityPieces(root)
         val strictlyVisibleText = strictlyVisiblePieces.joinToString("\n")
         val collapsedDisclosureVisible = hasVisibleClickableAccessibilityText(root) { value ->
@@ -654,13 +665,31 @@ class OfferAccessibilityService : AccessibilityService() {
             )
         }
 
-        val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
         if (woltDropoffProbeKey != key) {
             woltDropoffProbeKey = key
             woltDropoffProbeAttempts = 0
+            woltDropoffSemanticProbeAttempts = 0
         }
-        if (woltDropoffProbeAttempts >= WOLT_DROPOFF_PROBE_MAX_ATTEMPTS) return false
 
+        // Compose can publish hidden destination semantics a few frames after the collapsed card.
+        // Give Accessibility a very short, non-invasive settle window before touching Wolt UI.
+        // This costs at most ~210 ms and often avoids opening the disclosure at all.
+        if (woltDropoffSemanticProbeAttempts < WOLT_DROPOFF_SEMANTIC_PROBE_MAX_ATTEMPTS) {
+            woltDropoffSemanticProbeAttempts += 1
+            CaptureEventLog.append(
+                this,
+                stage = "wolt_dropoffs_semantic_wait",
+                platform = "Wolt",
+                message = "Waiting briefly for hidden Accessibility destinations before click fallback; " +
+                    "probe=$woltDropoffSemanticProbeAttempts/$WOLT_DROPOFF_SEMANTIC_PROBE_MAX_ATTEMPTS; " +
+                    "candidates=$candidateCount; expected=$expectedDropoffs",
+                dedupeWindowMs = 500L,
+            )
+            scheduleAttempt(WOLT_DROPOFF_SEMANTIC_RETRY_MS)
+            return true
+        }
+
+        if (woltDropoffProbeAttempts >= WOLT_DROPOFF_PROBE_MAX_ATTEMPTS) return false
         woltDropoffProbeAttempts += 1
         val opened = clickAccessibilityText(root) { value ->
             value.lowercase().contains("multiple drop-off")
@@ -709,6 +738,11 @@ class OfferAccessibilityService : AccessibilityService() {
         if (recovered.dropoffAddresses.size < expectedDropoffs) return false
         if (AutomaticWoltRouteCoordinator.routeFingerprint(recovered) == null) return false
 
+        val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
+        woltDropoffResolvedKey = key
+        woltDropoffResolvedCount = maxOf(woltDropoffResolvedCount, expectedDropoffs)
+        woltDropoffProbeKey = key
+        woltDropoffProbeAttempts = WOLT_DROPOFF_PROBE_MAX_ATTEMPTS
         OfferState.saveUiText(this, mergedText)
         enrichPersistedWoltRouteIfPresent(pending, recovered, mergedText)
         LiveAdvisorHub.showPendingOffer(this, pending, recovered)
@@ -1965,8 +1999,10 @@ class OfferAccessibilityService : AccessibilityService() {
         private const val WOLT_PRICE_EVENT_THROTTLE_MS = 90L
         private const val WOLT_DROPOFF_SHEET_SETTLE_MS = 180L
         private const val WOLT_DROPOFF_ACCESSIBILITY_SETTLE_MS = 40L
+        private const val WOLT_DROPOFF_SEMANTIC_RETRY_MS = 70L
+        private const val WOLT_DROPOFF_SEMANTIC_PROBE_MAX_ATTEMPTS = 3
         private const val WOLT_DROPOFF_SHEET_MAX_SETTLE_ATTEMPTS = 4
-        private const val WOLT_DROPOFF_PROBE_MAX_ATTEMPTS = 2
+        private const val WOLT_DROPOFF_PROBE_MAX_ATTEMPTS = 1
         private const val WOLT_IDLE_HOME_RECHECK_MS = 180L
         private const val WOLT_IDLE_HOME_END_GRACE_MS = 160L
         private const val WOLT_IDLE_HOME_END_MIN_CHECKS = 2

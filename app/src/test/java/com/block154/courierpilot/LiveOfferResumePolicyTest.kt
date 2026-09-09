@@ -107,4 +107,46 @@ class LiveOfferResumePolicyTest {
         assertFalse(LiveOfferResumePolicy.definitelyDifferent(expected, visible))
         assertTrue(LiveOfferResumePolicy.hasMatchingIdentity(expected, visible))
     }
+
+    @Test
+    fun collapsedBatchCardKeepsSameCoreIdentityAfterHiddenDropoffsWereRecovered() {
+        val enriched = ParsedOffer(
+            priceCents = 886,
+            distanceMeters = 11_400,
+            restaurant = "GOGI GUY",
+            merchantNames = listOf("GOGI GUY"),
+            pickupAddresses = listOf("Rūdninkų g. 15, Vilnius, LT01308"),
+            dropoffAddresses = listOf("Customer A", "Customer B"),
+            deliveryCount = 2,
+        )
+        val collapsed = ParsedOffer(
+            priceCents = 886,
+            distanceMeters = 11_400,
+            restaurant = "Ready in 7 min",
+            merchantNames = listOf("Ready in 7 min"),
+            pickupAddresses = emptyList(),
+            dropoffAddresses = emptyList(),
+            deliveryCount = 2,
+        )
+
+        assertTrue(LiveOfferResumePolicy.hasCompatibleCoreIdentity(enriched, collapsed))
+    }
+
+    @Test
+    fun routeExtensionDoesNotUseCollapsedCoreIdentityShortcut() {
+        val existing = ParsedOffer(
+            priceCents = 886,
+            distanceMeters = 11_400,
+            restaurant = "GOGI GUY",
+            pickupAddresses = listOf("Rūdninkų g. 15"),
+            dropoffAddresses = listOf("A", "B"),
+            deliveryCount = 2,
+        )
+        val extension = existing.copy(
+            dropoffAddresses = listOf("A", "B", "C"),
+            deliveryCount = 3,
+        )
+
+        assertFalse(LiveOfferResumePolicy.hasCompatibleCoreIdentity(existing, extension))
+    }
 }

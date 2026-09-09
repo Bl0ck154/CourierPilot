@@ -554,7 +554,7 @@ internal object LiveAdvisorHub {
                     }
                 }
                 // Render first so the candidate cannot train the thresholds used to judge itself.
-                if (comparison != null && MarketRoutePersistencePolicy.shouldPersistFullRoute(record.platform, parsed)) {
+                if (comparison != null && MarketRoutePersistencePolicy.shouldPersistFullRoute(record.platform, parsed, comparison)) {
                     MarketIntelligence.onRouteResolved(
                         service,
                         current.offerId,
@@ -568,6 +568,16 @@ internal object LiveAdvisorHub {
                         stage = "market_route_skipped_incremental",
                         platform = record.platform,
                         message = "Skipped full Valhalla chain for incremental add-on economics",
+                        dedupeWindowMs = 1_000L,
+                    )
+                } else if (comparison != null && record.platform.equals("Wolt", ignoreCase = true) &&
+                    (comparison.pedestrian.isFailure || comparison.cycleway.isFailure)
+                ) {
+                    CaptureEventLog.append(
+                        service,
+                        stage = "market_route_skipped_partial",
+                        platform = record.platform,
+                        message = "Skipped partial Wolt route because walking+cycling pair was incomplete",
                         dedupeWindowMs = 1_000L,
                     )
                 }
@@ -587,9 +597,11 @@ internal object LiveAdvisorHub {
         val currentAdvisor = advisor ?: return false
         if (!currentAdvisor.isTrackingOffer(packageName)) return false
         currentOffer?.takeIf { it.record.packageName == packageName }?.let {
+            if (LiveOfferResumePolicy.hasCompatibleCoreIdentity(it.parsed, parsed)) return true
             return !currentAdvisor.isConfirmedDifferentOffer(packageName, parsed)
         }
         pendingPreview?.takeIf { it.packageName == packageName }?.let {
+            if (LiveOfferResumePolicy.hasCompatibleCoreIdentity(it.parsed, parsed)) return true
             return !currentAdvisor.isConfirmedDifferentOffer(packageName, parsed)
         }
         return false

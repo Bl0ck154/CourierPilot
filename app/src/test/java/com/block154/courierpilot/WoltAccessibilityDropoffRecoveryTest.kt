@@ -194,4 +194,22 @@ class WoltAccessibilityDropoffRecoveryTest {
         assertTrue(AutomaticWoltRouteCoordinator.routeFingerprint(parsed) != null)
     }
 
+    @Test
+    fun recoversNamedPlacePostalCustomerWithoutOpeningSheet() {
+        val result = WoltAccessibilityDropoffRecovery.recover(
+            hiddenTextPieces = listOf(
+                "Cyber City, Vilnius, 03230",
+                "Pelėsos gatvė 10, Vilnius, 03225",
+            ),
+            excludedAddresses = listOf("Mindaugo g. 11, Vilnius, LT-03225"),
+            expectedCount = 2,
+        )
+
+        assertEquals(
+            listOf("Cyber City, Vilnius, 03230", "Pelėsos gatvė 10, Vilnius, 03225"),
+            result.resolvedAddresses,
+        )
+        assertEquals(2, result.candidateCount)
+    }
+
 }

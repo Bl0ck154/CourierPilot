@@ -23,6 +23,30 @@ internal object LiveOfferResumePolicy {
         return false
     }
 
+    /**
+     * Strong same-transaction anchor for Wolt's collapsed/recomposed cards. Once a batch offer has
+     * been enriched with hidden drop-offs, the visible card can become sparse again and merchant
+     * semantics can briefly be noisy. Matching price + (distance or delivery count), with no
+     * conflicting pickup/core numbers, is enough to keep screen discovery from re-arming it.
+     */
+    fun hasCompatibleCoreIdentity(expected: ParsedOffer, visible: ParsedOffer): Boolean {
+        if (isStrictRouteExtension(expected, visible)) return false
+
+        val priceMatches = expected.priceCents != null && visible.priceCents != null &&
+            expected.priceCents == visible.priceCents
+        val distanceMatches = expected.distanceMeters != null && visible.distanceMeters != null &&
+            expected.distanceMeters == visible.distanceMeters
+        val countMatches = expected.deliveryCount != null && visible.deliveryCount != null &&
+            expected.deliveryCount == visible.deliveryCount
+
+        if (expected.priceCents != null && visible.priceCents != null && !priceMatches) return false
+        if (expected.distanceMeters != null && visible.distanceMeters != null && !distanceMatches) return false
+        if (expected.deliveryCount != null && visible.deliveryCount != null && !countMatches) return false
+        if (strongSetConflict(expected.pickupAddresses, visible.pickupAddresses)) return false
+
+        return priceMatches && (distanceMatches || countMatches)
+    }
+
     fun definitelyDifferent(expected: ParsedOffer, visible: ParsedOffer): Boolean {
         if (isStrictRouteExtension(expected, visible)) return true
 

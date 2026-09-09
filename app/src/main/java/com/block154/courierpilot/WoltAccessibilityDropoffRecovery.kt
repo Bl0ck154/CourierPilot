@@ -73,7 +73,19 @@ internal object WoltAccessibilityDropoffRecovery {
             lower.contains(" plentas") ||
             lower.contains(" alėja") ||
             lower.contains(" skersgat") ||
-            streetNumberPatterns.any { it.containsMatchIn(value) }
+            streetNumberPatterns.any { it.containsMatchIn(value) } ||
+            looksLikeNamedPlacePostalAddress(value)
+    }
+
+    private fun looksLikeNamedPlacePostalAddress(value: String): Boolean {
+        // Wolt sometimes exposes a customer destination as a named building rather than a street,
+        // e.g. `Cyber City, Vilnius, 03230`. Requiring both a comma-separated place name and a
+        // 5-digit postal code keeps this conservative enough for hidden-semantics recovery.
+        val parts = value.split(',').map(String::trim).filter(String::isNotBlank)
+        if (parts.size < 3) return false
+        val place = parts.first()
+        if (place.length < 3 || place.any(Char::isDigit)) return false
+        return parts.any { Regex("^(?:LT-?)?\\d{5}$", RegexOption.IGNORE_CASE).matches(it) }
     }
 
     private fun addressKey(value: String): String {
