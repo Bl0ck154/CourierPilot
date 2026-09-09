@@ -308,6 +308,14 @@ internal object AutomaticWoltRouteCoordinator {
         var joined = false
 
         fun continueWithInputs(fix: CurrentLocationFix, stops: List<ResolvedWaypoint>) {
+            CaptureEventLog.append(
+                app,
+                stage = "route_location_fix",
+                platform = "Wolt",
+                message = "provider=${fix.provider.ifBlank { "unknown" }}; age_ms=${fix.ageMillis}; " +
+                    "accuracy_m=${fix.accuracyMeters ?: -1f}",
+                dedupeWindowMs = 500L,
+            )
             val current = ResolvedWaypoint(
                 kind = WaypointKind.CURRENT_LOCATION,
                 point = fix.point,

@@ -21,6 +21,29 @@ internal data class CurrentLocationFix(
     val provider: String,
 )
 
+/**
+ * Live-offer routing must not let an optimistic NETWORK fix beat real GPS simply because ColorOS
+ * reports a small accuracy radius. Google Maps/Wolt use fused location; CourierPilot uses
+ * LocationManager directly, so accepting NETWORK first can shift the route origin by kilometres.
+ */
+internal object RouteLiveLocationPolicy {
+    fun shouldReuseCached(fix: CurrentLocationFix): Boolean =
+        fix.provider.equals(LocationManager.GPS_PROVIDER, ignoreCase = true) &&
+            fix.ageMillis <= LIVE_FIX_MAX_AGE_MS &&
+            fix.accuracyMeters != null &&
+            fix.accuracyMeters <= LIVE_FIX_MAX_ACCURACY_METERS
+
+    fun shouldEarlyAccept(provider: String, accuracyMeters: Float?, gpsProviderEnabled: Boolean): Boolean {
+        if (accuracyMeters == null || accuracyMeters > EARLY_ACCEPT_ACCURACY_METERS) return false
+        return provider.equals(LocationManager.GPS_PROVIDER, ignoreCase = true) || !gpsProviderEnabled
+    }
+
+    const val EARLY_ACCEPT_ACCURACY_METERS = 25f
+    const val LIVE_FIX_MAX_AGE_MS = 30_000L
+    const val LIVE_FIX_MAX_ACCURACY_METERS = 80f
+    const val GPS_FALLBACK_MAX_ACCURACY_METERS = 200f
+}
+
 internal object RouteResearchLocation {
     fun hasPermission(context: Context): Boolean =
         context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
@@ -41,9 +64,11 @@ internal object RouteResearchLocation {
 
         val completed = AtomicBoolean(false)
         val handler = Handler(Looper.getMainLooper())
+        val gpsProviderEnabled = LocationManager.GPS_PROVIDER in providers
         val signals = mutableListOf<CancellationSignal>()
         var remaining = providers.size
         var best: Location? = null
+        var bestGps: Location? = null
 
         fun finish(result: Result<CurrentLocationFix>) {
             if (!completed.compareAndSet(false, true)) return
@@ -53,7 +78,7 @@ internal object RouteResearchLocation {
         }
 
         fun finishFromBest(fallback: Throwable? = null) {
-            val chosen = best
+            val chosen = bestGps ?: best
             if (chosen != null) finish(Result.success(chosen.toFix()))
             else finish(Result.failure(fallback ?: IllegalStateException("Could not obtain current location")))
         }
@@ -74,11 +99,23 @@ internal object RouteResearchLocation {
             runCatching {
                 manager.getCurrentLocation(provider, signal, context.mainExecutor) { location ->
                     if (completed.get()) return@getCurrentLocation
-                    if (location != null && (best == null || score(location) > score(best!!))) best = location
+                    if (location != null) {
+                        if (best == null || score(location) > score(best!!)) best = location
+                        val usableGps = provider == LocationManager.GPS_PROVIDER &&
+                            (!location.hasAccuracy() ||
+                                location.accuracy <= RouteLiveLocationPolicy.GPS_FALLBACK_MAX_ACCURACY_METERS)
+                        if (usableGps && (bestGps == null || score(location) > score(bestGps!!))) bestGps = location
+                    }
 
-                    // Good fresh GPS is more useful to a time-sensitive offer than waiting for a
-                    // second provider merely to shave a few meters off an already solid fix.
-                    if (location != null && location.hasAccuracy() && location.accuracy <= EARLY_ACCEPT_ACCURACY_METERS) {
+                    // Never let NETWORK terminate the race while GPS is enabled. Some ColorOS
+                    // builds report a deceptively small NETWORK accuracy radius for a fix that is
+                    // kilometres away. NETWORK remains a fallback if GPS fails or times out.
+                    if (location != null && RouteLiveLocationPolicy.shouldEarlyAccept(
+                            provider = provider,
+                            accuracyMeters = location.accuracy.takeIf { location.hasAccuracy() },
+                            gpsProviderEnabled = gpsProviderEnabled,
+                        )
+                    ) {
                         finish(Result.success(location.toFix()))
                         return@getCurrentLocation
                     }
@@ -102,15 +139,21 @@ internal object RouteResearchLocation {
      * request when that cached fix is not trustworthy enough.
      */
     fun requestForLiveOffer(context: Context, callback: (Result<CurrentLocationFix>) -> Unit) {
-        val cached = bestLastKnown(context)
-        if (cached != null &&
-            cached.ageMillis <= LIVE_FIX_MAX_AGE_MS &&
-            (cached.accuracyMeters == null || cached.accuracyMeters <= LIVE_FIX_MAX_ACCURACY_METERS)
-        ) {
+        val cached = bestLastKnownGps(context)
+        if (cached != null && RouteLiveLocationPolicy.shouldReuseCached(cached)) {
             callback(Result.success(cached))
             return
         }
         requestCurrent(context, callback)
+    }
+
+    private fun bestLastKnownGps(context: Context): CurrentLocationFix? {
+        if (!hasPermission(context)) return null
+        val manager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        return runCatching {
+            if (!manager.isProviderEnabled(LocationManager.GPS_PROVIDER)) return@runCatching null
+            manager.getLastKnownLocation(LocationManager.GPS_PROVIDER)?.toFix()
+        }.getOrNull()
     }
 
     fun bestLastKnown(context: Context): CurrentLocationFix? {
@@ -136,9 +179,6 @@ internal object RouteResearchLocation {
     )
 
     private const val CURRENT_LOCATION_TIMEOUT_MS = 8_000L
-    private const val EARLY_ACCEPT_ACCURACY_METERS = 25f
-    private const val LIVE_FIX_MAX_AGE_MS = 30_000L
-    private const val LIVE_FIX_MAX_ACCURACY_METERS = 80f
     private val TIMEOUT_TOKEN = Any()
 }
 
