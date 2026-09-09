@@ -429,6 +429,73 @@ class OfferCaptureDedupeTest {
     }
 
     @Test
+    fun recoveredHiddenWoltStopsEnrichAlreadyPersistedDuplicate() {
+        val database = OfferDatabase.get(context)
+        val now = System.currentTimeMillis()
+        val unique = (System.nanoTime() and 0xfffffff).coerceAtLeast(40_000L)
+        val early = OfferRecord(
+            capturedAt = now,
+            platform = "Wolt",
+            packageName = CourierSignals.WOLT_PACKAGE,
+            priceCents = 856,
+            distanceMeters = 10_100,
+            restaurant = "Chaosai",
+            screenshotUri = "content://early-$unique",
+            screenshotFilename = "early-$unique.png",
+            rawText = "early incomplete batch",
+            merchantNames = listOf("Chaosai", "Second venue"),
+            pickupAddresses = listOf("Pylimo g. 58, Vilnius", "Naugarduko g. 11, Vilnius"),
+            dropoffAddresses = emptyList(),
+            deliveryCount = 2,
+            captureKey = "notification-$unique",
+        )
+        val inserted = database.insertDeduplicated(early)
+        assertEquals(true, inserted.inserted)
+
+        val recovered = ParsedOffer(
+            priceCents = 856,
+            money = MoneyAmount(856, "EUR", 2),
+            distanceMeters = 10_100,
+            restaurant = "Chaosai, Second venue",
+            merchantNames = listOf("Chaosai", "Second venue"),
+            pickupAddresses = early.pickupAddresses,
+            dropoffAddresses = listOf("Žirmūnų g. 54, Vilnius", "Ozo g. 18, Vilnius"),
+            deliveryCount = 2,
+            orderedRouteStops = listOf(
+                ParsedRouteStop(ParsedRouteStopKind.PICKUP, "Chaosai", "Pylimo g. 58, Vilnius"),
+                ParsedRouteStop(ParsedRouteStopKind.PICKUP, "Second venue", "Naugarduko g. 11, Vilnius"),
+                ParsedRouteStop(ParsedRouteStopKind.DROPOFF, "Customer", "Žirmūnų g. 54, Vilnius"),
+                ParsedRouteStop(ParsedRouteStopKind.DROPOFF, "Customer", "Ozo g. 18, Vilnius"),
+            ),
+        )
+        val candidate = early.copy(
+            capturedAt = now + 15_000L,
+            rawText = "recovered complete batch",
+            restaurant = recovered.restaurant,
+            merchantNames = recovered.merchantNames,
+            pickupAddresses = recovered.pickupAddresses,
+            dropoffAddresses = recovered.dropoffAddresses,
+            deliveryCount = recovered.deliveryCount,
+            captureKey = "screen:$unique",
+        )
+
+        val enrichedId = database.enrichRecentWoltDuplicateRoute(
+            candidate = candidate,
+            parsed = recovered,
+            rawText = candidate.rawText,
+        )
+
+        assertEquals(inserted.rowId, enrichedId)
+        val stored = database.findById(inserted.rowId)!!
+        assertEquals(recovered.pickupAddresses, stored.pickupAddresses)
+        assertEquals(recovered.dropoffAddresses, stored.dropoffAddresses)
+        assertEquals(2, stored.deliveryCount)
+        assertEquals("recovered complete batch", stored.rawText)
+        assertEquals("content://early-$unique", stored.screenshotUri)
+        assertEquals(856, stored.priceCents)
+    }
+
+    @Test
     fun postalCodeVariantsNormalizeToOneBuilding() {
         val canonical = DeliveryAddressNormalizer.normalize("Stuokos Gucevičiaus g. 7")
 

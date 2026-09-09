@@ -153,4 +153,76 @@ class OfferHistoryTruthV01551Test {
         assertEquals(2_900, repaired.effectiveRouteDistanceMeters)
     }
 
+    @Test
+    fun repairRevisionFixesPre01559WoltAddonPriceAndStops() {
+        val context: Context = RuntimeEnvironment.getApplication()
+        val database = OfferDatabase.get(context)
+        val now = System.currentTimeMillis()
+        val unique = (System.nanoTime() and 0xfffffff).coerceAtLeast(30_000L)
+        val platform = "WoltAddonRepair$unique"
+        val raw = """
+            +€2.78
+            +2 stops (2.3 km) • 5–12 min extra
+            12 Restoranas (Mindaugo g.)
+            Mindaugo g. 11, Vilnius, LT03225
+            Customer drop-off
+            Cyber City, Vilnius, 03230
+            Customer drop-off
+            Pelėsos gatvė 10, Vilnius, 03225
+            Estimated earnings for the full delivery
+            Accept
+            Decline
+        """.trimIndent()
+        val offerId = database.insert(
+            OfferRecord(
+                capturedAt = now,
+                platform = platform,
+                packageName = CourierSignals.WOLT_PACKAGE,
+                priceCents = 322_500,
+                distanceMeters = 2_300,
+                restaurant = "Pickup · Mindaugo g. 11, Vilnius, LT03225",
+                screenshotUri = "",
+                screenshotFilename = "",
+                rawText = raw,
+                merchantNames = listOf("8 Customer drop-off", "Pickup"),
+                pickupAddresses = listOf(
+                    "Mindaugo g. 11, Vilnius, LT03225",
+                    "Pelėsos gatvė 10, Vilnius, 03225",
+                ),
+                customerNames = listOf("Customer"),
+                dropoffAddresses = listOf("Mindaugo g. 11, Vilnius, LT03225"),
+                deliveryCount = 1,
+                estimatedMinutesMin = 5,
+                estimatedMinutesMax = 12,
+                captureKey = "repair-addon-$unique",
+            )
+        )
+        database.updateMarketRoute(
+            offerId = offerId,
+            routeDistanceMeters = 6_800,
+            routeSource = "valhalla_mean",
+            city = MarketCity("addon-$unique", "Vilnius", "LT", now),
+        )
+        context.getSharedPreferences("courier_offer_repairs", Context.MODE_PRIVATE)
+            .edit()
+            .putInt("parser_repair_revision", 16)
+            .commit()
+
+        OfferDataRepair.runIfNeeded(context)
+
+        val repaired = database.findById(offerId)!!
+        assertEquals(278, repaired.priceCents)
+        assertEquals("EUR", repaired.currencyCode)
+        assertEquals(2, repaired.currencyFractionDigits)
+        assertEquals(2_300, repaired.distanceMeters)
+        assertEquals(listOf("Mindaugo g. 11, Vilnius, LT03225"), repaired.pickupAddresses)
+        assertEquals(
+            listOf("Cyber City, Vilnius, 03230", "Pelėsos gatvė 10, Vilnius, 03225"),
+            repaired.dropoffAddresses,
+        )
+        assertEquals(2, repaired.deliveryCount)
+        assertNull(repaired.marketRouteDistanceMeters)
+        assertEquals(278.0, database.summarySince(now - 2_000L, platform).averagePriceCents!!, 0.001)
+    }
+
 }

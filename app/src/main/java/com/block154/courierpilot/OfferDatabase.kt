@@ -314,6 +314,43 @@ class OfferDatabase private constructor(context: Context) :
         }
     }
 
+    /**
+     * A Wolt batch can be persisted while its hidden customer rows are still being recovered. If a
+     * later frame of the same live offer has a complete route, enrich the existing row instead of
+     * leaving History with the early pickup-only snapshot. Money, platform distance and screenshot
+     * remain capture-time truth; only route structure/raw evidence are upgraded.
+     */
+    @Synchronized
+    internal fun enrichRecentWoltDuplicateRoute(
+        candidate: OfferRecord,
+        parsed: ParsedOffer,
+        rawText: String,
+    ): Long? {
+        if (candidate.packageName != CourierSignals.WOLT_PACKAGE) return null
+        val expectedDropoffs = maxOf(parsed.deliveryCount ?: 0, parsed.dropoffAddresses.size)
+        if (expectedDropoffs <= 0 || parsed.dropoffAddresses.size < expectedDropoffs) return null
+        if (AutomaticWoltRouteCoordinator.routeFingerprint(parsed) == null) return null
+
+        val existing = findRecentDuplicate(candidate) ?: return null
+        val existingExpected = maxOf(existing.deliveryCount ?: 0, expectedDropoffs)
+        if (existing.dropoffAddresses.size >= existingExpected) return null
+
+        val values = ContentValues().apply {
+            parsed.restaurant?.takeIf(String::isNotBlank)?.let { put("restaurant", it) }
+            if (parsed.merchantNames.isNotEmpty()) put("merchant_names", encodeList(parsed.merchantNames))
+            if (parsed.pickupAddresses.isNotEmpty()) put("pickup_addresses", encodeList(parsed.pickupAddresses))
+            if (parsed.customerNames.isNotEmpty()) put("customer_names", encodeList(parsed.customerNames))
+            put("dropoff_addresses", encodeList(parsed.dropoffAddresses))
+            put("delivery_count", expectedDropoffs)
+            parsed.estimatedMinutesMin?.let { put("estimated_min", it) }
+            parsed.estimatedMinutesMax?.let { put("estimated_max", it) }
+            rawText.takeIf(String::isNotBlank)?.let { put("raw_text", it.take(12000)) }
+        }
+        return existing.id.takeIf {
+            writableDatabase.update("offers", values, "id = ?", arrayOf(existing.id.toString())) > 0
+        }
+    }
+
     fun findById(id: Long): OfferRecord? {
         readableDatabase.query(
             "offers",

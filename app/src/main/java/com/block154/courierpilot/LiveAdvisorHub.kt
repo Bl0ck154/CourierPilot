@@ -554,13 +554,21 @@ internal object LiveAdvisorHub {
                     }
                 }
                 // Render first so the candidate cannot train the thresholds used to judge itself.
-                if (comparison != null) {
+                if (comparison != null && MarketRoutePersistencePolicy.shouldPersistFullRoute(record.platform, parsed)) {
                     MarketIntelligence.onRouteResolved(
                         service,
                         current.offerId,
                         record,
                         comparison.pedestrian.getOrNull(),
                         comparison.cycleway.getOrNull(),
+                    )
+                } else if (comparison != null && parsed.isIncrementalOffer) {
+                    CaptureEventLog.append(
+                        service,
+                        stage = "market_route_skipped_incremental",
+                        platform = record.platform,
+                        message = "Skipped full Valhalla chain for incremental add-on economics",
+                        dedupeWindowMs = 1_000L,
                     )
                 }
             }
