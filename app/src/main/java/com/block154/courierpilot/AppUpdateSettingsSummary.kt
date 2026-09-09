@@ -20,9 +20,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -30,12 +32,25 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 internal fun AppUpdateSettingsSummaryCard() {
     val context = LocalContext.current
-    var status by remember { mutableStateOf(AppUpdateManager.snapshot(context)) }
-    val busy = status.phase == AppUpdatePhase.CHECKING || status.phase == AppUpdatePhase.DOWNLOADING
+    val scope = rememberCoroutineScope()
+    var status by remember {
+        mutableStateOf(AppUpdateStatus(AppUpdatePhase.IDLE, message = "Loading update status…"))
+    }
+    var initialLoading by remember { mutableStateOf(true) }
+
+    LaunchedEffect(Unit) {
+        status = withContext(Dispatchers.IO) { AppUpdateManager.snapshot(context) }
+        initialLoading = false
+    }
+
+    val busy = initialLoading || status.phase == AppUpdatePhase.CHECKING || status.phase == AppUpdatePhase.DOWNLOADING
     val ready = status.phase == AppUpdatePhase.READY
 
     Card(shape = RoundedCornerShape(20.dp)) {
@@ -77,7 +92,9 @@ internal fun AppUpdateSettingsSummaryCard() {
                                     message = "Allow CourierPilot to install unknown apps, then return and tap Install again.",
                                 )
                             }
-                            InstallLaunchResult.NOT_READY -> status = AppUpdateManager.snapshot(context)
+                            InstallLaunchResult.NOT_READY -> scope.launch {
+                                status = withContext(Dispatchers.IO) { AppUpdateManager.snapshot(context) }
+                            }
                         }
                     } else {
                         AppUpdateManager.checkNow(context) { status = it }
@@ -90,6 +107,7 @@ internal fun AppUpdateSettingsSummaryCard() {
                 Spacer(Modifier.size(8.dp))
                 Text(
                     when {
+                        initialLoading -> "Loading…"
                         status.phase == AppUpdatePhase.CHECKING -> "Checking…"
                         status.phase == AppUpdatePhase.DOWNLOADING -> "Downloading ${status.progressPercent ?: 0}%"
                         ready -> "Install ${status.version ?: "update"}"
