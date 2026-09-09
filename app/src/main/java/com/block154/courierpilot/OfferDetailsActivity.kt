@@ -34,6 +34,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,6 +53,8 @@ import com.block154.courierpilot.ui.Success
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class OfferDetailsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -60,11 +63,38 @@ class OfferDetailsActivity : ComponentActivity() {
         val offerId = intent.getLongExtra(EXTRA_OFFER_ID, -1L)
         setContent {
             CourierPilotTheme {
-                val offer = OfferDatabase.get(this).findById(offerId)?.withCurrentParsedStructure()
-                if (offer == null) {
-                    MissingOffer(onBack = ::finish)
-                } else {
-                    OfferDetailsScreen(offer = offer, onBack = ::finish)
+                var loaded by remember(offerId) { mutableStateOf(false) }
+                var data by remember(offerId) { mutableStateOf<OfferDetailsData?>(null) }
+
+                LaunchedEffect(offerId) {
+                    data = withContext(Dispatchers.IO) {
+                        val offer = OfferDatabase.get(this@OfferDetailsActivity)
+                            .findById(offerId)
+                            ?.withCurrentParsedStructure()
+                            ?: return@withContext null
+                        val meta = CourierMetaDatabase.get(this@OfferDetailsActivity)
+                        val savedAddresses = (offer.pickupAddresses + offer.dropoffAddresses)
+                            .asSequence()
+                            .map(String::trim)
+                            .filter(String::isNotEmpty)
+                            .distinct()
+                            .mapNotNull { address ->
+                                meta.findAddressForDisplayAddress(address)?.let { address to it }
+                            }
+                            .toMap()
+                        OfferDetailsData(offer, savedAddresses)
+                    }
+                    loaded = true
+                }
+
+                when {
+                    !loaded -> LoadingOfferDetails()
+                    data == null -> MissingOffer(onBack = ::finish)
+                    else -> OfferDetailsScreen(
+                        offer = data!!.offer,
+                        savedAddresses = data!!.savedAddresses,
+                        onBack = ::finish,
+                    )
                 }
             }
         }
@@ -72,6 +102,22 @@ class OfferDetailsActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_OFFER_ID = "offer_id"
+    }
+}
+
+private data class OfferDetailsData(
+    val offer: OfferRecord,
+    val savedAddresses: Map<String, AddressRecord>,
+)
+
+@Composable
+private fun LoadingOfferDetails() {
+    Column(
+        Modifier.fillMaxSize().padding(24.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("Loading offer…", color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -89,9 +135,12 @@ private fun MissingOffer(onBack: () -> Unit) {
 }
 
 @Composable
-private fun OfferDetailsScreen(offer: OfferRecord, onBack: () -> Unit) {
+private fun OfferDetailsScreen(
+    offer: OfferRecord,
+    savedAddresses: Map<String, AddressRecord>,
+    onBack: () -> Unit,
+) {
     val context = LocalContext.current
-    val meta = CourierMetaDatabase.get(context)
     var rawExpanded by remember { mutableStateOf(false) }
     val merchant = OfferPresentation.merchantTitle(offer)
 
@@ -167,7 +216,7 @@ private fun OfferDetailsScreen(offer: OfferRecord, onBack: () -> Unit) {
             val count = if (offer.pickupAddresses.isNotEmpty()) offer.pickupAddresses.size else offer.merchantNames.size
             items(count) { index ->
                 val address = offer.pickupAddresses.getOrNull(index)
-                val saved = address?.let(meta::findAddressForDisplayAddress)
+                val saved = address?.trim()?.let(savedAddresses::get)
                 OfferStopCard(
                     badge = "P${if (count > 1) index + 1 else ""}",
                     title = offer.merchantNames.getOrNull(index) ?: "Pickup",
@@ -192,7 +241,7 @@ private fun OfferDetailsScreen(offer: OfferRecord, onBack: () -> Unit) {
             val count = if (offer.dropoffAddresses.isNotEmpty()) offer.dropoffAddresses.size else offer.customerNames.size
             items(count) { index ->
                 val address = offer.dropoffAddresses.getOrNull(index)
-                val saved = address?.let(meta::findAddressForDisplayAddress)
+                val saved = address?.trim()?.let(savedAddresses::get)
                 OfferStopCard(
                     badge = "D${if (count > 1) index + 1 else ""}",
                     title = offer.customerNames.getOrNull(index) ?: "Customer",

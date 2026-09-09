@@ -37,6 +37,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,6 +47,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.block154.courierpilot.ui.CourierPilotTheme
 import com.block154.courierpilot.ui.CourierPilotToggleRow
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class AppUpdateActivity : ComponentActivity() {
     private val refreshVersion = mutableIntStateOf(0)
@@ -80,17 +84,21 @@ class AppUpdateActivity : ComponentActivity() {
 @Composable
 private fun AppUpdateScreen(refresh: Int, onBack: () -> Unit) {
     val context = LocalContext.current
-    var status by remember { mutableStateOf(AppUpdateManager.snapshot(context)) }
+    val scope = rememberCoroutineScope()
+    var status by remember { mutableStateOf(AppUpdateStatus(AppUpdatePhase.IDLE, message = "Loading update status…")) }
+    var initialLoading by remember { mutableStateOf(true) }
     var autoDownload by remember { mutableStateOf(AppUpdateSettings.autoDownload(context)) }
     var wifiOnly by remember { mutableStateOf(AppUpdateSettings.wifiOnly(context)) }
 
     LaunchedEffect(refresh) {
-        status = AppUpdateManager.snapshot(context)
+        val snapshot = withContext(Dispatchers.IO) { AppUpdateManager.snapshot(context) }
+        status = snapshot
         autoDownload = AppUpdateSettings.autoDownload(context)
         wifiOnly = AppUpdateSettings.wifiOnly(context)
+        initialLoading = false
     }
 
-    val busy = status.phase == AppUpdatePhase.CHECKING || status.phase == AppUpdatePhase.DOWNLOADING
+    val busy = initialLoading || status.phase == AppUpdatePhase.CHECKING || status.phase == AppUpdatePhase.DOWNLOADING
     val ready = status.phase == AppUpdatePhase.READY
 
     Scaffold(
@@ -166,11 +174,15 @@ private fun AppUpdateScreen(refresh: Int, onBack: () -> Unit) {
                                             )
                                         }
                                         InstallLaunchResult.NOT_READY -> {
-                                            status = AppUpdateManager.snapshot(context)
+                                            scope.launch {
+                                                status = withContext(Dispatchers.IO) { AppUpdateManager.snapshot(context) }
+                                            }
                                         }
                                     }
                                 } else {
-                                    AppUpdateManager.checkNow(context) { status = it }
+                                    scope.launch(Dispatchers.IO) {
+                                        AppUpdateManager.checkNow(context) { status = it }
+                                    }
                                 }
                             },
                             enabled = !busy,
@@ -183,6 +195,7 @@ private fun AppUpdateScreen(refresh: Int, onBack: () -> Unit) {
                             Spacer(Modifier.size(8.dp))
                             Text(
                                 when {
+                                    initialLoading -> "Loading…"
                                     status.phase == AppUpdatePhase.CHECKING -> "Checking…"
                                     status.phase == AppUpdatePhase.DOWNLOADING ->
                                         "Downloading ${status.progressPercent ?: 0}%"
@@ -195,7 +208,11 @@ private fun AppUpdateScreen(refresh: Int, onBack: () -> Unit) {
 
                         if (ready) {
                             TextButton(
-                                onClick = { AppUpdateManager.checkNow(context) { status = it } },
+                                onClick = {
+                                    scope.launch(Dispatchers.IO) {
+                                        AppUpdateManager.checkNow(context) { status = it }
+                                    }
+                                },
                                 enabled = !busy,
                                 modifier = Modifier.fillMaxWidth(),
                             ) {
