@@ -146,6 +146,36 @@ class OfferParserTest {
     }
 
     @Test
+    fun parsesRealWoltAddonWithNamedExistingCustomerStop() {
+        val parsed = OfferParser.parse(
+            """
+            +€2.78
+            +2 stops (2.3 km) • 5–12 min extra
+            12 Restoranas (Mindaugo g.)
+            Mindaugo g. 11, Vilnius, LT03225
+            Customer drop-off
+            Cyber City, Vilnius, 03230
+            Customer drop-off
+            Pelėsos gatvė 10, Vilnius, 03225
+            Estimated earnings for the full delivery
+            Accept
+            Decline
+            """.trimIndent()
+        )
+
+        assertEquals(278, parsed.priceCents)
+        assertEquals(2_300, parsed.distanceMeters)
+        assertEquals(listOf("Mindaugo g. 11, Vilnius, LT03225"), parsed.pickupAddresses)
+        assertEquals(
+            listOf("Cyber City, Vilnius, 03230", "Pelėsos gatvė 10, Vilnius, 03225"),
+            parsed.dropoffAddresses,
+        )
+        assertEquals(2, parsed.deliveryCount)
+        assertTrue(parsed.isIncrementalOffer)
+        assertTrue(AutomaticWoltRouteCoordinator.routeFingerprint(parsed) != null)
+    }
+
+    @Test
     fun infersAnyNumberOfSameVenueDropoffsWhenWoltOmitsCustomerLabels() {
         val parsed = OfferParser.parse(
             """

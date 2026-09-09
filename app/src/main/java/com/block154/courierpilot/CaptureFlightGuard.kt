@@ -39,6 +39,13 @@ internal class CaptureFlightGuard(private val timeoutMs: Long) {
         return true
     }
 
+    fun cancel(): Boolean {
+        if (activeToken == 0L) return false
+        generation += 1L
+        clearActive()
+        return true
+    }
+
     fun recoverIfTimedOut(nowElapsed: Long): TimedOutCapture? {
         if (activeToken == 0L || startedAtElapsed <= 0L) return null
         val age = (nowElapsed - startedAtElapsed).coerceAtLeast(0L)

@@ -425,9 +425,13 @@ internal class StableLiveOfferAdvisor(
         val expectedGeneration = generation
         handler.post {
             if (dismissed || generation != expectedGeneration) return@post
-            // A failed real route must not fall back to a made-up €/km based on the platform's own
-            // distance. Keep the platform distance as context, but mark profitability unavailable.
-            setDecisionUnavailable()
+            // Ordinary offers never fall back to platform-distance profitability after a real route
+            // failure. Wolt add-ons are different: their money and distance are already incremental,
+            // while the Valhalla chain is the full remaining route, so keep the clearly-labelled
+            // provisional incremental rate instead of replacing it with an unavailable marker.
+            val keptIncrementalRate = currentParsed?.takeIf { it.isIncrementalOffer }
+                ?.let { renderProvisionalProfitability(it, marker = "Wolt") } == true
+            if (!keptIncrementalRate) setDecisionUnavailable()
             val platformMeters = currentParsed?.distanceMeters?.takeIf { it > 0 }
             if (platformMeters != null) {
                 setRouteContent("⚠️ ${LiveAdvisorPresentation.platformDistanceLine(platformMeters)}")
@@ -524,6 +528,10 @@ internal class StableLiveOfferAdvisor(
         val hasRoute = cachedPedestrianRoute != null || cachedCyclewayRoute != null
         when {
             !hasPrice -> setDecisionLoading()
+            // Wolt add-on money and distance are explicitly incremental. A full Valhalla route
+            // cannot be used as the denominator without subtracting the already-accepted baseline,
+            // so keep the primary rate truthful and immediate using Wolt's incremental distance.
+            parsed.isIncrementalOffer && renderProvisionalProfitability(parsed, marker = "Wolt") -> Unit
             hasRoute -> renderProfitability(parsed, cachedPedestrianRoute, cachedCyclewayRoute)
             // When real routing is enabled, do not flash a platform-distance €/km that will be
             // replaced moments later by a materially different real-route value. Live 0.15.46

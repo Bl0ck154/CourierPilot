@@ -122,6 +122,14 @@ internal object DeliveryLifecycleTracking {
         return false
     }
 
+    internal fun isAcceptedTaskWithoutOfferControls(text: String): Boolean {
+        if (!hasActiveTaskSurface(text)) return false
+        val lower = text.lowercase(Locale.ROOT)
+        val hasAccept = listOf("accept", "priimti", "принять", "прийняти").any(lower::contains)
+        val hasDecline = listOf("decline", "reject", "atmesti", "отклонить", "відхилити").any(lower::contains)
+        return !(hasAccept && hasDecline)
+    }
+
     internal fun detect(text: String): DeliveryLifecycleEvidence? {
         val lower = text.lowercase(Locale.ROOT).replace('’', '\'')
         val ordered = listOf(
