@@ -91,9 +91,30 @@ internal class StableLiveOfferAdvisor(
     private var gestureLastMoveAtElapsed = 0L
     private var gestureMoveEvents = 0
     private var gestureMaxMoveGapMs = 0L
+    private var gestureWindowRelayouts = 0
+    private var gestureFrameMoveScheduled = false
+    private var gestureLastWindowRelayoutAtElapsed = 0L
+    private val gestureWindowMoveRunnable = object : Runnable {
+        override fun run() {
+            gestureFrameMoveScheduled = false
+            val view = root ?: return
+            if (!gestureTouchActive || gestureMode != GESTURE_VERTICAL) return
+            val now = SystemClock.elapsedRealtime()
+            val sinceLast = now - gestureLastWindowRelayoutAtElapsed
+            if (sinceLast in 0 until GESTURE_WINDOW_RELAYOUT_MIN_INTERVAL_MS) {
+                gestureFrameMoveScheduled = true
+                view.postOnAnimationDelayed(this, GESTURE_WINDOW_RELAYOUT_MIN_INTERVAL_MS - sinceLast)
+                return
+            }
+            applyPendingVerticalWindowPosition(view)
+        }
+    }
     private var courierEventCheckScheduled = false
     private var courierEventCheckDeferred = false
     private var lastSlowSurfaceLogAtElapsed = 0L
+    private var latestObservedPackage = ""
+    private var latestObservedText = ""
+    private var latestObservedAtElapsed = 0L
 
     private val courierWindowCheck = Runnable {
         courierEventCheckScheduled = false
@@ -418,6 +439,15 @@ internal class StableLiveOfferAdvisor(
     }
 
     /** Accessibility events make resume nearly immediate; the watchdog remains the fallback. */
+    fun onObservedCourierScreen(packageName: String, text: String) {
+        if (packageName == expectedPackageName && text.isNotBlank()) {
+            latestObservedPackage = packageName
+            latestObservedText = text
+            latestObservedAtElapsed = SystemClock.elapsedRealtime()
+        }
+        onCourierWindowEvent(packageName)
+    }
+
     fun onCourierWindowEvent(packageName: String) {
         if (dismissed || currentParsed == null || packageName != expectedPackageName) return
         if (gestureTouchActive) {
@@ -445,6 +475,18 @@ internal class StableLiveOfferAdvisor(
                 }
             }
         }
+    }
+
+    private fun dismissCurrentOfferByUser(reason: String) {
+        currentParsed?.let { parsed ->
+            LiveAdvisorHub.onUserDismissedOffer(
+                service,
+                expectedPackageName,
+                currentNotificationKey,
+                parsed,
+            )
+        }
+        suppressCurrentOffer(reason)
     }
 
     fun suppressCurrentOffer(reason: String = "superseded", animate: Boolean = true) {
@@ -653,7 +695,7 @@ internal class StableLiveOfferAdvisor(
             includeFontPadding = false
             gravity = Gravity.CENTER
             setPadding(dp(8), 0, 0, 0)
-            setOnClickListener { suppressCurrentOffer("closed by user") }
+            setOnClickListener { dismissCurrentOfferByUser("closed by user") }
         })
         container.addView(topRow)
 
@@ -886,6 +928,8 @@ internal class StableLiveOfferAdvisor(
         handler.removeCallbacks(courierWindowCheck)
         courierEventCheckScheduled = false
         courierEventCheckDeferred = false
+        root?.removeCallbacks(gestureWindowMoveRunnable)
+        gestureFrameMoveScheduled = false
         gestureTouchActive = false
         detachView(animate = animate)
         resetMissingEvidence()
@@ -908,6 +952,9 @@ internal class StableLiveOfferAdvisor(
         cachedRouteVisible = true
         cachedPedestrianRoute = null
         cachedCyclewayRoute = null
+        latestObservedPackage = ""
+        latestObservedText = ""
+        latestObservedAtElapsed = 0L
         differentOfferConfirmation.reset()
     }
 
@@ -1005,6 +1052,7 @@ internal class StableLiveOfferAdvisor(
         val expected = expectedPackageName
         val expectedOffer = currentParsed ?: return
         if (expected.isBlank()) return
+        if (acceptRecentSameOfferObservation(expected, expectedOffer)) return
 
         val activePackage = service.rootInActiveWindow?.packageName?.toString().orEmpty()
         val courierRoot = findVisiblePackageRoot(expected)
@@ -1240,6 +1288,32 @@ internal class StableLiveOfferAdvisor(
         val snapshot: LiveOfferSurfaceSnapshot,
     )
 
+    private fun acceptRecentSameOfferObservation(expectedPackage: String, expectedOffer: ParsedOffer): Boolean {
+        if (latestObservedPackage != expectedPackage) return false
+        val ageMs = SystemClock.elapsedRealtime() - latestObservedAtElapsed
+        if (ageMs !in 0..RECENT_SCREEN_TEXT_TTL_MS) return false
+        val text = latestObservedText
+        if (text.isBlank()) return false
+
+        if (CourierSignals.looksLikeWoltDeclineConfirmation(expectedPackage, text)) {
+            differentOfferConfirmation.reset()
+            woltHomeEndConfirmation.reset()
+            resetMissingEvidence()
+            if (temporarilyHidden) restoreFromCache("recent Accessibility text still shows the Wolt decline modal")
+            return true
+        }
+
+        val parsed = OfferParser.parse(text)
+        val hasOfferUi = CourierSignals.looksLikeOfferScreen(text, parsed) || hasDecisionPair(text)
+        if (!hasOfferUi || LiveOfferResumePolicy.definitelyDifferent(expectedOffer, parsed)) return false
+
+        differentOfferConfirmation.reset()
+        woltHomeEndConfirmation.reset()
+        resetMissingEvidence()
+        if (temporarilyHidden) restoreFromCache("recent Accessibility text confirms the same live offer")
+        return true
+    }
+
     /**
      * Accessibility trees can retain Compose nodes after they are visually hidden. Only visible
      * nodes are allowed to keep an offer alive; otherwise stale Accept/Decline text can pin the
@@ -1342,6 +1416,10 @@ internal class StableLiveOfferAdvisor(
                 gestureLastMoveAtElapsed = gestureStartedAtElapsed
                 gestureMoveEvents = 0
                 gestureMaxMoveGapMs = 0L
+                gestureWindowRelayouts = 0
+                gestureLastWindowRelayoutAtElapsed = 0L
+                view?.removeCallbacks(gestureWindowMoveRunnable)
+                gestureFrameMoveScheduled = false
                 view?.animate()?.cancel()
                 view?.translationX = 0f
                 view?.translationY = 0f
@@ -1368,16 +1446,20 @@ internal class StableLiveOfferAdvisor(
                     view?.translationX = dx
                     view?.alpha = (1f - abs(dx) / ((view?.width ?: 1).coerceAtLeast(1) * 1.1f)).coerceIn(0.3f, 1f)
                 } else if (gestureMode == GESTURE_VERTICAL && view != null) {
-                    // WindowManager relayouts are avoided until ACTION_UP. With the accelerated
-                    // overlay window this stays a cheap compositor translation.
+                    // Move the actual overlay window, not the card inside a fixed-size window.
+                    // A translated child is clipped by the window bounds and looks like it is
+                    // disappearing behind an invisible wall. Coalesce relayouts to roughly 60 Hz
+                    // so high-rate touch streams cannot spam WindowManager.
                     gesturePendingY = clampY(gestureStartY + dy.toInt(), view)
-                    view.translationY = (gesturePendingY - gestureStartY).toFloat()
+                    scheduleVerticalWindowMove(view)
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 val dx = event.rawX - gestureDownX
                 val dy = event.rawY - gestureDownY
                 val mode = gestureMode
+                view?.removeCallbacks(gestureWindowMoveRunnable)
+                gestureFrameMoveScheduled = false
                 gestureMode = GESTURE_NONE
                 gestureTouchActive = false
                 if (mode == GESTURE_HORIZONTAL) {
@@ -1385,7 +1467,7 @@ internal class StableLiveOfferAdvisor(
                     if (event.actionMasked == MotionEvent.ACTION_UP && abs(dx) >= threshold) {
                         logGesturePerformance(mode, dy, event.actionMasked == MotionEvent.ACTION_CANCEL)
                         flushDeferredCourierWindowCheck()
-                        suppressCurrentOffer("swiped by user")
+                        dismissCurrentOfferByUser("swiped by user")
                         return true
                     }
                     view?.animate()?.translationX(0f)?.alpha(1f)?.setDuration(SNAP_BACK_MS)?.start()
@@ -1414,20 +1496,38 @@ internal class StableLiveOfferAdvisor(
             service,
             stage = "overlay_drag",
             platform = currentPlatform,
-            message = "axis=$axis; duration_ms=$durationMs; moves=$gestureMoveEvents; max_move_gap_ms=$gestureMaxMoveGapMs; distance_dp=$distanceDp; cancelled=$cancelled",
+            message = "axis=$axis; duration_ms=$durationMs; moves=$gestureMoveEvents; max_move_gap_ms=$gestureMaxMoveGapMs; window_relayouts=$gestureWindowRelayouts; distance_dp=$distanceDp; cancelled=$cancelled",
             dedupeWindowMs = 250L,
         )
+    }
+
+    private fun scheduleVerticalWindowMove(view: View) {
+        if (gestureFrameMoveScheduled) return
+        gestureFrameMoveScheduled = true
+        view.postOnAnimation(gestureWindowMoveRunnable)
+    }
+
+    private fun applyPendingVerticalWindowPosition(view: View? = root) {
+        val targetView = view ?: return
+        val params = windowParams ?: return
+        val targetY = clampY(gesturePendingY, targetView)
+        if (params.y == targetY) return
+        params.y = targetY
+        runCatching { windowManager.updateViewLayout(targetView, params) }
+            .onSuccess {
+                gestureWindowRelayouts += 1
+                gestureLastWindowRelayoutAtElapsed = SystemClock.elapsedRealtime()
+            }
     }
 
     private fun commitVerticalDrag(targetY: Int) {
         val view = root ?: return
         val params = windowParams ?: return
         val finalY = clampY(targetY, view)
-        params.y = finalY
-        runCatching { windowManager.updateViewLayout(view, params) }
+        gesturePendingY = finalY
+        if (params.y != finalY) applyPendingVerticalWindowPosition(view)
         view.translationY = 0f
         gestureStartY = finalY
-        gesturePendingY = finalY
         LiveAdvisorSettings.setOverlayYPx(service, finalY)
     }
 
@@ -1504,6 +1604,8 @@ internal class StableLiveOfferAdvisor(
         const val SNAP_BACK_MS = 140L
         const val NOTIFICATION_REMOVAL_RECHECK_MS = 60L
         const val COURIER_EVENT_CHECK_DELAY_MS = 48L
+        const val RECENT_SCREEN_TEXT_TTL_MS = 350L
+        const val GESTURE_WINDOW_RELAYOUT_MIN_INTERVAL_MS = 16L
         const val MAX_SURFACE_NODES = 600
         const val SLOW_SURFACE_SCAN_MS = 32L
         const val SLOW_SURFACE_LOG_INTERVAL_MS = 5_000L
