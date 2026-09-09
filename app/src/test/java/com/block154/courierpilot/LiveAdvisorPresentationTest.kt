@@ -55,6 +55,17 @@ class LiveAdvisorPresentationTest {
     }
 
     @Test
+    fun addonProvisionalRateCanBeLabelledAsWoltIncrementalDistance() {
+        val line = LiveAdvisorPresentation.provisionalRateLine(
+            money = MoneyAmount(278, "EUR", 2),
+            estimatedRouteMeters = 2300,
+            marker = "Wolt",
+        )
+
+        assertEquals("≈ €1.21/km  Wolt", line)
+    }
+
+    @Test
     fun platformDistanceFallbackShowsDistanceWithoutInventingProfitability() {
         assertEquals("📍 9.10 km", LiveAdvisorPresentation.platformDistanceLine(9100))
         assertEquals("📍 3.90 km", LiveAdvisorPresentation.platformDistanceLine(3900))

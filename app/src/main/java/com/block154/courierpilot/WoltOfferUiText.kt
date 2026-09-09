@@ -5,7 +5,7 @@ internal object WoltOfferUiText {
     const val MODERN_EARNINGS_LABEL = "estimated earnings for the full delivery"
 
     val modernRouteSummaryRegex = Regex(
-        "(?i)^\\s*(\\d+)\\s+stops?\\s*\\(\\s*\\d+(?:[.,]\\d+)?\\s*(?:km|m)\\s*\\)\\s*(?:[•·]\\s*)?\\d{1,3}\\s*[-–—]\\s*\\d{1,3}\\s*min\\s*$"
+        "(?i)^\\s*\\+?\\s*(\\d+)\\s+stops?\\s*\\(\\s*\\d+(?:[.,]\\d+)?\\s*(?:km|m)\\s*\\)\\s*(?:[•·]\\s*)?\\d{1,3}\\s*[-–—]\\s*\\d{1,3}\\s*min(?:\\s+extra)?\\s*$"
     )
     val collapsedMultipleDropoffsRegex = Regex(
         "(?i)^\\s*multiple\\s+drop[- ]?offs?\\s*\\(\\s*(\\d+)\\s+stops?\\s*\\)\\s*$"

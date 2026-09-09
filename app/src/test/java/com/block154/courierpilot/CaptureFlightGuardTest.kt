@@ -26,4 +26,17 @@ class CaptureFlightGuardTest {
         assertTrue(guard.finish(second))
         assertFalse(guard.isCurrent(second))
     }
+
+    @Test
+    fun cancelInvalidatesLateCallbackAndAllowsNextCapture() {
+        val guard = CaptureFlightGuard(timeoutMs = 5_000L)
+        val first = guard.begin(1_000L, "ocr", "Wolt")
+        assertTrue(guard.cancel())
+        assertFalse(guard.isCurrent(first))
+        assertFalse(guard.finish(first))
+
+        val second = guard.begin(1_100L, "ocr", "Wolt")
+        assertTrue(guard.isCurrent(second))
+        assertTrue(guard.finish(second))
+    }
 }

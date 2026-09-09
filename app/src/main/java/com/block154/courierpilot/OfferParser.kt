@@ -29,6 +29,7 @@ internal data class ParsedOffer(
     val estimatedMinutesMin: Int? = null,
     val estimatedMinutesMax: Int? = null,
     val orderedRouteStops: List<ParsedRouteStop> = emptyList(),
+    val isIncrementalOffer: Boolean = false,
 )
 
 internal object OfferParser {
@@ -106,6 +107,7 @@ internal object OfferParser {
             estimatedMinutesMin = estimate?.first,
             estimatedMinutesMax = estimate?.second,
             orderedRouteStops = orderedStops,
+            isIncrementalOffer = modernWolt?.isIncrementalOffer == true,
         )
     }
 
@@ -155,6 +157,7 @@ internal object OfferParser {
         val dropoffAddresses: List<String>,
         val deliveryCount: Int?,
         val orderedRouteStops: List<ParsedRouteStop>,
+        val isIncrementalOffer: Boolean,
     )
 
     /**
@@ -173,6 +176,10 @@ internal object OfferParser {
         // the OCR copy that follows then contains the complete card. Prefer the last summary so
         // that richer OCR frame wins instead of the first incomplete copy ending at its label.
         val summaryIndex = summaryIndexes.lastOrNull() ?: -1
+        val isIncrementalOffer = summaryIndexes.any { index ->
+            val line = lines[index].trim()
+            line.startsWith("+") || line.endsWith("extra", ignoreCase = true)
+        }
         val contentStart = (summaryIndex + 1).coerceAtLeast(0)
         val customerDropoffIndexes = lines.indices.filter { index ->
             index >= contentStart && WoltOfferUiText.singleCustomerDropoffRegex.matches(lines[index])
@@ -242,7 +249,7 @@ internal object OfferParser {
                         !line.equals("Accept", ignoreCase = true) &&
                         !line.equals("Decline", ignoreCase = true)
                 }
-                .firstOrNull(::looksLikeModernStreetAddress)
+                .firstOrNull(::looksLikeModernRouteAddress)
                 ?.let(::addDropoff)
         }
 
@@ -357,6 +364,7 @@ internal object OfferParser {
             dropoffAddresses = dropoffs,
             deliveryCount = deliveryCount,
             orderedRouteStops = ordered,
+            isIncrementalOffer = isIncrementalOffer,
         )
     }
 
@@ -598,6 +606,13 @@ internal object OfferParser {
             lower.contains(" street ") ||
             lower.contains(" avenue ") ||
             lower.contains(" road ")
+    }
+
+    private fun looksLikeModernRouteAddress(line: String): Boolean {
+        if (looksLikeModernStreetAddress(line)) return true
+        val lower = line.lowercase(Locale.ROOT)
+        return looksLikeAddress(line) &&
+            (lower.contains("vilnius") || Regex("(?i)\\bLT\\s*[- ]?\\d{4,5}\\b").containsMatchIn(line))
     }
 
     private fun looksLikeAddress(line: String): Boolean {

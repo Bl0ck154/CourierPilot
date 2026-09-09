@@ -74,6 +74,12 @@ internal object LiveAdvisorHub {
     fun showPendingOffer(context: Context, pending: PendingOffer, parsed: ParsedOffer) {
         attach(context)
         val service = serviceRef.get() ?: return
+        val livePending = OfferState.pending(service)
+        val transactionStillCurrent = livePending != null &&
+            livePending.packageName == pending.packageName &&
+            livePending.armedAt == pending.armedAt &&
+            (pending.notificationKey.isBlank() || livePending.notificationKey == pending.notificationKey)
+        if (!transactionStillCurrent) return
         val platform = OfferState.platformLabel(pending.packageName)
         observeIncomingCapture(pending)
         if (isUserDismissedOffer(pending.packageName, parsed, pending.notificationKey)) {
@@ -330,6 +336,25 @@ internal object LiveAdvisorHub {
     fun setCaptureSuppressed(context: Context, suppressed: Boolean) {
         attach(context)
         advisor?.setCaptureSuppressed(suppressed)
+    }
+
+    fun onActiveTaskSurface(context: Context, packageName: String) {
+        attach(context)
+        pendingPreview = null
+        currentOffer = null
+        captureOfferKey = null
+        currentOfferHasResolvedRoute = false
+        currentWoltRouteRetryCount = 0
+        advisor?.suppressCurrentOffer("offer accepted; active delivery screen visible", animate = false)
+        serviceRef.get()?.let { service ->
+            CaptureEventLog.append(
+                service,
+                stage = "active_task_offer_terminated",
+                platform = OfferState.platformLabel(packageName),
+                message = "Accepted task surface terminated live offer UI",
+                dedupeWindowMs = 2_000L,
+            )
+        }
     }
 
     /** AccessibilityService and the overlay share the main looper, so this is a cheap coordination read. */

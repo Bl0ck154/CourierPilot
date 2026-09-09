@@ -181,6 +181,10 @@ class OfferAccessibilityService : AccessibilityService() {
                 observeCourierScreen(visible.packageName, uiText)
                 if (uiText.isNotBlank()) OfferState.saveUiText(this, uiText)
                 val parsed = OfferParser.parse(uiText)
+                if (terminatePendingOfferOnActiveTask(visible.packageName, uiText)) {
+                    scheduleAttempt(IDLE_WATCHDOG_MS)
+                    return
+                }
                 if (visible.packageName == CourierSignals.WOLT_PACKAGE &&
                     CourierSignals.looksLikeIdleHomeScreen(visible.packageName, uiText) &&
                     !CourierSignals.looksLikeOfferScreen(uiText, parsed)
@@ -246,6 +250,10 @@ class OfferAccessibilityService : AccessibilityService() {
         // can either resurrect a finished offer or incorrectly kill the current one under a modal.
         val visibleUiText = collectStrictlyVisibleText(target.root)
         observeCourierScreen(target.packageName, visibleUiText)
+        if (terminatePendingOfferOnActiveTask(target.packageName, visibleUiText)) {
+            scheduleAttempt(IDLE_WATCHDOG_MS)
+            return
+        }
         if (handleWoltIdleHomeSurface(pending, target.packageName, visibleUiText)) return
 
         // Never parse Wolt's whole semantics tree as the base offer. Old hidden Compose nodes can
@@ -360,6 +368,7 @@ class OfferAccessibilityService : AccessibilityService() {
         // hidden Compose nodes from a previous offer inject an old price/distance into the advisor.
         val currentUiText = collectStrictlyVisibleText(target.root)
         if (currentUiText.isBlank()) return false
+        if (terminatePendingOfferOnActiveTask(pending.packageName, currentUiText)) return true
         if (CourierSignals.looksLikeWoltDeclineConfirmation(pending.packageName, currentUiText)) return true
         val uiText = accumulateOfferFrame(pending, currentUiText)
         val parsed = OfferParser.parse(uiText)
@@ -946,6 +955,10 @@ class OfferAccessibilityService : AccessibilityService() {
         // A real Wolt navigation page is stronger evidence than stale offer semantics left behind
         // by Compose. Never re-arm an old offer over Stats/History/Settings-like screens.
         if (CourierSignals.looksLikeWoltNonOfferNavigationScreen(packageName, text)) return false
+        if (isAcceptedTaskWithoutOfferControls(text)) {
+            LiveAdvisorHub.onActiveTaskSurface(this, packageName)
+            return false
+        }
         if (!CourierSignals.looksLikeOfferScreen(text, parsed)) return false
         if (LiveAdvisorHub.isUserDismissedOffer(packageName, parsed)) {
             CaptureEventLog.append(
@@ -1818,6 +1831,33 @@ class OfferAccessibilityService : AccessibilityService() {
             else -> 2_500L
         }
     }
+
+    private fun terminatePendingOfferOnActiveTask(packageName: String, text: String): Boolean {
+        if (!isAcceptedTaskWithoutOfferControls(text)) return false
+        val pending = OfferState.pending(this)
+        if (pending != null && pending.packageName == packageName) {
+            captureGuard.cancel()
+            captureInFlight = false
+            handler.removeCallbacks(captureWatchdogRunnable)
+            handler.removeCallbacks(woltPricePollRunnable)
+            woltPricePollKey = ""
+            lastFastAccessibilityPriceKey = ""
+            OfferState.clear(this)
+            lastHandledArmedAt = 0L
+            CaptureEventLog.append(
+                this,
+                stage = "active_task_pending_cleared",
+                platform = OfferState.platformLabel(packageName),
+                message = "Accepted task surface cleared pending capture and invalidated late callbacks",
+                dedupeWindowMs = 2_000L,
+            )
+        }
+        LiveAdvisorHub.onActiveTaskSurface(this, packageName)
+        return true
+    }
+
+    private fun isAcceptedTaskWithoutOfferControls(text: String): Boolean =
+        DeliveryLifecycleTracking.isAcceptedTaskWithoutOfferControls(text)
 
     private fun scheduleAttempt(delayMs: Long) {
         handler.removeCallbacks(attemptRunnable)

@@ -318,7 +318,12 @@ internal object AutomaticWoltRouteCoordinator {
 
             fun finishWithWaypoints(waypoints: List<ResolvedWaypoint>, strictRecovery: Boolean) {
                 val chainMeters = directChainMeters(waypoints)
-                val mismatch = WoltRoutePlausibility.coordinateMismatchReason(parsed.distanceMeters, chainMeters)
+                // Wolt add-ons expose an *incremental* distance (for example "+2.3 km extra") while
+                // the waypoint chain is the full remaining route. Comparing those values would
+                // reject correct coordinates by construction, so the full-distance sanity bound is
+                // only valid for ordinary offers.
+                val sanityPlatformMeters = parsed.distanceMeters.takeUnless { parsed.isIncrementalOffer }
+                val mismatch = WoltRoutePlausibility.coordinateMismatchReason(sanityPlatformMeters, chainMeters)
                 if (mismatch != null && !strictRecovery) {
                     CaptureEventLog.append(
                         app,

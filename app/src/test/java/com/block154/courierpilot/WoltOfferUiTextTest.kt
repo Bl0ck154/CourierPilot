@@ -22,4 +22,9 @@ class WoltOfferUiTextTest {
             )
         )
     }
+
+    @Test
+    fun recognizesIncrementalAddonRouteSummary() {
+        assertTrue(WoltOfferUiText.modernRouteSummaryRegex.matches("+2 stops (2.3 km) • 5–12 min extra"))
+    }
 }
