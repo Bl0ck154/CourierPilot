@@ -51,6 +51,7 @@ class RemoteDiagnosticsPrivacyTest {
         assertEquals(0L, RemoteDiagnosticsSampling.minIntervalMs("route_ready"))
         assertEquals(0L, RemoteDiagnosticsSampling.minIntervalMs("overlay_drag"))
         assertEquals(10_000L, RemoteDiagnosticsSampling.minIntervalMs("overlay_tree_slow"))
+        assertEquals(5_000L, RemoteDiagnosticsSampling.minIntervalMs("capture_deferred_drag"))
     }
 
 }

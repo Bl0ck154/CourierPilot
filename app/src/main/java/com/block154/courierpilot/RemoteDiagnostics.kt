@@ -326,6 +326,7 @@ internal object RemoteDiagnosticsSampling {
         "screen_on" -> 60_000L
         "ocr_price_probe" -> 10_000L
         "overlay_tree_slow" -> 10_000L
+        "capture_deferred_drag" -> 5_000L
         else -> 0L
     }
 }
