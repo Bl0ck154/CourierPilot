@@ -526,12 +526,16 @@ internal class StableLiveOfferAdvisor(
     private fun renderProgressiveDecision(parsed: ParsedOffer) {
         val hasPrice = parsed.priceCents != null && parsed.money != null
         val hasRoute = cachedPedestrianRoute != null || cachedCyclewayRoute != null
+        val hasCompleteWoltRoutePair = cachedPedestrianRoute != null && cachedCyclewayRoute != null
         when {
             !hasPrice -> setDecisionLoading()
             // Wolt add-on money and distance are explicitly incremental. A full Valhalla route
             // cannot be used as the denominator without subtracting the already-accepted baseline,
             // so keep the primary rate truthful and immediate using Wolt's incremental distance.
             parsed.isIncrementalOffer && renderProvisionalProfitability(parsed, marker = "Wolt") -> Unit
+            currentPlatform.equals("Wolt", ignoreCase = true) &&
+                LiveAdvisorSettings.routeEnabled(service, currentPlatform) && hasRoute && !hasCompleteWoltRoutePair ->
+                setDecisionUnavailable()
             hasRoute -> renderProfitability(parsed, cachedPedestrianRoute, cachedCyclewayRoute)
             // When real routing is enabled, do not flash a platform-distance €/km that will be
             // replaced moments later by a materially different real-route value. Live 0.15.46
@@ -990,11 +994,16 @@ internal class StableLiveOfferAdvisor(
         // while the adaptive thresholds continue warming in the background.
         prewarmDecisionThresholds()
         val coldStart = LiveOfferColdStartThresholds.forCurrency(currencyCode)
-        return DecisionThresholdSnapshot(
+        val snapshot = DecisionThresholdSnapshot(
             currencyCode = currencyCode,
             thresholds = coldStart,
-            source = if (coldStart != null) "currency_cold_start_pending_adaptive" else "none_pending_adaptive",
+            source = if (coldStart != null) "currency_cold_start_frozen" else "none_frozen",
         )
+        // The first threshold snapshot used to score this offer is immutable for its lifetime. A
+        // later adaptive DB warm-up may improve the next offer, but must never change this card's
+        // emoji while the courier is deciding.
+        decisionThresholdSnapshot = snapshot
+        return snapshot
     }
 
     private fun prewarmDecisionThresholds() {
@@ -1019,12 +1028,10 @@ internal class StableLiveOfferAdvisor(
                 },
             )
             handler.post {
-                if (!dismissed && generation == expectedGeneration) {
+                if (!dismissed && generation == expectedGeneration && decisionThresholdSnapshot == null) {
+                    // Adaptive thresholds may win only before this offer has been scored. Once the
+                    // first verdict picks a snapshot, leave it frozen for the rest of the offer.
                     decisionThresholdSnapshot = snapshot
-                    val parsed = currentParsed
-                    if (parsed != null && (cachedPedestrianRoute != null || cachedCyclewayRoute != null)) {
-                        renderProfitability(parsed, cachedPedestrianRoute, cachedCyclewayRoute)
-                    }
                 }
             }
         }

@@ -122,18 +122,32 @@ internal class RouteComparisonEngine(private val provider: RouteProvider) {
         // The profiles are independent HTTP requests. Running them serially made the live card pay
         // two network round trips; parallel execution makes the slower profile the total cost.
         val pedestrian = CompletableFuture.supplyAsync(
-            { runCatching { provider.route(pedestrianRequest) }.getOrElse { Result.failure(it) } },
+            { safeRoute(pedestrianRequest) },
             routeExecutor,
         )
         val cycleway = CompletableFuture.supplyAsync(
-            { runCatching { provider.route(cycleRequest) }.getOrElse { Result.failure(it) } },
+            { safeRoute(cycleRequest) },
             routeExecutor,
         )
+        var pedestrianResult = pedestrian.join()
+        var cyclewayResult = cycleway.join()
+
+        // A transient failure of exactly one profile must not turn the live verdict into a different
+        // denominator. Retry the missing side once inside the same comparison transaction before any
+        // caller sees the result. This keeps Wolt's required walking+cycling average deterministic.
+        if (pedestrianResult.isFailure && cyclewayResult.isSuccess) {
+            pedestrianResult = safeRoute(pedestrianRequest)
+        } else if (cyclewayResult.isFailure && pedestrianResult.isSuccess) {
+            cyclewayResult = safeRoute(cycleRequest)
+        }
         return RouteComparison(
-            pedestrian = pedestrian.join(),
-            cycleway = cycleway.join(),
+            pedestrian = pedestrianResult,
+            cycleway = cyclewayResult,
         )
     }
+
+    private fun safeRoute(request: RouteRequest): Result<RouteResult> =
+        runCatching { provider.route(request) }.getOrElse { Result.failure(it) }
 
     companion object {
         private val routeExecutor = Executors.newFixedThreadPool(2) { runnable ->

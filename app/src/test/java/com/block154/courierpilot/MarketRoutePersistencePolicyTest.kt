@@ -30,4 +30,29 @@ class MarketRoutePersistencePolicyTest {
         assertTrue(MarketRoutePersistencePolicy.shouldPersistFullRoute("Wolt", ordinary))
         assertTrue(MarketRoutePersistencePolicy.shouldPersistFullRoute("Bolt", ordinary.copy(isIncrementalOffer = true)))
     }
+
+    @Test
+    fun partialWoltComparisonIsNotPersistedAsTrustedEconomics() {
+        val ordinary = ParsedOffer(
+            priceCents = 886,
+            money = MoneyAmount(886, "EUR", 2),
+            distanceMeters = 11_400,
+            restaurant = "GOGI GUY",
+        )
+        val comparison = RouteComparison(
+            pedestrian = Result.failure(IllegalStateException("temporary walking failure")),
+            cycleway = Result.success(
+                RouteResult(
+                    provider = "test",
+                    profile = RouteProfile.CYCLEWAY_BIASED,
+                    distanceMeters = 10_226,
+                    durationSeconds = 1_000,
+                    legShapes = emptyList(),
+                )
+            ),
+        )
+
+        assertFalse(MarketRoutePersistencePolicy.shouldPersistFullRoute("Wolt", ordinary, comparison))
+        assertTrue(MarketRoutePersistencePolicy.shouldPersistFullRoute("Bolt", ordinary, comparison))
+    }
 }
