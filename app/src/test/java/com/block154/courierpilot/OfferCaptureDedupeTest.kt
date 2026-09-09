@@ -179,6 +179,42 @@ class OfferCaptureDedupeTest {
     }
 
     @Test
+    fun woltAddOnRouteExtensionIsNotCollapsedIntoOriginalOffer() {
+        val single = OfferRecord(
+            capturedAt = 1_500_000L,
+            platform = "Wolt",
+            packageName = CourierSignals.WOLT_PACKAGE,
+            priceCents = 650,
+            distanceMeters = 4_200,
+            restaurant = "Hesburger",
+            screenshotUri = "content://single",
+            screenshotFilename = "single.png",
+            rawText = "single",
+            merchantNames = listOf("Hesburger"),
+            pickupAddresses = listOf("Vokiečių g. 12, Vilnius"),
+            dropoffAddresses = listOf("Arklių gatvė 36, Vilnius"),
+            deliveryCount = 1,
+            captureKey = "wolt-offer-1",
+        )
+        val addOn = single.copy(
+            id = 2L,
+            capturedAt = single.capturedAt + 45_000L,
+            // Keep the platform distance identical so this specifically proves that shared old
+            // drop-off + venue no longer triggers the old early-burst duplicate shortcut.
+            distanceMeters = single.distanceMeters,
+            dropoffAddresses = listOf(
+                "Arklių gatvė 36, Vilnius",
+                "Žirmūnų g. 54, Vilnius",
+                "Ozo g. 18, Vilnius",
+            ),
+            deliveryCount = 3,
+            captureKey = "wolt-offer-2",
+        )
+
+        assertEquals(false, OfferDedupeIdentity.isSameLiveOffer(single, addOn))
+    }
+
+    @Test
     fun sparseNotificationAndRichScreenAreOneOfferInsideShortWindow() {
         val sparse = OfferRecord(
             capturedAt = 2_000_000L,

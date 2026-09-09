@@ -485,7 +485,11 @@ class OfferAccessibilityService : AccessibilityService() {
         val expectedDropoffs = parsed.deliveryCount?.coerceAtLeast(1) ?: return false
         val strictlyVisiblePieces = collectStrictlyVisibleAccessibilityPieces(root)
         val strictlyVisibleText = strictlyVisiblePieces.joinToString("\n")
-        val collapsedVisible = WoltOfferUiText.hasCollapsedMultipleDropoffs(strictlyVisibleText)
+        val collapsedDisclosureVisible = hasVisibleClickableAccessibilityText(root) { value ->
+            value.lowercase().contains("multiple drop-off")
+        }
+        val collapsedVisible = WoltOfferUiText.hasCollapsedMultipleDropoffs(strictlyVisibleText) ||
+            collapsedDisclosureVisible
         val visibleParsed = OfferParser.parse(strictlyVisibleText)
         if (collapsedVisible && visibleParsed.pickupAddresses.isNotEmpty()) {
             // Only remember pickups that are truly visible on the collapsed card. collectVisibleText()
@@ -500,6 +504,7 @@ class OfferAccessibilityService : AccessibilityService() {
         // we have clicked the multiple-dropoff row, exact visible street candidates are sufficient
         // proof that we are looking at that sheet; do not wait for OCR merely to rediscover its title.
         val baseParsed = OfferParser.parse(woltCardFrameText)
+        val knownDropoffs = (baseParsed.dropoffAddresses + visibleParsed.dropoffAddresses).distinct()
         val expandedRecovery = WoltAccessibilityDropoffRecovery.recover(
             hiddenTextPieces = strictlyVisiblePieces,
             excludedAddresses = woltVisibleBasePickupAddresses.ifEmpty {
@@ -509,9 +514,12 @@ class OfferAccessibilityService : AccessibilityService() {
                 baseParsed.pickupAddresses
             },
             expectedCount = expectedDropoffs,
+            knownAddresses = knownDropoffs,
         )
+        val doneVisible = hasVisibleAccessibilityText(root) { value -> value.equals("done", ignoreCase = true) }
         val currentIsExpanded = WoltOfferUiText.hasExpandedMultipleDropoffSheet(strictlyVisibleText) ||
-            (woltDropoffProbeAttempts > 0 && expandedRecovery.candidateCount > 0)
+            doneVisible ||
+            (woltDropoffProbeAttempts > 0 && !collapsedDisclosureVisible && expandedRecovery.candidateCount > 0)
         if (currentIsExpanded) {
             // Do not depend on Wolt keeping the popup labels in a parser-friendly order. Recover the
             // visible popup destinations directly, excluding pickup addresses remembered from the
@@ -590,11 +598,13 @@ class OfferAccessibilityService : AccessibilityService() {
         // Recover the complete customer set, including any customer address that Wolt may also
         // expose on the collapsed card. Only merchant/pickup addresses are exclusions; duplicates
         // are already de-duplicated by WoltAccessibilityDropoffRecovery.
-        val excludedVisibleAddresses = visibleParsed.pickupAddresses
+        val excludedVisibleAddresses = (visibleParsed.pickupAddresses + baseParsed.pickupAddresses).distinct()
+        val visibleDropoffs = (baseParsed.dropoffAddresses + visibleParsed.dropoffAddresses).distinct()
         val hiddenRecovery = WoltAccessibilityDropoffRecovery.recover(
             hiddenTextPieces = collectHiddenAccessibilityPieces(root),
             excludedAddresses = excludedVisibleAddresses,
             expectedCount = expectedDropoffs,
+            knownAddresses = visibleDropoffs,
         )
         // Some Compose versions keep collapsed descendants in the tree but still mark them visible.
         // If the strict hidden-node pass misses, compare the whole semantics tree against the
@@ -604,6 +614,7 @@ class OfferAccessibilityService : AccessibilityService() {
                 hiddenTextPieces = collectAccessibilityPieces(root, visibleFilter = null),
                 excludedAddresses = excludedVisibleAddresses,
                 expectedCount = expectedDropoffs,
+                knownAddresses = visibleDropoffs,
             )
         } else hiddenRecovery
         if (treeRecovery.resolvedAddresses.size == expectedDropoffs) {
@@ -778,6 +789,51 @@ class OfferAccessibilityService : AccessibilityService() {
         woltIdleHomeChecks = 0
         scheduleAttempt(IDLE_WATCHDOG_MS)
         return true
+    }
+
+    private fun hasVisibleAccessibilityText(
+        root: AccessibilityNodeInfo,
+        matches: (String) -> Boolean,
+    ): Boolean {
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var visited = 0
+        while (queue.isNotEmpty() && visited < 700) {
+            val node = queue.removeFirst()
+            visited += 1
+            val values = listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
+                .map { it.trim().replace(Regex("\\s+"), " ") }
+                .filter { it.isNotBlank() }
+            if (node.isVisibleToUser && values.any(matches)) return true
+            for (i in 0 until node.childCount) node.getChild(i)?.let(queue::addLast)
+        }
+        return false
+    }
+
+    private fun hasVisibleClickableAccessibilityText(
+        root: AccessibilityNodeInfo,
+        matches: (String) -> Boolean,
+    ): Boolean {
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var visited = 0
+        while (queue.isNotEmpty() && visited < 700) {
+            val node = queue.removeFirst()
+            visited += 1
+            val values = listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
+                .map { it.trim().replace(Regex("\\s+"), " ") }
+                .filter { it.isNotBlank() }
+            if (node.isVisibleToUser && values.any(matches)) {
+                var candidate: AccessibilityNodeInfo? = node
+                repeat(6) {
+                    val current = candidate ?: return@repeat
+                    if (current.isVisibleToUser && current.isClickable && current.isEnabled) return true
+                    candidate = current.parent
+                }
+            }
+            for (i in 0 until node.childCount) node.getChild(i)?.let(queue::addLast)
+        }
+        return false
     }
 
     private fun clickAccessibilityText(
