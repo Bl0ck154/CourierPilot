@@ -91,9 +91,9 @@ internal object DeliveryMemory {
                 val detailsAddress = details.address ?: return@takeIf false
                 DeliveryAddressNormalizer.matchScore(detailsAddress, rawAddress) >= 0.86
             }
-            // Customer identities are persisted only when the trusted customer screen itself exposes
-            // them. Parsed offer cards are deliberately not used here; they produced UI labels and
-            // merchant names such as `Address details`, `Notes` and `Ekomarket (...)` in old builds.
+            // Parsed fields are only optional convenience metadata. The complete trusted
+            // Accessibility frame is always passed as rawText and remains the durable source of
+            // truth for later parsing/re-processing.
             val customer = matchedScreenDetails?.customerName
                 ?.trim()
                 ?.takeIf(String::isNotEmpty)
@@ -134,8 +134,21 @@ internal object DeliveryMemory {
             }
         }
 
-        // Access-code learning may reuse only a very recent customer address from the same platform.
-        val observations = CourierSignals.extractAccessCodeObservations(text, fallback)
+        val deliveryKeys = detectedAddresses.mapNotNull { address ->
+            val canonical = AddressMemoryResolver.canonicalize(context, database, address)
+                ?: DeliveryAddressNormalizer.normalize(address)
+                ?: return@mapNotNull null
+            AccessCodeNotificationGate.deliveryKey(packageName, canonical.first, address)
+        }.distinct()
+
+        // Code extraction is only a best-effort derived view over the raw snapshot. Never let a
+        // numeric apartment/flat value become a learned code. If the current order already exposes
+        // access-code information, suppress historical hints for this delivery even when the exact
+        // code format is too unusual for our parser; the courier can already see the authoritative
+        // current-order text.
+        val extractedCodeObservations = CourierSignals.extractAccessCodeObservations(text, fallback)
+        val observations = extractedCodeObservations
+            .filter { AccessCodeHintPolicy.shouldLearnCandidate(text, it.code) }
             .mapNotNull { observation ->
                 val canonical = AddressMemoryResolver.canonicalize(context, database, observation.displayAddress)
                     ?: DeliveryAddressNormalizer.normalize(observation.displayAddress)
@@ -147,8 +160,12 @@ internal object DeliveryMemory {
                 )
             }
             .distinctBy { "${it.buildingKey}|${it.code}" }
-        if (observations.isNotEmpty()) {
+
+        val currentOrderShowsAccessInfo = extractedCodeObservations.isNotEmpty() ||
+            AccessCodeHintPolicy.screenContainsAccessCodeInfo(text)
+        if (currentOrderShowsAccessInfo) {
             AccessCodeSuggestions.clear(context)
+            deliveryKeys.forEach { AccessCodeNotificationGate.consume(context, it) }
             observations.forEach { observation ->
                 runCatching { database.saveAccessCode(observation, platform) }
                     .onSuccess {
@@ -180,17 +197,32 @@ internal object DeliveryMemory {
                 ?: continue
             val known = database.codesForBuilding(canonical.first)
             if (known.isEmpty()) continue
-            val codes = known.map { it.code }.distinct()
-            val oldSuggestion = AccessCodeSuggestions.latest(context)
-            val sameSuggestion = oldSuggestion?.displayAddress == canonical.second && oldSuggestion.codes == codes
+
+            val deliveryKey = AccessCodeNotificationGate.deliveryKey(packageName, canonical.first, address)
+            val codes = known
+                .map { it.code }
+                .distinct()
+                .filterNot { AccessCodeHintPolicy.isAlreadyVisible(text, it) }
+
+            // A historical candidate that is already present anywhere on the current order screen
+            // is not useful information. Mark the delivery consumed so reopening another view of the
+            // same order cannot turn that same visible value into a notification later.
+            if (codes.isEmpty()) {
+                AccessCodeSuggestions.clear(context)
+                AccessCodeNotificationGate.consume(context, deliveryKey)
+                matched = true
+                break
+            }
+
             val suggestion = AccessCodeSuggestion(
                 displayAddress = canonical.second,
                 codes = codes,
                 platform = platform,
                 updatedAt = System.currentTimeMillis(),
             )
-            if (!sameSuggestion) {
-                AccessCodeSuggestions.save(context, suggestion)
+            AccessCodeSuggestions.save(context, suggestion)
+
+            if (AccessCodeNotificationGate.claim(context, deliveryKey)) {
                 AccessCodeNotifier.show(context, suggestion)
                 Toast.makeText(
                     context,
