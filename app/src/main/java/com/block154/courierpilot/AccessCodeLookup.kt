@@ -66,8 +66,49 @@ internal object AccessCodeHintPolicy {
         "кв.",
         "квартира",
     )
+    private val accessValueBoundaries = setOf(
+        "address",
+        "instructions",
+        "additional note",
+        "apartment, flat or suite number",
+        "apartment",
+        "flat",
+        "suite number",
+        "floor",
+        "building name",
+        "company name",
+        "deliver to",
+        "notes",
+        "translate",
+        "call",
+        "chat",
+        "delivery issues?",
+        "get help",
+        "slide to confirm",
+    )
 
-    fun screenContainsAccessCodeInfo(text: String): Boolean = accessCueRegex.containsMatchIn(text)
+    /** True only when the cue itself carries a value or the next field is a plausible value. */
+    fun screenContainsAccessCodeInfo(text: String): Boolean {
+        val lines = text.lineSequence()
+            .map { it.trim().replace(Regex("\\s+"), " ") }
+            .filter(String::isNotEmpty)
+            .toList()
+        lines.forEachIndexed { index, line ->
+            val cue = accessCueRegex.find(line) ?: return@forEachIndexed
+            val inlineValue = line.substring(cue.range.last + 1)
+                .trim()
+                .trimStart(':', '-', '–', '—')
+                .trim()
+            if (inlineValue.isNotEmpty()) return true
+
+            val next = lines.getOrNull(index + 1)?.trim()?.takeIf(String::isNotEmpty)
+                ?: return@forEachIndexed
+            if (next.lowercase(Locale.ROOT) !in accessValueBoundaries && accessCueRegex.find(next) == null) {
+                return true
+            }
+        }
+        return false
+    }
 
     fun shouldLearnCandidate(text: String, code: String): Boolean {
         val numeric = numericToken(code) ?: return true
@@ -137,8 +178,17 @@ internal object AccessCodeNotificationGate {
     private const val TTL_MS = 3L * 60L * 60L * 1000L
     private const val MAX_RECORDS = 64
 
-    fun deliveryKey(packageName: String, buildingKey: String, rawAddress: String): String {
-        val unit = AccessCodeHintPolicy.apartmentNumbers(rawAddress).sorted().joinToString(",")
+    fun deliveryKey(
+        packageName: String,
+        buildingKey: String,
+        rawAddress: String,
+        unitHint: String? = null,
+    ): String {
+        val explicitUnit = unitHint
+            ?.trim()
+            ?.takeIf(String::isNotEmpty)
+            ?.lowercase(Locale.ROOT)
+        val unit = explicitUnit ?: AccessCodeHintPolicy.apartmentNumbers(rawAddress).sorted().joinToString(",")
         val payload = buildString {
             append(packageName)
             append('|').append(buildingKey.lowercase(Locale.ROOT).trim())
