@@ -107,13 +107,14 @@ class CourierPilotDashboardActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            refreshVersion.intValue
+            val refreshToken = refreshVersion.intValue
             CourierPilotTheme {
                 DashboardRoot(
                     offers = OfferDatabase.get(this),
                     meta = CourierMetaDatabase.get(this),
                     notificationOk = hasNotificationAccess(),
                     accessibilityOk = hasAccessibilityAccess(),
+                    refreshToken = refreshToken,
                 )
             }
         }
@@ -190,6 +191,7 @@ private fun DashboardRoot(
     meta: CourierMetaDatabase,
     notificationOk: Boolean,
     accessibilityOk: Boolean,
+    refreshToken: Int,
 ) {
     var screen by remember { mutableStateOf(DashboardScreen.HOME) }
     val context = LocalContext.current
@@ -226,6 +228,7 @@ private fun DashboardRoot(
                 meta = meta,
                 notificationOk = notificationOk,
                 accessibilityOk = accessibilityOk,
+                refreshToken = refreshToken,
                 padding = padding,
                 onSettings = { screen = DashboardScreen.SETTINGS },
                 onHistory = { screen = DashboardScreen.HISTORY },
@@ -237,13 +240,13 @@ private fun DashboardRoot(
                     )
                 },
             )
-            DashboardScreen.HISTORY -> DashboardHistory(offers, padding) { id ->
+            DashboardScreen.HISTORY -> DashboardHistory(offers, padding, refreshToken) { id ->
                 context.startActivity(
                     Intent(context, OfferDetailsActivity::class.java)
                         .putExtra(OfferDetailsActivity.EXTRA_OFFER_ID, id)
                 )
             }
-            DashboardScreen.ADDRESSES -> DashboardAddresses(meta, padding) { id ->
+            DashboardScreen.ADDRESSES -> DashboardAddresses(meta, padding, refreshToken) { id ->
                 context.startActivity(
                     Intent(context, AddressDetailsActivity::class.java)
                         .putExtra(AddressDetailsActivity.EXTRA_ADDRESS_ID, id)
@@ -253,84 +256,125 @@ private fun DashboardRoot(
                 offers = offers,
                 meta = meta,
                 padding = padding,
+                refreshToken = refreshToken,
                 onHistory = { screen = DashboardScreen.HISTORY },
                 onAddresses = { screen = DashboardScreen.ADDRESSES },
             )
-            DashboardScreen.MARKET -> DashboardMarket(padding)
-            DashboardScreen.SETTINGS -> DashboardSettings(notificationOk, accessibilityOk, padding) {
+            DashboardScreen.MARKET -> DashboardMarket(padding, refreshToken)
+            DashboardScreen.SETTINGS -> DashboardSettings(notificationOk, accessibilityOk, padding, refreshToken) {
                 screen = DashboardScreen.HOME
             }
         }
     }
 }
 
+private data class DashboardMarketData(
+    val platformName: String,
+    val periodKey: String,
+    val currencyCode: String,
+    val profile: MarketProfile?,
+    val local: LocalMarketProfile?,
+    val personalHistory: List<MarketHistoryBucket>,
+    val cityHistory: List<MarketHistoryBucket>,
+)
+
+private fun loadDashboardMarketData(
+    context: android.content.Context,
+    platformName: String,
+    periodKey: String,
+): DashboardMarketData {
+    val currencyCode = MarketIntelligence.currencyFor(context, platformName)
+    val profile = MarketIntelligence.profileFor(context, platformName, currencyCode)
+    val local = MarketIntelligence.localProfileFor(context, platformName, currencyCode)
+    val personalHistory = MarketIntelligence.localHistoryFor(context, platformName, currencyCode, periodKey).map { point ->
+        MarketHistoryBucket(
+            label = point.bucket,
+            median = "%.2f".format(Locale.getDefault(), point.medianNativeMoneyPerKm),
+            p25 = "%.2f".format(Locale.getDefault(), point.p25),
+            p75 = "%.2f".format(Locale.getDefault(), point.p75),
+            sampleCount = point.sampleCount,
+        )
+    }
+    val cityHistory = MarketIntelligence.cityHistoryFor(context, platformName, currencyCode, periodKey).map { point ->
+        MarketHistoryBucket(
+            label = point.bucket,
+            median = "%.2f".format(Locale.getDefault(), point.medianNativeMoneyPerKm),
+            p25 = "%.2f".format(Locale.getDefault(), point.p25),
+            p75 = "%.2f".format(Locale.getDefault(), point.p75),
+            sampleCount = point.sampleCount,
+        )
+    }
+    return DashboardMarketData(platformName, periodKey, currencyCode, profile, local, personalHistory, cityHistory)
+}
+
 @Composable
-private fun DashboardMarket(padding: PaddingValues) {
+private fun DashboardMarket(padding: PaddingValues, refreshToken: Int) {
     val context = LocalContext.current
     var platform by remember { mutableStateOf(MarketPlatform.WOLT) }
     var period by remember { mutableStateOf(MarketHistoryPeriod.WEEK) }
     var historyRevision by remember { mutableIntStateOf(0) }
+    var data by remember { mutableStateOf<DashboardMarketData?>(null) }
     val platformName = if (platform == MarketPlatform.WOLT) "Wolt" else "Bolt"
-    val currencyCode = MarketIntelligence.currencyFor(context, platformName)
-    val profile = MarketIntelligence.profileFor(context, platformName, currencyCode)
-    val local = MarketIntelligence.localProfileFor(context, platformName, currencyCode)
     val periodKey = period.name.lowercase(Locale.ROOT)
 
-    LaunchedEffect(platformName, currencyCode, periodKey) {
+    LaunchedEffect(platformName, periodKey, refreshToken) {
+        data = withContext(Dispatchers.IO) { loadDashboardMarketData(context, platformName, periodKey) }
+        val currencyCode = data?.currencyCode ?: return@LaunchedEffect
         MarketIntelligence.refreshHistory(context, platformName, currencyCode, periodKey) {
             historyRevision += 1
         }
     }
 
-    val personalHistory = remember(platformName, currencyCode, periodKey, historyRevision) {
-        MarketIntelligence.localHistoryFor(context, platformName, currencyCode, periodKey).map { point ->
-            MarketHistoryBucket(
-                label = point.bucket,
-                median = "%.2f".format(Locale.getDefault(), point.medianNativeMoneyPerKm),
-                p25 = "%.2f".format(Locale.getDefault(), point.p25),
-                p75 = "%.2f".format(Locale.getDefault(), point.p75),
-                sampleCount = point.sampleCount,
-            )
-        }
+    LaunchedEffect(historyRevision) {
+        if (historyRevision == 0) return@LaunchedEffect
+        data = withContext(Dispatchers.IO) { loadDashboardMarketData(context, platformName, periodKey) }
     }
-    val cityHistory = remember(platformName, currencyCode, periodKey, historyRevision) {
-        MarketIntelligence.cityHistoryFor(context, platformName, currencyCode, periodKey).map { point ->
-            MarketHistoryBucket(
-                label = point.bucket,
-                median = "%.2f".format(Locale.getDefault(), point.medianNativeMoneyPerKm),
-                p25 = "%.2f".format(Locale.getDefault(), point.p25),
-                p75 = "%.2f".format(Locale.getDefault(), point.p75),
-                sampleCount = point.sampleCount,
-            )
+
+    val loaded = data?.takeIf { it.platformName == platformName && it.periodKey == periodKey }
+    if (loaded == null) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                end = 16.dp,
+                top = padding.calculateTopPadding() + 12.dp,
+                bottom = padding.calculateBottomPadding() + 20.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            item { DashboardSection("Pay comparison", "Loading local and city €/km data") }
+            item { DashboardEmpty("Loading pay insights…") }
         }
+        return
     }
+
     val source = when {
-        local != null && profile?.ready == true -> MarketSource.PERSONAL_AND_CITY
-        local != null -> MarketSource.PERSONAL
-        profile?.ready == true -> MarketSource.CITY
+        loaded.local != null && loaded.profile?.ready == true -> MarketSource.PERSONAL_AND_CITY
+        loaded.local != null -> MarketSource.PERSONAL
+        loaded.profile?.ready == true -> MarketSource.CITY
         else -> MarketSource.LEARNING
     }
     val confidence = when {
-        local != null && local.sampleCount >= 25 -> MarketUiConfidence.HIGH
-        local != null && local.sampleCount >= 10 -> MarketUiConfidence.MEDIUM
-        local != null && local.sampleCount >= 5 -> MarketUiConfidence.LOW
-        profile?.confidence?.equals("HIGH", true) == true -> MarketUiConfidence.HIGH
-        profile?.confidence?.equals("MEDIUM", true) == true -> MarketUiConfidence.MEDIUM
-        profile?.confidence?.equals("LOW", true) == true -> MarketUiConfidence.LOW
+        loaded.local != null && loaded.local.sampleCount >= 25 -> MarketUiConfidence.HIGH
+        loaded.local != null && loaded.local.sampleCount >= 10 -> MarketUiConfidence.MEDIUM
+        loaded.local != null && loaded.local.sampleCount >= 5 -> MarketUiConfidence.LOW
+        loaded.profile?.confidence?.equals("HIGH", true) == true -> MarketUiConfidence.HIGH
+        loaded.profile?.confidence?.equals("MEDIUM", true) == true -> MarketUiConfidence.MEDIUM
+        loaded.profile?.confidence?.equals("LOW", true) == true -> MarketUiConfidence.LOW
         else -> MarketUiConfidence.NOT_READY
     }
     val state = MarketScreenState(
         platform = platform,
-        currencyCode = currencyCode,
-        personalMedian = local?.medianNativeMoneyPerKm?.let { MarketMedian("%.2f".format(Locale.getDefault(), it), currencyCode) },
-        cityMedian = profile?.medianNativeMoneyPerKm?.let { MarketMedian("%.2f".format(Locale.getDefault(), it), currencyCode) },
+        currencyCode = loaded.currencyCode,
+        personalMedian = loaded.local?.medianNativeMoneyPerKm?.let { MarketMedian("%.2f".format(Locale.getDefault(), it), loaded.currencyCode) },
+        cityMedian = loaded.profile?.medianNativeMoneyPerKm?.let { MarketMedian("%.2f".format(Locale.getDefault(), it), loaded.currencyCode) },
         source = source,
         confidence = confidence,
-        sampleCount = local?.sampleCount ?: profile?.sampleCount ?: 0,
-        trend = profile?.trend?.let { MarketUiTrend(percent = it.percent, improving = it.direction == "up") },
+        sampleCount = loaded.local?.sampleCount ?: loaded.profile?.sampleCount ?: 0,
+        trend = loaded.profile?.trend?.let { MarketUiTrend(percent = it.percent, improving = it.direction == "up") },
         period = period,
-        personalHistory = personalHistory,
-        cityHistory = cityHistory,
+        personalHistory = loaded.personalHistory,
+        cityHistory = loaded.cityHistory,
     )
     MarketScreen(
         state = state,
@@ -346,12 +390,20 @@ private fun DashboardMarket(padding: PaddingValues) {
 }
 
 
+private data class DashboardHomeData(
+    val presence: List<PlatformPresence>,
+    val work: AutomaticWorkSummary,
+    val today: OfferSummary,
+    val recent: List<OfferRecord>,
+)
+
 @Composable
 private fun DashboardHome(
     offers: OfferDatabase,
     meta: CourierMetaDatabase,
     notificationOk: Boolean,
     accessibilityOk: Boolean,
+    refreshToken: Int,
     padding: PaddingValues,
     onSettings: () -> Unit,
     onHistory: () -> Unit,
@@ -359,11 +411,38 @@ private fun DashboardHome(
     onOpenOffer: (Long) -> Unit,
 ) {
     val context = LocalContext.current
-    val presence = CourierPresence.all(context)
-    val work = meta.workSummarySince(dashStartOfDay(0))
-    val today = offers.summarySince(dashStartOfDay(0))
-    val recent = offers.recent(4).map { it.withCurrentParsedStructure() }
-    val offersPerHour = dashOffersPerHour(today.count, work.totalMillis)
+    var data by remember { mutableStateOf<DashboardHomeData?>(null) }
+
+    LaunchedEffect(refreshToken) {
+        data = withContext(Dispatchers.IO) {
+            DashboardHomeData(
+                presence = CourierPresence.all(context),
+                work = meta.workSummarySince(dashStartOfDay(0)),
+                today = offers.summarySince(dashStartOfDay(0)),
+                recent = offers.recent(4).map { it.withCurrentParsedStructure() },
+            )
+        }
+    }
+
+    val loaded = data
+    if (loaded == null) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                end = 16.dp,
+                top = padding.calculateTopPadding() + 12.dp,
+                bottom = padding.calculateBottomPadding() + 20.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            item { DashboardSection("CourierPilot", "Loading local dashboard") }
+            item { DashboardEmpty("Loading today’s offers and work time…") }
+        }
+        return
+    }
+
+    val offersPerHour = dashOffersPerHour(loaded.today.count, loaded.work.totalMillis)
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -378,9 +457,9 @@ private fun DashboardHome(
         item {
             AutoPresenceHero(
                 healthy = notificationOk && accessibilityOk,
-                presence = presence,
-                workTime = dashDuration(work.totalMillis),
-                active = work.active,
+                presence = loaded.presence,
+                workTime = dashDuration(loaded.work.totalMillis),
+                active = loaded.work.active,
                 onSettings = onSettings,
             )
         }
@@ -408,22 +487,22 @@ private fun DashboardHome(
         item { DashboardSection("Today", SimpleDateFormat("EEEE, d MMMM", Locale.getDefault()).format(Date())) }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                DashboardMetric("Offers", today.count.toString(), "captured", BrandBlue, Modifier.weight(1f), onHistory)
-                DashboardMetric("Avg offer", dashAveragePrice(today), "today", BrandCyan, Modifier.weight(1f), onStats)
+                DashboardMetric("Offers", loaded.today.count.toString(), "captured", BrandBlue, Modifier.weight(1f), onHistory)
+                DashboardMetric("Avg offer", dashAveragePrice(loaded.today), "today", BrandCyan, Modifier.weight(1f), onStats)
             }
         }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                DashboardMetric("Work time", dashDuration(work.totalMillis), "auto-detected", Success, Modifier.weight(1f), onStats)
+                DashboardMetric("Work time", dashDuration(loaded.work.totalMillis), "auto-detected", Success, Modifier.weight(1f), onStats)
                 DashboardMetric("Offers / hour", offersPerHour, "during tracked time", Purple, Modifier.weight(1f), onStats)
             }
         }
 
         item { DashboardSection("Recent offers", "Tap an offer to open all details") }
-        if (recent.isEmpty()) {
+        if (loaded.recent.isEmpty()) {
             item { DashboardEmpty("No priced offers captured yet.") }
         } else {
-            items(recent, key = { it.id }) { record ->
+            items(loaded.recent, key = { it.id }) { record ->
                 DashboardOfferCard(record) { onOpenOffer(record.id) }
             }
             item {
@@ -435,6 +514,7 @@ private fun DashboardHome(
         }
     }
 }
+
 
 @Composable
 private fun AutoPresenceHero(
@@ -508,6 +588,7 @@ private fun PresencePill(item: PlatformPresence, modifier: Modifier = Modifier) 
 private fun DashboardHistory(
     offers: OfferDatabase,
     padding: PaddingValues,
+    refreshToken: Int,
     onOpenOffer: (Long) -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
@@ -516,7 +597,7 @@ private fun DashboardHistory(
     var records by remember { mutableStateOf<List<OfferRecord>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
 
-    LaunchedEffect(query, page) {
+    LaunchedEffect(query, page, refreshToken) {
         loading = true
         if (query.isNotBlank()) delay(160L)
         val requestedPage = page
@@ -585,6 +666,7 @@ private data class DashboardAddressRow(
 private fun DashboardAddresses(
     meta: CourierMetaDatabase,
     padding: PaddingValues,
+    refreshToken: Int,
     onOpenAddress: (Long) -> Unit,
 ) {
     var query by remember { mutableStateOf("") }
@@ -594,7 +676,7 @@ private fun DashboardAddresses(
     var loading by remember { mutableStateOf(true) }
     val context = LocalContext.current
 
-    LaunchedEffect(query, page) {
+    LaunchedEffect(query, page, refreshToken) {
         loading = true
         if (query.isNotBlank()) delay(160L)
         val requestedPage = page
@@ -706,12 +788,13 @@ private fun DashboardStats(
     offers: OfferDatabase,
     meta: CourierMetaDatabase,
     padding: PaddingValues,
+    refreshToken: Int,
     onHistory: () -> Unit,
     onAddresses: () -> Unit,
 ) {
     var stats by remember { mutableStateOf<DashboardStatsData?>(null) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(refreshToken) {
         stats = withContext(Dispatchers.IO) {
             DashboardStatsData(
                 today = offers.summarySince(dashStartOfDay(0)),
@@ -839,6 +922,7 @@ private fun DashboardSettings(
     notificationOk: Boolean,
     accessibilityOk: Boolean,
     padding: PaddingValues,
+    refreshToken: Int,
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -855,7 +939,11 @@ private fun DashboardSettings(
     var developerTaps by remember { mutableIntStateOf(0) }
     var developerEnabled by remember { mutableStateOf(DeveloperModeSettings.enabled(context)) }
     val routeReady = runCatching { RouteEndpointSettings.load(context).validated() }.isSuccess
-    val marketStatus = MarketIntelligence.status(context)
+    var marketStatus by remember { mutableStateOf<MarketIntelligenceStatus?>(null) }
+
+    LaunchedEffect(marketSharing, refreshToken) {
+        marketStatus = withContext(Dispatchers.IO) { MarketIntelligence.status(context) }
+    }
 
     LaunchedEffect(remoteDiagnostics) {
         while (true) {
@@ -928,16 +1016,16 @@ private fun DashboardSettings(
                     }
                     HorizontalDivider(Modifier.padding(vertical = 12.dp))
                     Text(
-                        marketStatus.city?.name ?: "City not resolved yet",
+                        marketStatus?.city?.name ?: if (marketStatus == null) "Loading pay profile…" else "City not resolved yet",
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        marketProfileSummary("Wolt", marketStatus.localWoltProfile, marketStatus.woltProfile),
+                        marketStatus?.let { marketProfileSummary("Wolt", it.localWoltProfile, it.woltProfile) } ?: "Wolt · loading…",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp,
                     )
                     Text(
-                        marketProfileSummary("Bolt", marketStatus.localBoltProfile, marketStatus.boltProfile),
+                        marketStatus?.let { marketProfileSummary("Bolt", it.localBoltProfile, it.boltProfile) } ?: "Bolt · loading…",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp,
                     )
