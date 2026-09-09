@@ -33,9 +33,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,6 +48,9 @@ import com.block154.courierpilot.ui.CourierPilotTheme
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class AddressDetailsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -54,50 +59,76 @@ class AddressDetailsActivity : ComponentActivity() {
         val addressId = intent.getLongExtra(EXTRA_ADDRESS_ID, -1L)
         setContent {
             CourierPilotTheme {
-                val meta = CourierMetaDatabase.get(this)
-                val address = meta.findAddressById(addressId)
-                if (address == null) {
-                    MissingAddress(onBack = ::finish)
-                } else {
-                    var showDeleteConfirmation by remember { mutableStateOf(false) }
-                    AddressDetailsScreen(
-                        address = address,
-                        codes = meta.codesForBuilding(address.buildingKey, limit = 20),
-                        venues = meta.entitiesForAddress(address.id, CourierMetaDatabase.ENTITY_VENUE, limit = 100),
-                        customers = meta.entitiesForAddress(address.id, CourierMetaDatabase.ENTITY_CUSTOMER, limit = 100),
-                        observations = meta.observationsForAddress(address.id, limit = 30),
-                        onBack = ::finish,
-                        onMap = { openAddressInMaps(address.displayAddress) },
-                        onDelete = { showDeleteConfirmation = true },
-                    )
+                var loaded by remember(addressId) { mutableStateOf(false) }
+                var data by remember(addressId) { mutableStateOf<AddressDetailsData?>(null) }
+                var showDeleteConfirmation by remember { mutableStateOf(false) }
+                var deleting by remember { mutableStateOf(false) }
+                val scope = rememberCoroutineScope()
 
-                    if (showDeleteConfirmation) {
-                        AlertDialog(
-                            onDismissRequest = { showDeleteConfirmation = false },
-                            icon = { Icon(Icons.Rounded.Delete, contentDescription = null) },
-                            title = { Text("Delete address?") },
-                            text = {
-                                Text(
-                                    "${address.displayAddress}\n\nThis also removes its saved observations, customer names and access codes from CourierPilot."
-                                )
-                            },
-                            confirmButton = {
-                                TextButton(
-                                    onClick = {
-                                        val deleted = AddressDeletion.delete(this, meta, address)
-                                        showDeleteConfirmation = false
-                                        if (deleted) finish()
-                                    },
-                                ) {
-                                    Text("Delete", color = MaterialTheme.colorScheme.error)
-                                }
-                            },
-                            dismissButton = {
-                                TextButton(onClick = { showDeleteConfirmation = false }) {
-                                    Text("Cancel")
-                                }
-                            },
+                LaunchedEffect(addressId) {
+                    data = withContext(Dispatchers.IO) { loadAddressDetails(this@AddressDetailsActivity, addressId) }
+                    loaded = true
+                }
+
+                when {
+                    !loaded -> LoadingAddressDetails()
+                    data == null -> MissingAddress(onBack = ::finish)
+                    else -> {
+                        val current = data!!
+                        AddressDetailsScreen(
+                            address = current.address,
+                            codes = current.codes,
+                            venues = current.venues,
+                            customers = current.customers,
+                            observations = current.observations,
+                            onBack = ::finish,
+                            onMap = { openAddressInMaps(current.address.displayAddress) },
+                            onDelete = { showDeleteConfirmation = true },
                         )
+
+                        if (showDeleteConfirmation) {
+                            AlertDialog(
+                                onDismissRequest = { if (!deleting) showDeleteConfirmation = false },
+                                icon = { Icon(Icons.Rounded.Delete, contentDescription = null) },
+                                title = { Text("Delete address?") },
+                                text = {
+                                    Text(
+                                        "${current.address.displayAddress}\n\nThis also removes its saved observations, customer names and access codes from CourierPilot."
+                                    )
+                                },
+                                confirmButton = {
+                                    TextButton(
+                                        onClick = {
+                                            if (deleting) return@TextButton
+                                            deleting = true
+                                            scope.launch {
+                                                val deleted = withContext(Dispatchers.IO) {
+                                                    AddressDeletion.delete(
+                                                        this@AddressDetailsActivity,
+                                                        current.meta,
+                                                        current.address,
+                                                    )
+                                                }
+                                                deleting = false
+                                                showDeleteConfirmation = false
+                                                if (deleted) finish()
+                                            }
+                                        },
+                                        enabled = !deleting,
+                                    ) {
+                                        Text(if (deleting) "Deleting…" else "Delete", color = MaterialTheme.colorScheme.error)
+                                    }
+                                },
+                                dismissButton = {
+                                    TextButton(
+                                        onClick = { showDeleteConfirmation = false },
+                                        enabled = !deleting,
+                                    ) {
+                                        Text("Cancel")
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -106,6 +137,42 @@ class AddressDetailsActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_ADDRESS_ID = "address_id"
+    }
+}
+
+private data class AddressDetailsData(
+    val meta: CourierMetaDatabase,
+    val address: AddressRecord,
+    val codes: List<AccessCodeRecord>,
+    val venues: List<AddressEntityRecord>,
+    val customers: List<AddressEntityRecord>,
+    val observations: List<AddressObservationRecord>,
+)
+
+private fun loadAddressDetails(
+    context: android.content.Context,
+    addressId: Long,
+): AddressDetailsData? {
+    val meta = CourierMetaDatabase.get(context)
+    val address = meta.findAddressById(addressId) ?: return null
+    return AddressDetailsData(
+        meta = meta,
+        address = address,
+        codes = meta.codesForBuilding(address.buildingKey, limit = 20),
+        venues = meta.entitiesForAddress(address.id, CourierMetaDatabase.ENTITY_VENUE, limit = 100),
+        customers = meta.entitiesForAddress(address.id, CourierMetaDatabase.ENTITY_CUSTOMER, limit = 100),
+        observations = meta.observationsForAddress(address.id, limit = 30),
+    )
+}
+
+@Composable
+private fun LoadingAddressDetails() {
+    Column(
+        Modifier.fillMaxSize().padding(24.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("Loading address…", color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
