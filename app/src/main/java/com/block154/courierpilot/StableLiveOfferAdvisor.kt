@@ -93,6 +93,7 @@ internal class StableLiveOfferAdvisor(
     private var gestureMaxMoveGapMs = 0L
     private var courierEventCheckScheduled = false
     private var courierEventCheckDeferred = false
+    private var lastSlowSurfaceLogAtElapsed = 0L
 
     private val courierWindowCheck = Runnable {
         courierEventCheckScheduled = false
@@ -1242,6 +1243,7 @@ internal class StableLiveOfferAdvisor(
      * advisor on screen until the user opens another menu.
      */
     private fun inspectVisibleSurface(rootNode: AccessibilityNodeInfo): SurfaceInspection {
+        val startedAtElapsed = SystemClock.elapsedRealtime()
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         val pieces = mutableListOf<String>()
         val interactiveSlots = linkedSetOf<String>()
@@ -1254,7 +1256,7 @@ internal class StableLiveOfferAdvisor(
         var leafNodes = 0
         var bottomNodes = 0
 
-        while (queue.isNotEmpty() && visited < 600) {
+        while (queue.isNotEmpty() && visited < MAX_SURFACE_NODES) {
             val node = queue.removeFirst()
             visited += 1
             val childCount = node.childCount
@@ -1286,7 +1288,7 @@ internal class StableLiveOfferAdvisor(
         }
 
         val text = pieces.joinToString("\n")
-        return SurfaceInspection(
+        val inspection = SurfaceInspection(
             text = text,
             snapshot = LiveOfferSurfaceSnapshot(
                 windowId = rootNode.windowId,
@@ -1297,6 +1299,18 @@ internal class StableLiveOfferAdvisor(
                 stableLines = LiveOfferSurfaceEvidence.normalizeStableLines(pieces),
             ),
         )
+        val finishedAtElapsed = SystemClock.elapsedRealtime()
+        val durationMs = (finishedAtElapsed - startedAtElapsed).coerceAtLeast(0L)
+        if (durationMs >= SLOW_SURFACE_SCAN_MS && finishedAtElapsed - lastSlowSurfaceLogAtElapsed >= SLOW_SURFACE_LOG_INTERVAL_MS) {
+            lastSlowSurfaceLogAtElapsed = finishedAtElapsed
+            CaptureEventLog.append(
+                service,
+                stage = "overlay_tree_slow",
+                platform = currentPlatform,
+                message = "duration_ms=$durationMs; visited=$visited; visible=$visibleNodes; leaves=$leafNodes; text_items=${pieces.size}; capped=${visited >= MAX_SURFACE_NODES}",
+            )
+        }
+        return inspection
     }
 
     private fun hasDecisionPair(text: String): Boolean {
@@ -1483,6 +1497,9 @@ internal class StableLiveOfferAdvisor(
         const val SNAP_BACK_MS = 140L
         const val NOTIFICATION_REMOVAL_RECHECK_MS = 60L
         const val COURIER_EVENT_CHECK_DELAY_MS = 48L
+        const val MAX_SURFACE_NODES = 600
+        const val SLOW_SURFACE_SCAN_MS = 32L
+        const val SLOW_SURFACE_LOG_INTERVAL_MS = 5_000L
         const val GESTURE_NONE = 0
         const val GESTURE_HORIZONTAL = 1
         const val GESTURE_VERTICAL = 2
