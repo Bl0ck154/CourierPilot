@@ -81,7 +81,7 @@ internal object AppUpdateForegroundAwareness {
 
     fun showPendingUpdate(context: Context) {
         val app = context.applicationContext
-        val status = AppUpdateManager.snapshot(app)
+        val status = AppUpdateManager.peekStatus(app)
         val ready = status.phase == AppUpdatePhase.READY
         if (!ready && status.phase != AppUpdatePhase.AVAILABLE) return
 

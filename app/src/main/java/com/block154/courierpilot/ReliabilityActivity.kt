@@ -60,7 +60,9 @@ import com.block154.courierpilot.ui.Success
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 class ReliabilityActivity : ComponentActivity() {
     private val refresh = mutableIntStateOf(0)
@@ -69,9 +71,10 @@ class ReliabilityActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            refresh.intValue
+            val refreshToken = refresh.intValue
             CourierPilotTheme {
                 ReliabilityScreen(
+                    refreshToken = refreshToken,
                     onBack = ::finish,
                     onRefresh = { refresh.intValue++ },
                 )
@@ -85,8 +88,13 @@ class ReliabilityActivity : ComponentActivity() {
     }
 }
 
+private data class ReliabilityDiagnosticsSnapshot(
+    val events: List<CaptureEvent>,
+    val remote: RemoteDiagnosticsStatus,
+)
+
 @Composable
-private fun ReliabilityScreen(onBack: () -> Unit, onRefresh: () -> Unit) {
+private fun ReliabilityScreen(refreshToken: Int, onBack: () -> Unit, onRefresh: () -> Unit) {
     val context = LocalContext.current
     val notificationOk = reliabilityNotificationAccess(context)
     val accessibilityOk = reliabilityAccessibilityAccess(context)
@@ -96,10 +104,28 @@ private fun ReliabilityScreen(onBack: () -> Unit, onRefresh: () -> Unit) {
     val backgroundRestricted = if (Build.VERSION.SDK_INT >= 28) activityManager?.isBackgroundRestricted == true else false
     val pending = OfferState.pending(context)
     val error = OfferState.lastError(context)
-    val events = CaptureEventLog.recent(context, 30)
-    val remoteDiagnostics = RemoteDiagnostics.status(context)
-    var remoteEnabled by remember(remoteDiagnostics.enabled) { mutableStateOf(remoteDiagnostics.enabled) }
+    var diagnostics by remember { mutableStateOf<ReliabilityDiagnosticsSnapshot?>(null) }
+    var remoteEnabled by remember { mutableStateOf(RemoteDiagnostics.enabled(context)) }
     var manualDiagnosticsExpanded by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(refreshToken) {
+        val loaded = withContext(Dispatchers.IO) {
+            ReliabilityDiagnosticsSnapshot(
+                events = CaptureEventLog.recent(context, 30),
+                remote = RemoteDiagnostics.status(context),
+            )
+        }
+        diagnostics = loaded
+        remoteEnabled = loaded.remote.enabled
+    }
+
+    val events = diagnostics?.events.orEmpty()
+    val remoteDiagnostics = diagnostics?.remote ?: RemoteDiagnosticsStatus(
+        enabled = remoteEnabled,
+        queued = 0,
+        lastUploadAt = 0L,
+        lastError = "",
+    )
 
     LaunchedEffect(remoteEnabled) {
         if (remoteEnabled) {

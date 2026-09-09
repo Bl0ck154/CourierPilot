@@ -151,6 +151,13 @@ internal object AppUpdateManager {
 
     fun snapshot(context: Context): AppUpdateStatus {
         cleanupUpdateCache(context)
+        return readStatus(context)
+    }
+
+    /** Cheap status read for foreground UI paths that must never scan/clean the update directory. */
+    internal fun peekStatus(context: Context): AppUpdateStatus = readStatus(context)
+
+    private fun readStatus(context: Context): AppUpdateStatus {
         val prefs = prefs(context)
         val readyVersion = prefs.getString(KEY_READY_VERSION, null)
         val readyPath = prefs.getString(KEY_READY_PATH, null)
@@ -197,29 +204,34 @@ internal object AppUpdateManager {
 
     fun checkNow(context: Context, onStatus: (AppUpdateStatus) -> Unit) {
         val app = context.applicationContext
-        cleanupUpdateCache(app)
-        startCheck(
-            context = app,
-            manual = true,
-            onStatus = onStatus,
-            onComplete = null,
-        )
+        executor.execute {
+            cleanupUpdateCache(app)
+            startCheck(
+                context = app,
+                manual = true,
+                onStatus = onStatus,
+                onComplete = null,
+            )
+        }
     }
 
     fun checkIfDue(context: Context, onComplete: (() -> Unit)? = null) {
         val app = context.applicationContext
-        cleanupUpdateCache(app)
-        val lastCheckAt = prefs(app).getLong(KEY_LAST_CHECK_AT, 0L)
-        if (lastCheckAt > 0L && System.currentTimeMillis() - lastCheckAt < BackgroundAppUpdateScheduler.CHECK_INTERVAL_MS) {
-            onComplete?.invoke()
-            return
+        // The launcher calls this before the dashboard opens. Directory cleanup and due-check IO
+        // therefore belong on the update executor, never on the launch/UI thread.
+        executor.execute {
+            cleanupUpdateCache(app)
+            val lastCheckAt = prefs(app).getLong(KEY_LAST_CHECK_AT, 0L)
+            if (lastCheckAt > 0L && System.currentTimeMillis() - lastCheckAt < BackgroundAppUpdateScheduler.CHECK_INTERVAL_MS) {
+                finish(onComplete)
+                return@execute
+            }
+            startCheck(app, manual = false, onStatus = null, onComplete = onComplete)
         }
-        startCheck(app, manual = false, onStatus = null, onComplete = onComplete)
     }
 
     fun requestInstall(context: Context): InstallLaunchResult {
         val app = context.applicationContext
-        cleanupUpdateCache(app)
         val prefs = prefs(app)
         val readyVersion = prefs.getString(KEY_READY_VERSION, null)
         val readyPath = prefs.getString(KEY_READY_PATH, null)
@@ -227,7 +239,10 @@ internal object AppUpdateManager {
             return InstallLaunchResult.NOT_READY
         }
         val apk = File(readyPath)
-        if (!apk.isFile) return InstallLaunchResult.NOT_READY
+        val updateDir = File(app.cacheDir, "updates")
+        if (!apk.isFile || apk.parentFile?.absolutePath != updateDir.absolutePath) {
+            return InstallLaunchResult.NOT_READY
+        }
 
         if (!app.packageManager.canRequestPackageInstalls()) {
             val intent = Intent(
