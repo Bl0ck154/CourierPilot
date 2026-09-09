@@ -46,4 +46,32 @@ class AccessCodeHintPolicyTest {
 
         assertTrue(AccessCodeHintPolicy.screenContainsAccessCodeInfo(screen))
     }
+
+    @Test
+    fun emptyEntryCodeFieldDoesNotSuppressHistoricalHint() {
+        val screen = """
+            Address
+            Naujininkų G. 23, Vilnius
+            Entry code
+            Floor
+            3
+            Call
+        """.trimIndent()
+
+        assertFalse(AccessCodeHintPolicy.screenContainsAccessCodeInfo(screen))
+    }
+
+    @Test
+    fun entryCodeOnFollowingLineCountsAsCurrentOrderInformation() {
+        val screen = """
+            Address
+            Naujininkų G. 23, Vilnius
+            Entry code
+            90key4899
+            Floor
+            3
+        """.trimIndent()
+
+        assertTrue(AccessCodeHintPolicy.screenContainsAccessCodeInfo(screen))
+    }
 }
