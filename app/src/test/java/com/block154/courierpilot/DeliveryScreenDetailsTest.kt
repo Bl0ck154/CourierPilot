@@ -63,12 +63,14 @@ class DeliveryScreenDetailsTest {
     }
 
     @Test
-    fun richerFrameUpdatesLatestDetailsWithoutCreatingSecondObservation() {
+    fun richerFrameUpdatesLatestDetailsAndPreservesSecondRawObservation() {
         val context: Context = RuntimeEnvironment.getApplication()
         val database = CourierMetaDatabase.get(context)
         val house = 800 + (System.nanoTime() % 100).toInt()
         val address = "Testų g. $house, Vilnius"
         val now = System.currentTimeMillis()
+        val firstRaw = "Address\n$address"
+        val richerRaw = "Address\n$address\nInstructions\nMeet at my door\nAdditional note\ngate code stays as text"
 
         val first = AddressMemoryResolver.saveObservation(
             context = context,
@@ -77,7 +79,7 @@ class DeliveryScreenDetailsTest {
             platform = "Bolt",
             customerName = null,
             detailsText = "Address captured",
-            rawText = "Address\n$address",
+            rawText = firstRaw,
             evidence = AddressEvidenceSource.ACCESSIBILITY_EXPLICIT_SECTION,
             now = now,
         )
@@ -88,7 +90,7 @@ class DeliveryScreenDetailsTest {
             platform = "Bolt",
             customerName = "Indre B.",
             detailsText = "Instructions: Meet at my door\nAdditional note: gate code stays as text",
-            rawText = "Address\n$address\nInstructions\nMeet at my door\nAdditional note\ngate code stays as text",
+            rawText = richerRaw,
             evidence = AddressEvidenceSource.ACCESSIBILITY_EXPLICIT_SECTION,
             now = now + 5_000L,
         )
@@ -100,6 +102,10 @@ class DeliveryScreenDetailsTest {
         assertNotNull(saved)
         assertEquals("Indre B.", saved!!.latestCustomerName)
         assertTrue(saved.latestDetails.orEmpty().contains("Meet at my door"))
-        assertEquals(1, database.observationsForAddress(first.addressId, limit = 20).size)
+
+        val observations = database.observationsForAddress(first.addressId, limit = 20)
+        assertEquals(2, observations.size)
+        assertTrue(observations.any { it.rawText == firstRaw })
+        assertTrue(observations.any { it.rawText == richerRaw })
     }
 }

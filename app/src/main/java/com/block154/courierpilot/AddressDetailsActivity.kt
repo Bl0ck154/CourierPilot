@@ -26,6 +26,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -42,6 +43,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.block154.courierpilot.ui.CourierPilotTheme
@@ -78,7 +80,6 @@ class AddressDetailsActivity : ComponentActivity() {
                         AddressDetailsScreen(
                             address = current.address,
                             codes = current.codes,
-                            venues = current.venues,
                             customers = current.customers,
                             observations = current.observations,
                             onBack = ::finish,
@@ -93,7 +94,7 @@ class AddressDetailsActivity : ComponentActivity() {
                                 title = { Text("Delete address?") },
                                 text = {
                                     Text(
-                                        "${current.address.displayAddress}\n\nThis also removes its saved observations, customer names and access codes from CourierPilot."
+                                        "${current.address.displayAddress}\n\nThis also removes its saved screen history, customer names and access hints from CourierPilot."
                                     )
                                 },
                                 confirmButton = {
@@ -143,9 +144,8 @@ class AddressDetailsActivity : ComponentActivity() {
 private data class AddressDetailsData(
     val meta: CourierMetaDatabase,
     val address: AddressRecord,
-    val codes: List<AccessCodeRecord>,
-    val venues: List<AddressEntityRecord>,
-    val customers: List<AddressEntityRecord>,
+    val codes: List<AddressCodeSummary>,
+    val customers: List<AddressCustomerSummary>,
     val observations: List<AddressObservationRecord>,
 )
 
@@ -155,13 +155,20 @@ private fun loadAddressDetails(
 ): AddressDetailsData? {
     val meta = CourierMetaDatabase.get(context)
     val address = meta.findAddressById(addressId) ?: return null
+
+    // Keep storage source-rich, but make the screen a bounded read projection. Hundreds of rows are
+    // cheap for SQLite and LazyColumn; loading unbounded history into Compose is not. The durable DB
+    // keeps older rows even when this screen shows only the newest projection window.
+    val observations = meta.observationsForAddress(address.id, limit = 200)
+    val rawCustomers = meta.entitiesForAddress(address.id, CourierMetaDatabase.ENTITY_CUSTOMER, limit = 300)
+    val rawCodes = meta.codesForBuilding(address.buildingKey, limit = 20)
+
     return AddressDetailsData(
         meta = meta,
         address = address,
-        codes = meta.codesForBuilding(address.buildingKey, limit = 20),
-        venues = meta.entitiesForAddress(address.id, CourierMetaDatabase.ENTITY_VENUE, limit = 100),
-        customers = meta.entitiesForAddress(address.id, CourierMetaDatabase.ENTITY_CUSTOMER, limit = 100),
-        observations = meta.observationsForAddress(address.id, limit = 30),
+        codes = AddressMemoryUiProjection.summarizeCodes(rawCodes, observations),
+        customers = AddressMemoryUiProjection.summarizeCustomers(rawCustomers),
+        observations = observations,
     )
 }
 
@@ -192,18 +199,22 @@ private fun MissingAddress(onBack: () -> Unit) {
 @Composable
 private fun AddressDetailsScreen(
     address: AddressRecord,
-    codes: List<AccessCodeRecord>,
-    venues: List<AddressEntityRecord>,
-    customers: List<AddressEntityRecord>,
+    codes: List<AddressCodeSummary>,
+    customers: List<AddressCustomerSummary>,
     observations: List<AddressObservationRecord>,
     onBack: () -> Unit,
     onMap: () -> Unit,
     onDelete: () -> Unit,
 ) {
+    var customersExpanded by remember(address.id) { mutableStateOf(false) }
+    var observationsExpanded by remember(address.id) { mutableStateOf(false) }
+    val visibleCustomers = if (customersExpanded) customers else customers.take(COLLAPSED_CUSTOMER_COUNT)
+    val visibleObservations = if (observationsExpanded) observations else observations.take(COLLAPSED_OBSERVATION_COUNT)
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -211,9 +222,9 @@ private fun AddressDetailsScreen(
                     Icon(Icons.Rounded.ArrowBack, contentDescription = "Back")
                 }
                 Column(Modifier.weight(1f)) {
-                    Text("Address", fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Address memory", fontSize = 25.sp, fontWeight = FontWeight.SemiBold)
                     Text(
-                        "Local delivery memory",
+                        "Saved locally from delivery screens",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp,
                     )
@@ -241,7 +252,7 @@ private fun AddressDetailsScreen(
                         Text(address.displayAddress, Modifier.weight(1f), fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
                     }
                     Text(
-                        "${address.platform} · captured ${address.seenCount}× · last ${addressDate(address.lastSeenAt)}",
+                        "${address.platform} · last captured ${addressDate(address.lastSeenAt)}",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp,
                     )
@@ -254,114 +265,165 @@ private fun AddressDetailsScreen(
             }
         }
 
-        if (codes.isNotEmpty()) {
-            item { AddressSection("Access", "Door / intercom codes learned for this building") }
-            items(codes, key = { "code-${it.id}" }) { code ->
-                Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surface) {
-                    Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(code.code, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.size(14.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(code.platform, fontWeight = FontWeight.Medium)
-                            Text(
-                                "seen ${code.seenCount}× · ${addressDate(code.lastSeenAt)}",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 11.sp,
-                            )
-                        }
-                    }
+        item {
+            Card(shape = RoundedCornerShape(18.dp)) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 14.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    AddressMetric("Captured", address.seenCount.toString(), Modifier.weight(1f))
+                    AddressMetric("Customers", customers.size.toString(), Modifier.weight(1f))
+                    AddressMetric("Access hints", codes.size.toString(), Modifier.weight(1f))
                 }
-            }
-        }
-
-        if (venues.isNotEmpty()) {
-            item { AddressSection("Venues", "Pickup places captured for this building") }
-            items(venues, key = { "venue-${it.id}" }) { entity ->
-                AddressEntityCard(entity)
-            }
-        }
-
-        if (customers.isNotEmpty()) {
-            item { AddressSection("Customers", "Customer names captured for this building") }
-            items(customers, key = { "customer-${it.id}" }) { entity ->
-                AddressEntityCard(entity)
-            }
-        }
-
-        address.latestCustomerName?.takeIf(String::isNotBlank)?.let { customer ->
-            item {
-                AddressInfoCard("Latest customer", customer)
             }
         }
 
         address.latestDetails?.takeIf(String::isNotBlank)?.let { details ->
-            item { AddressSection("Latest details", "Captured from courier app screens") }
-            item { AddressInfoCard(null, details) }
+            item { AddressSection("Latest delivery info", "Newest parsed convenience view; full screen snapshots remain below") }
+            item { AddressInfoCard(details) }
+        }
+
+        if (codes.isNotEmpty()) {
+            item {
+                AddressSection(
+                    "Possible access hints",
+                    "Derived from saved screens; apartment-like legacy values are filtered out",
+                )
+            }
+            items(codes, key = { "code-${it.key}" }) { code ->
+                CompactMemoryRow(
+                    title = code.code,
+                    subtitle = "${code.platforms.joinToString(" + ")} · seen ${code.seenCount}× · ${addressDate(code.lastSeenAt)}",
+                    titleSize = 18,
+                )
+            }
         }
 
         item {
             AddressSection(
-                "Offer observations",
-                "Address appearances captured from courier app screens — not confirmed visits",
+                "Customers · ${customers.size}",
+                "Equivalent names from Wolt/Bolt are grouped for display without deleting source rows",
+            )
+        }
+        if (customers.isEmpty()) {
+            item { AddressInfoCard("No customer names saved for this building yet.") }
+        } else {
+            items(visibleCustomers, key = { "customer-${it.key}" }) { customer ->
+                CompactMemoryRow(
+                    title = customer.displayName,
+                    subtitle = "${customer.platforms.joinToString(" + ")} · captured ${customer.seenCount}× · last ${addressDate(customer.lastSeenAt)}",
+                )
+            }
+            if (customers.size > COLLAPSED_CUSTOMER_COUNT) {
+                item {
+                    ExpandCollapseButton(
+                        expanded = customersExpanded,
+                        collapsedLabel = "Show all ${customers.size} customers",
+                        onClick = { customersExpanded = !customersExpanded },
+                    )
+                }
+            }
+        }
+
+        item {
+            AddressSection(
+                "Saved screens · ${observations.size}${if (observations.size >= 200) "+" else ""}",
+                if (observations.size >= 200) {
+                    "Showing the newest 200 snapshots; older raw history stays stored locally"
+                } else {
+                    "Raw address context is kept so future parsers can re-process it"
+                },
             )
         }
         if (observations.isEmpty()) {
-            item { AddressInfoCard(null, "No offer observations saved yet.") }
+            item { AddressInfoCard("No screen snapshots saved yet.") }
         } else {
-            items(observations, key = { "observation-${it.id}" }) { observation ->
-                Card(shape = RoundedCornerShape(18.dp)) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Row {
+            items(visibleObservations, key = { "observation-${it.id}" }) { observation ->
+                Card(shape = RoundedCornerShape(16.dp)) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(observation.platform, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                             Text(addressDate(observation.seenAt), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
                         }
                         observation.customerName?.takeIf(String::isNotBlank)?.let {
-                            Text(it, fontWeight = FontWeight.Medium)
+                            Text(it, fontWeight = FontWeight.Medium, fontSize = 13.sp)
                         }
                         val body = observation.detailsText?.takeIf(String::isNotBlank) ?: observation.rawText
-                        Text(body, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, maxLines = 12)
+                        Text(
+                            body,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.sp,
+                            maxLines = 8,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
                 }
             }
+            if (observations.size > COLLAPSED_OBSERVATION_COUNT) {
+                item {
+                    ExpandCollapseButton(
+                        expanded = observationsExpanded,
+                        collapsedLabel = "Show recent ${observations.size} snapshots",
+                        onClick = { observationsExpanded = !observationsExpanded },
+                    )
+                }
+            }
         }
+    }
+}
+
+@Composable
+private fun AddressMetric(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier.padding(horizontal = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(value, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp, maxLines = 1)
     }
 }
 
 @Composable
 private fun AddressSection(title: String, subtitle: String) {
-    Column {
-        Text(title, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
+    Column(Modifier.padding(top = 4.dp)) {
+        Text(title, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
         Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
     }
 }
 
 @Composable
-private fun AddressEntityCard(entity: AddressEntityRecord) {
-    Card(shape = RoundedCornerShape(18.dp)) {
-        Row(
-            Modifier.fillMaxWidth().padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(entity.name, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
-                Text(
-                    "${entity.platform} · captured ${entity.seenCount}× · ${addressDate(entity.lastSeenAt)}",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 11.sp,
-                )
-            }
+private fun CompactMemoryRow(
+    title: String,
+    subtitle: String,
+    titleSize: Int = 15,
+) {
+    Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
+            Text(title, fontWeight = FontWeight.SemiBold, fontSize = titleSize.sp)
+            Spacer(Modifier.height(2.dp))
+            Text(
+                subtitle,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }
 
 @Composable
-private fun AddressInfoCard(title: String?, body: String) {
-    Card(shape = RoundedCornerShape(18.dp)) {
-        Column(Modifier.padding(16.dp)) {
-            title?.let {
-                Text(it, fontWeight = FontWeight.SemiBold)
-                Spacer(Modifier.height(6.dp))
-            }
+private fun ExpandCollapseButton(
+    expanded: Boolean,
+    collapsedLabel: String,
+    onClick: () -> Unit,
+) {
+    TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+        Text(if (expanded) "Show less" else collapsedLabel)
+    }
+}
+
+@Composable
+private fun AddressInfoCard(body: String) {
+    Card(shape = RoundedCornerShape(16.dp)) {
+        Column(Modifier.padding(14.dp)) {
             Text(body, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
         }
     }
@@ -369,3 +431,6 @@ private fun AddressInfoCard(title: String?, body: String) {
 
 private fun addressDate(timestamp: Long): String =
     SimpleDateFormat("d MMM yyyy · HH:mm", Locale.getDefault()).format(Date(timestamp))
+
+private const val COLLAPSED_CUSTOMER_COUNT = 5
+private const val COLLAPSED_OBSERVATION_COUNT = 5

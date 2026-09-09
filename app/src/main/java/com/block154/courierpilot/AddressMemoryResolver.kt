@@ -29,8 +29,8 @@ internal object AddressMemoryResolver {
     private const val ALIAS_PREFIX = "alias_"
     private const val FIELD_SEPARATOR = "\u001F"
     private const val RAW_OBSERVATION_DEDUPE_MS = 2L * 60L * 1000L
-    private const val MAX_DETAILS_CHARS = 8_000
-    private const val MAX_RAW_CHARS = 16_000
+    private const val MAX_DETAILS_CHARS = 32_000
+    private const val MAX_RAW_CHARS = 128_000
     private const val MAX_LOCAL_ADDRESSES = 1_000
 
     fun canonicalize(
@@ -149,7 +149,21 @@ internal object AddressMemoryResolver {
             inserted = false
         }
 
-        if (safeRaw.isNotBlank() && !hasRecentObservation(db, addressId, platform, now)) {
+        // Capture-first policy: within the short dedupe window, skip only a truly equivalent
+        // snapshot. A screen that gained instructions, apartment data, notes, customer text or any
+        // other Accessibility content is a new observation and must be retained for future parsing.
+        if (
+            safeRaw.isNotBlank() &&
+            !hasRecentEquivalentObservation(
+                db = db,
+                addressId = addressId,
+                platform = platform,
+                customerName = safeCustomer,
+                detailsText = safeDetails,
+                rawText = safeRaw,
+                now = now,
+            )
+        ) {
             db.insert(
                 "address_observations",
                 null,
@@ -287,17 +301,37 @@ internal object AddressMemoryResolver {
         return key
     }
 
-    private fun hasRecentObservation(db: SQLiteDatabase, addressId: Long, platform: String, now: Long): Boolean =
-        db.query(
-            "address_observations",
-            arrayOf("id"),
-            "address_id = ? AND platform = ? AND seen_at >= ?",
-            arrayOf(addressId.toString(), platform, (now - RAW_OBSERVATION_DEDUPE_MS).toString()),
-            null,
-            null,
-            "seen_at DESC",
-            "1",
-        ).use { it.moveToFirst() }
+    private fun hasRecentEquivalentObservation(
+        db: SQLiteDatabase,
+        addressId: Long,
+        platform: String,
+        customerName: String?,
+        detailsText: String?,
+        rawText: String,
+        now: Long,
+    ): Boolean = db.query(
+        "address_observations",
+        arrayOf("customer_name", "details_text", "raw_text"),
+        "address_id = ? AND platform = ? AND seen_at >= ?",
+        arrayOf(addressId.toString(), platform, (now - RAW_OBSERVATION_DEDUPE_MS).toString()),
+        null,
+        null,
+        "seen_at DESC",
+        "12",
+    ).use { cursor ->
+        val customerIndex = cursor.getColumnIndexOrThrow("customer_name")
+        val detailsIndex = cursor.getColumnIndexOrThrow("details_text")
+        val rawIndex = cursor.getColumnIndexOrThrow("raw_text")
+        while (cursor.moveToNext()) {
+            val previousCustomer = if (cursor.isNull(customerIndex)) null else cursor.getString(customerIndex)
+            val previousDetails = if (cursor.isNull(detailsIndex)) null else cursor.getString(detailsIndex)
+            val previousRaw = cursor.getString(rawIndex)
+            if (previousCustomer == customerName && previousDetails == detailsText && previousRaw == rawText) {
+                return@use true
+            }
+        }
+        false
+    }
 
     private fun dedupeObservations(db: SQLiteDatabase, addressId: Long) {
         db.execSQL(
@@ -311,6 +345,9 @@ internal object AddressMemoryResolver {
                  AND older.platform = newer.platform
                  AND older.id < newer.id
                  AND ABS(older.seen_at - newer.seen_at) <= $RAW_OBSERVATION_DEDUPE_MS
+                 AND COALESCE(older.customer_name, '') = COALESCE(newer.customer_name, '')
+                 AND COALESCE(older.details_text, '') = COALESCE(newer.details_text, '')
+                 AND older.raw_text = newer.raw_text
                 WHERE newer.address_id = ?
             )
             """.trimIndent(),

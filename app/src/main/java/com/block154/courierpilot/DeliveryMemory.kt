@@ -91,9 +91,9 @@ internal object DeliveryMemory {
                 val detailsAddress = details.address ?: return@takeIf false
                 DeliveryAddressNormalizer.matchScore(detailsAddress, rawAddress) >= 0.86
             }
-            // Customer identities are persisted only when the trusted customer screen itself exposes
-            // them. Parsed offer cards are deliberately not used here; they produced UI labels and
-            // merchant names such as `Address details`, `Notes` and `Ekomarket (...)` in old builds.
+            // Parsed fields are only optional convenience metadata. The complete trusted
+            // Accessibility frame is always passed as rawText and remains the durable source of
+            // truth for later parsing/re-processing.
             val customer = matchedScreenDetails?.customerName
                 ?.trim()
                 ?.takeIf(String::isNotEmpty)
@@ -134,8 +134,31 @@ internal object DeliveryMemory {
             }
         }
 
-        // Access-code learning may reuse only a very recent customer address from the same platform.
-        val observations = CourierSignals.extractAccessCodeObservations(text, fallback)
+        fun unitHintFor(address: String): String? = screenDetails?.takeIf { details ->
+            val detailsAddress = details.address ?: return@takeIf false
+            DeliveryAddressNormalizer.matchScore(detailsAddress, address) >= 0.86
+        }?.apartment
+
+        val deliveryKeys = detectedAddresses.mapNotNull { address ->
+            val canonical = AddressMemoryResolver.canonicalize(context, database, address)
+                ?: DeliveryAddressNormalizer.normalize(address)
+                ?: return@mapNotNull null
+            AccessCodeNotificationGate.deliveryKey(
+                packageName = packageName,
+                buildingKey = canonical.first,
+                rawAddress = address,
+                unitHint = unitHintFor(address),
+            )
+        }.distinct()
+
+        // Code extraction is only a best-effort derived view over the raw snapshot. Never let a
+        // numeric apartment/flat value become a learned code. If the current order already exposes
+        // access-code information, suppress historical hints for this delivery even when the exact
+        // code format is too unusual for our parser; the courier can already see the authoritative
+        // current-order text.
+        val extractedCodeObservations = CourierSignals.extractAccessCodeObservations(text, fallback)
+        val observations = extractedCodeObservations
+            .filter { AccessCodeHintPolicy.shouldLearnCandidate(text, it.code) }
             .mapNotNull { observation ->
                 val canonical = AddressMemoryResolver.canonicalize(context, database, observation.displayAddress)
                     ?: DeliveryAddressNormalizer.normalize(observation.displayAddress)
@@ -147,8 +170,12 @@ internal object DeliveryMemory {
                 )
             }
             .distinctBy { "${it.buildingKey}|${it.code}" }
-        if (observations.isNotEmpty()) {
+
+        val currentOrderShowsAccessInfo = observations.isNotEmpty() ||
+            AccessCodeHintPolicy.screenContainsAccessCodeInfo(text)
+        if (currentOrderShowsAccessInfo) {
             AccessCodeSuggestions.clear(context)
+            deliveryKeys.forEach { AccessCodeNotificationGate.consume(context, it) }
             observations.forEach { observation ->
                 runCatching { database.saveAccessCode(observation, platform) }
                     .onSuccess {
@@ -178,23 +205,35 @@ internal object DeliveryMemory {
             val canonical = AddressMemoryResolver.canonicalize(context, database, address)
                 ?: DeliveryAddressNormalizer.normalize(address)
                 ?: continue
-            val known = database.codesForBuilding(canonical.first)
+            val known = usableHistoricalCodes(
+                context = context,
+                database = database,
+                address = address,
+                buildingKey = canonical.first,
+                currentText = text,
+            )
             if (known.isEmpty()) continue
-            val codes = known.map { it.code }.distinct()
-            val oldSuggestion = AccessCodeSuggestions.latest(context)
-            val sameSuggestion = oldSuggestion?.displayAddress == canonical.second && oldSuggestion.codes == codes
+
+            val deliveryKey = AccessCodeNotificationGate.deliveryKey(
+                packageName = packageName,
+                buildingKey = canonical.first,
+                rawAddress = address,
+                unitHint = unitHintFor(address),
+            )
+
             val suggestion = AccessCodeSuggestion(
                 displayAddress = canonical.second,
-                codes = codes,
+                codes = known,
                 platform = platform,
                 updatedAt = System.currentTimeMillis(),
             )
-            if (!sameSuggestion) {
-                AccessCodeSuggestions.save(context, suggestion)
+            AccessCodeSuggestions.save(context, suggestion)
+
+            if (AccessCodeNotificationGate.claim(context, deliveryKey)) {
                 AccessCodeNotifier.show(context, suggestion)
                 Toast.makeText(
                     context,
-                    "Possible door code · ${canonical.second}: ${codes.joinToString(" / ")}",
+                    "Possible door code · ${canonical.second}: ${known.joinToString(" / ")}",
                     Toast.LENGTH_LONG,
                 ).show()
                 CaptureEventLog.append(
@@ -209,6 +248,32 @@ internal object DeliveryMemory {
             break
         }
         if (!matched && detectedAddresses.isNotEmpty()) AccessCodeSuggestions.clear(context)
+    }
+
+    private fun usableHistoricalCodes(
+        context: Context,
+        database: CourierMetaDatabase,
+        address: String,
+        buildingKey: String,
+        currentText: String,
+    ): List<String> {
+        val rawHistory = AddressMemoryResolver.findSaved(context, database, address)
+            ?.let { saved -> database.observationsForAddress(saved.id, limit = 200) }
+            .orEmpty()
+            .map { it.rawText }
+
+        return database.codesForBuilding(buildingKey)
+            .map { it.code }
+            .distinct()
+            .filterNot { code -> AccessCodeHintPolicy.isAlreadyVisible(currentText, code) }
+            .filter { code ->
+                // Existing installs may already contain bad numeric rows learned before this fix.
+                // If any preserved raw snapshot proves that candidate was actually an apartment or
+                // flat number, keep the raw history but never surface that derived row as a hint.
+                rawHistory.none { historicalText ->
+                    !AccessCodeHintPolicy.shouldLearnCandidate(historicalText, code)
+                }
+            }
     }
 
     private fun addressContext(text: String, address: String): String? {
