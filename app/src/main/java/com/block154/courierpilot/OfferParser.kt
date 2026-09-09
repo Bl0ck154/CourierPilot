@@ -160,8 +160,8 @@ internal object OfferParser {
     /**
      * Wolt's September 2026 offer card no longer exposes the legacy "Delivery from / Timeline"
      * section. Pickups are rendered as name/address rows below a compact "N stops (X km) • ETA"
-     * summary, while one destination is shown as "Customer drop-off" and batches collapse their
-     * destinations behind "Multiple drop-offs (N stops)". When CourierPilot briefly opens that
+     * summary, while destinations can appear as repeated "Customer drop-off" rows or be collapsed
+     * behind "Multiple drop-offs (N stops)". When CourierPilot briefly opens that
      * sheet, its text is accumulated with the card frame and this parser reconstructs the full route.
      */
     private fun parseModernWoltLayout(lines: List<String>): ModernWoltLayout? {
@@ -174,9 +174,10 @@ internal object OfferParser {
         // that richer OCR frame wins instead of the first incomplete copy ending at its label.
         val summaryIndex = summaryIndexes.lastOrNull() ?: -1
         val contentStart = (summaryIndex + 1).coerceAtLeast(0)
-        val singleDropoffIndex = lines.indices.firstOrNull { index ->
+        val customerDropoffIndexes = lines.indices.filter { index ->
             index >= contentStart && WoltOfferUiText.singleCustomerDropoffRegex.matches(lines[index])
-        } ?: -1
+        }
+        val firstCustomerDropoffIndex = customerDropoffIndexes.firstOrNull() ?: -1
         val collapsedDropoffIndexes = lines.indices.filter { index ->
             index >= contentStart && WoltOfferUiText.collapsedMultipleDropoffsRegex.matches(lines[index])
         }
@@ -185,14 +186,14 @@ internal object OfferParser {
         }
         val modern = summaryIndexes.isNotEmpty() ||
             lines.any(WoltOfferUiText::isModernEarningsLabel) ||
-            singleDropoffIndex >= 0 ||
+            customerDropoffIndexes.isNotEmpty() ||
             collapsedDropoffIndexes.isNotEmpty() ||
             expandedDropoffIndexes.isNotEmpty()
         if (!modern) return null
 
         val pickupStart = contentStart
         val pickupEndCandidates = buildList {
-            singleDropoffIndex.takeIf { it >= pickupStart }?.let(::add)
+            firstCustomerDropoffIndex.takeIf { it >= pickupStart }?.let(::add)
             collapsedDropoffIndexes.firstOrNull { it >= pickupStart }?.let(::add)
             expandedDropoffIndexes.firstOrNull { it >= pickupStart }?.let(::add)
             lines.indexOfFirstFrom(pickupStart, WoltOfferUiText::isEarningsLabel)
@@ -230,8 +231,12 @@ internal object OfferParser {
             }
         }
 
-        if (singleDropoffIndex >= 0) {
-            lines.drop(singleDropoffIndex + 1)
+        customerDropoffIndexes.forEachIndexed { markerIndex, dropoffIndex ->
+            val nextDropoffIndex = customerDropoffIndexes.getOrNull(markerIndex + 1) ?: lines.size
+            val nextCollapsedIndex = collapsedDropoffIndexes.firstOrNull { it > dropoffIndex } ?: lines.size
+            val nextExpandedIndex = expandedDropoffIndexes.firstOrNull { it > dropoffIndex } ?: lines.size
+            val boundary = minOf(nextDropoffIndex, nextCollapsedIndex, nextExpandedIndex, lines.size)
+            lines.subList((dropoffIndex + 1).coerceAtMost(lines.size), boundary)
                 .takeWhile { line ->
                     !WoltOfferUiText.isEarningsLabel(line) &&
                         !line.equals("Accept", ignoreCase = true) &&
@@ -303,25 +308,29 @@ internal object OfferParser {
             else ordered += recoveredPickup
         }
 
-        // Live 0.15.36 telemetry showed the new Wolt card can OCR both visible addresses while
-        // dropping the literal "Customer drop-off" label. That produced pickups=2/dropoffs=0 for a
-        // two-stop single delivery and prevented Valhalla from starting. A genuine two-stop Wolt
-        // offer must be one pickup plus one destination, so when no multi-drop UI is present we can
-        // safely reclassify the second visually ordered address as the customer destination. The
-        // spatially sorted Wolt OCR path keeps this order deterministic; the older recovery logic
-        // remains in place as fallback for incomplete Accessibility text.
-        if (expectedTotalStops == 2 &&
+        // Wolt can OCR all addresses while dropping every literal "Customer drop-off" label.
+        // For a same-venue offer the route shape is still deterministic: one unique pickup followed
+        // by every remaining route stop. Generalize the old two-stop recovery to any number of
+        // customer stops instead of hard-coding one destination. Multi-merchant cards stay on the
+        // explicit/Accessibility path because duplicate pickup addresses make blind inference unsafe.
+        if (expectedTotalStops != null &&
+            expectedTotalStops >= 2 &&
             dropoffs.isEmpty() &&
+            customerDropoffIndexes.isEmpty() &&
             collapsedDropoffIndexes.isEmpty() &&
             expandedDropoffIndexes.isEmpty() &&
-            pickups.size == 2
+            merchants.size == 1 &&
+            pickups.size == expectedTotalStops
         ) {
-            val inferredDropoff = pickups.removeAt(1)
-            val recoveredIndex = ordered.indexOfLast { stop ->
-                stop.kind == ParsedRouteStopKind.PICKUP && addressesEquivalent(stop.address, inferredDropoff)
+            val inferredDropoffs = pickups.drop(1)
+            while (pickups.size > 1) pickups.removeAt(1)
+            inferredDropoffs.forEach { inferredDropoff ->
+                val recoveredIndex = ordered.indexOfLast { stop ->
+                    stop.kind == ParsedRouteStopKind.PICKUP && addressesEquivalent(stop.address, inferredDropoff)
+                }
+                if (recoveredIndex >= 0) ordered.removeAt(recoveredIndex)
+                addDropoff(inferredDropoff)
             }
-            if (recoveredIndex >= 0) ordered.removeAt(recoveredIndex)
-            addDropoff(inferredDropoff)
         }
 
         val collapsedCount = collapsedDropoffIndexes.firstNotNullOfOrNull { index ->
@@ -338,7 +347,7 @@ internal object OfferParser {
             collapsedCount ?: 0,
             expandedCount ?: 0,
             dropoffs.size,
-            if (singleDropoffIndex >= 0) 1 else 0,
+            customerDropoffIndexes.size,
         ).takeIf { it > 0 }
 
         return ModernWoltLayout(

@@ -63,6 +63,50 @@ class WoltAccessibilityDropoffRecoveryTest {
     }
 
     @Test
+    fun recoversFiveHiddenCustomersWithoutAnyHardCodedBatchLimit() {
+        val result = WoltAccessibilityDropoffRecovery.recover(
+            hiddenTextPieces = listOf(
+                "A. Goštauto g. 12",
+                "Žirmūnų g. 54",
+                "Kalvarijų g. 125",
+                "Ozo g. 18",
+                "Ukmergės g. 221",
+            ),
+            excludedAddresses = listOf("Vokiečių g. 12"),
+            expectedCount = 5,
+        )
+
+        assertEquals(5, result.resolvedAddresses.size)
+        assertEquals("A. Goštauto g. 12", result.resolvedAddresses.first())
+        assertEquals("Ukmergės g. 221", result.resolvedAddresses.last())
+    }
+
+    @Test
+    fun mergesVisibleOldDropoffWithHiddenNewStopsForAddOnOffer() {
+        val result = WoltAccessibilityDropoffRecovery.recover(
+            hiddenTextPieces = listOf(
+                "Žirmūnų g. 54",
+                "Kalvarijų g. 125",
+                "Ozo g. 18",
+            ),
+            excludedAddresses = listOf("Vokiečių g. 12"),
+            expectedCount = 4,
+            knownAddresses = listOf("Arklių gatvė 36, Vilnius, 01305"),
+        )
+
+        assertEquals(
+            listOf(
+                "Arklių gatvė 36, Vilnius, 01305",
+                "Žirmūnų g. 54",
+                "Kalvarijų g. 125",
+                "Ozo g. 18",
+            ),
+            result.resolvedAddresses,
+        )
+        assertEquals(3, result.candidateCount)
+    }
+
+    @Test
     fun refusesAmbiguousHiddenAddressSetSoClickFallbackCanRun() {
         val result = WoltAccessibilityDropoffRecovery.recover(
             hiddenTextPieces = listOf(

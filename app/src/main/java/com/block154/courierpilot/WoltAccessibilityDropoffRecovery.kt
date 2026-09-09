@@ -9,9 +9,9 @@ internal data class WoltAccessibilityDropoffRecoveryResult(
 
 /**
  * Conservative classifier for Wolt destination rows that exist in the Accessibility semantics tree
- * while the "Multiple drop-offs" sheet is still collapsed. It resolves only when the number of
- * unique hidden street addresses exactly matches the expected delivery count. Any ambiguity falls
- * back to the existing click/OCR path.
+ * while the "Multiple drop-offs" sheet is still collapsed. Already-visible customer rows can be
+ * supplied as known addresses and are merged with hidden semantics, so the same algorithm works for
+ * 2, 3, 4, 5+ deliveries. It resolves only on an exact final count; ambiguity falls back safely.
  */
 internal object WoltAccessibilityDropoffRecovery {
     private val streetNumberPatterns = listOf(
@@ -27,10 +27,18 @@ internal object WoltAccessibilityDropoffRecovery {
         hiddenTextPieces: List<String>,
         excludedAddresses: List<String>,
         expectedCount: Int,
+        knownAddresses: List<String> = emptyList(),
     ): WoltAccessibilityDropoffRecoveryResult {
         if (expectedCount <= 0) return WoltAccessibilityDropoffRecoveryResult(emptyList(), 0)
 
         val excludedKeys = excludedAddresses.map(::addressKey).filter { it.isNotBlank() }.toSet()
+        val known = knownAddresses
+            .asSequence()
+            .map { it.trim().replace(Regex("\\s+"), " ") }
+            .filter { it.isNotBlank() && looksLikeStreetAddress(it) }
+            .filterNot { addressKey(it) in excludedKeys }
+            .distinctBy(::addressKey)
+            .toList()
         val candidates = hiddenTextPieces
             .asSequence()
             .flatMap { it.lineSequence() }
@@ -39,9 +47,10 @@ internal object WoltAccessibilityDropoffRecovery {
             .filterNot { addressKey(it) in excludedKeys }
             .distinctBy(::addressKey)
             .toList()
+        val completeSet = (known + candidates).distinctBy(::addressKey)
 
         return WoltAccessibilityDropoffRecoveryResult(
-            resolvedAddresses = candidates.takeIf { it.size == expectedCount }.orEmpty(),
+            resolvedAddresses = completeSet.takeIf { it.size == expectedCount }.orEmpty(),
             candidateCount = candidates.size,
         )
     }
