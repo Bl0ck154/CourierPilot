@@ -15,7 +15,7 @@ class LiveOfferTransactionPolicyTest {
     }
 
     @Test
-    fun changedWoltNotificationKeyIsHardOfferBoundary() {
+    fun changedWoltNotificationKeyWithoutScreenEvidenceIsOfferBoundary() {
         assertFalse(
             LiveOfferTransactionPolicy.isSameSurface(
                 dismissed = false,
@@ -24,6 +24,21 @@ class LiveOfferTransactionPolicyTest {
                 currentNotificationKey = "old-offer-key",
                 incomingPackageName = CourierSignals.WOLT_PACKAGE,
                 incomingNotificationKey = "new-offer-key",
+            ),
+        )
+    }
+
+    @Test
+    fun changedWoltNotificationKeyKeepsSurfaceWhenVisibleOfferIdentityMatches() {
+        assertTrue(
+            LiveOfferTransactionPolicy.isSameSurface(
+                dismissed = false,
+                hasCurrentOffer = true,
+                expectedPackageName = CourierSignals.WOLT_PACKAGE,
+                currentNotificationKey = "old-offer-key",
+                incomingPackageName = CourierSignals.WOLT_PACKAGE,
+                incomingNotificationKey = "refreshed-key",
+                compatibleOfferEvidence = true,
             ),
         )
     }

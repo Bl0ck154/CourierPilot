@@ -56,6 +56,20 @@ class CourierPilotNotificationListener : NotificationListenerService() {
                 platform,
             )
             val sourceName = resolveAppName(sbn.packageName)
+
+            // Wolt can repost the same still-visible ringing offer with a different notification
+            // key. Do not restart capture/OCR/routing for that metadata churn: preserve the original
+            // capture transaction and move only the live-card notification lifetime anchor.
+            if (LiveAdvisorHub.coalesceOfferNotificationRefresh(sbn.packageName, sbn.key)) {
+                CaptureEventLog.append(
+                    this,
+                    stage = "notification_same_offer_coalesced",
+                    platform = platform,
+                    message = "Refreshed notification belongs to the same visible offer; capture transaction preserved",
+                    dedupeWindowMs = 1_000L,
+                )
+                return
+            }
             val armResult = OfferState.arm(this, sbn.packageName, sourceName, sbn.key)
             CaptureEventLog.append(
                 this,

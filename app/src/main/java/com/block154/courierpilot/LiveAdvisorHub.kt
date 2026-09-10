@@ -64,11 +64,32 @@ internal object LiveAdvisorHub {
         val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
         if (captureOfferKey == key) return
         captureOfferKey = key
+        val keepCurrentSurfaceWarm = advisor?.isTrackingOffer(pending.packageName) == true
         pendingPreview = null
+        if (keepCurrentSurfaceWarm) {
+            // A fresh same-platform notification is not itself proof of a fresh visible offer.
+            // Keep the old card on-screen until parsed screen identity confirms replacement. This
+            // removes the hide/show flash when Wolt rotates notification keys while ringing.
+            CaptureEventLog.append(
+                context,
+                stage = "capture_boundary_deferred",
+                platform = OfferState.platformLabel(pending.packageName),
+                message = "Kept current live card warm until same-platform replacement is verified on screen",
+                dedupeWindowMs = 1_000L,
+            )
+            return
+        }
         currentOffer = null
         currentOfferHasResolvedRoute = false
         currentWoltRouteRetryCount = 0
         advisor?.suppressCurrentOffer("new offer capture started", animate = false)
+    }
+
+    fun coalesceOfferNotificationRefresh(packageName: String, notificationKey: String): Boolean {
+        val currentAdvisor = advisor ?: return false
+        if (!currentAdvisor.isSameOfferVisiblyPresent(packageName)) return false
+        currentAdvisor.retargetNotificationAnchor(packageName, notificationKey)
+        return true
     }
 
     fun showPendingOffer(context: Context, pending: PendingOffer, parsed: ParsedOffer) {
@@ -91,6 +112,15 @@ internal object LiveAdvisorHub {
                 dedupeWindowMs = 2_000L,
             )
             return
+        }
+        currentOffer?.takeIf { it.record.packageName == pending.packageName }?.let { current ->
+            if (LiveOfferResumePolicy.definitelyDifferent(current.parsed, parsed)) {
+                // hideForCapture deliberately keeps a same-platform card warm until screen identity
+                // arrives. Once the new surface is genuinely different, invalidate old route callbacks.
+                currentOffer = null
+                currentOfferHasResolvedRoute = false
+                currentWoltRouteRetryCount = 0
+            }
         }
         val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
         pendingPreview = PendingAdvisorOffer(key, pending.packageName, pending.notificationKey, pending.armedAt, parsed)
@@ -634,7 +664,8 @@ internal object LiveAdvisorHub {
         val currentMatches = currentOffer?.record?.let {
             it.packageName == packageName && it.captureKey == notificationKey
         } == true
-        if (pendingMatches || currentMatches) advisor?.onOfferNotificationRemoved(notificationKey)
+        val trackedPackage = advisor?.isTrackingOffer(packageName) == true
+        if (pendingMatches || currentMatches || trackedPackage) advisor?.onOfferNotificationRemoved(notificationKey)
     }
 
     fun observeScreen(context: Context, packageName: String, text: String) {

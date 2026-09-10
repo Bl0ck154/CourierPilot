@@ -225,6 +225,28 @@ class OfferParserTest {
     }
 
     @Test
+    fun parsesMeatLoversSingleDropoffFromLiveWoltCard() {
+        val parsed = OfferParser.parse(
+            """
+            €9.24
+            2 stops (14.1 km) • 24–37 min
+            Meat Lovers Pub
+            Liejyklos g. 8, Vilnius, LT01121
+            Customer drop-off
+            Fabijoniškių gatvė 3b, Vilnius
+            Accept
+            """.trimIndent()
+        )
+
+        assertEquals(924, parsed.priceCents)
+        assertEquals(14100, parsed.distanceMeters)
+        assertEquals(listOf("Liejyklos g. 8, Vilnius, LT01121"), parsed.pickupAddresses)
+        assertEquals(listOf("Fabijoniškių gatvė 3b, Vilnius"), parsed.dropoffAddresses)
+        assertEquals(1, parsed.deliveryCount)
+        assertTrue(AutomaticWoltRouteCoordinator.routeFingerprint(parsed) != null)
+    }
+
+    @Test
     fun infersSingleDropoffWhenWoltOmitsSummaryAndCustomerLabelButShowsTwoAddresses() {
         val parsed = OfferParser.parse(
             """
