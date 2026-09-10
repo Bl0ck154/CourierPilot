@@ -36,4 +36,34 @@ class AppUpdateVersionTest {
         assertNull(AppUpdateIntegrity.parseSha256("not-a-checksum CourierPilot-v0.15.10.apk"))
     }
 
+    @Test
+    fun parsesVersionFromGithubLatestReleaseRedirect() {
+        assertEquals(
+            "0.15.65",
+            AppUpdateReleaseFallback.versionFromResolvedLatestUrl(
+                "https://github.com/Bl0ck154/CourierPilot/releases/tag/v0.15.65",
+            ),
+        )
+        assertEquals(
+            "0.15.65",
+            AppUpdateReleaseFallback.versionFromResolvedLatestUrl(
+                "https://github.com/Bl0ck154/CourierPilot/releases/tag/v0.15.65?foo=bar",
+            ),
+        )
+        assertNull(
+            AppUpdateReleaseFallback.versionFromResolvedLatestUrl(
+                "https://github.com/Bl0ck154/CourierPilot/releases/latest",
+            ),
+        )
+    }
+
+    @Test
+    fun buildsDirectFallbackApkUrl() {
+        assertEquals("CourierPilot-v0.15.65.apk", AppUpdateReleaseFallback.apkName("v0.15.65"))
+        assertEquals(
+            "https://github.com/Bl0ck154/CourierPilot/releases/download/v0.15.65/CourierPilot-v0.15.65.apk",
+            AppUpdateReleaseFallback.apkUrl("0.15.65"),
+        )
+    }
+
 }

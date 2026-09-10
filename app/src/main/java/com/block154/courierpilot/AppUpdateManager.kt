@@ -135,9 +135,35 @@ internal object AppUpdateIntegrity {
         SHA256_PATTERN.find(text)?.value?.lowercase(Locale.US)
 }
 
+internal object AppUpdateReleaseFallback {
+    private const val RELEASE_DOWNLOAD_BASE_URL =
+        "https://github.com/Bl0ck154/CourierPilot/releases/download"
+
+    fun versionFromResolvedLatestUrl(url: String): String? {
+        val marker = "/releases/tag/"
+        val markerIndex = url.indexOf(marker, ignoreCase = true)
+        if (markerIndex < 0) return null
+        val tag = url.substring(markerIndex + marker.length)
+            .substringBefore('?')
+            .substringBefore('#')
+            .trim('/')
+        return AppUpdateVersion.normalize(tag)
+    }
+
+    fun apkName(version: String): String =
+        "CourierPilot-v${AppUpdateVersion.normalize(version) ?: version}.apk"
+
+    fun apkUrl(version: String): String {
+        val normalized = AppUpdateVersion.normalize(version) ?: version
+        return "$RELEASE_DOWNLOAD_BASE_URL/v$normalized/${apkName(normalized)}"
+    }
+}
+
 internal object AppUpdateManager {
     private const val LATEST_RELEASE_URL =
         "https://api.github.com/repos/Bl0ck154/CourierPilot/releases/latest"
+    private const val LATEST_RELEASE_PAGE_URL =
+        "https://github.com/Bl0ck154/CourierPilot/releases/latest"
     private const val EXPECTED_SIGNER_SHA256 =
         "74556417f1289281bcaf1a2c6f3f4aa119db24b079a13759a583c3cc66796b70"
     private const val UPDATE_CHANNEL_ID = "courierpilot_updates"
@@ -428,6 +454,24 @@ internal object AppUpdateManager {
     )
 
     private fun fetchLatestRelease(): ReleaseInfo {
+        try {
+            return fetchLatestReleaseFromApi()
+        } catch (apiFailure: Exception) {
+            try {
+                return fetchLatestReleaseFromPageRedirect()
+            } catch (fallbackFailure: Exception) {
+                fallbackFailure.addSuppressed(apiFailure)
+                val fallbackDetail = fallbackFailure.message?.takeIf(String::isNotBlank)
+                    ?: fallbackFailure.javaClass.simpleName
+                throw IOException(
+                    "GitHub API was unreachable and the release-page fallback failed: $fallbackDetail",
+                    fallbackFailure,
+                )
+            }
+        }
+    }
+
+    private fun fetchLatestReleaseFromApi(): ReleaseInfo {
         val json = JSONObject(readText(LATEST_RELEASE_URL, "application/vnd.github+json"))
         val version = AppUpdateVersion.normalize(json.optString("tag_name"))
             ?: throw IOException("Latest GitHub release has an invalid version tag")
@@ -479,6 +523,32 @@ internal object AppUpdateManager {
             apkSize = apk.optLong("size", -1L),
             digestSha256 = digest,
             checksumUrl = checksumUrl,
+        )
+    }
+
+    /**
+     * Some mobile/Private-DNS paths fail to resolve api.github.com while ordinary github.com still
+     * works. GitHub's /releases/latest URL redirects to /releases/tag/vX.Y.Z, so use that redirect
+     * as a second independent discovery path and then download the signed APK + checksum directly.
+     */
+    private fun fetchLatestReleaseFromPageRedirect(): ReleaseInfo {
+        val connection = openConnection(LATEST_RELEASE_PAGE_URL, "text/html")
+        val resolvedUrl = try {
+            connection.url.toString()
+        } finally {
+            connection.disconnect()
+        }
+        val version = AppUpdateReleaseFallback.versionFromResolvedLatestUrl(resolvedUrl)
+            ?: throw IOException("Latest GitHub release page did not resolve to a version tag")
+        val apkName = AppUpdateReleaseFallback.apkName(version)
+        val apkUrl = AppUpdateReleaseFallback.apkUrl(version)
+        return ReleaseInfo(
+            version = version,
+            apkName = apkName,
+            apkUrl = apkUrl,
+            apkSize = -1L,
+            digestSha256 = null,
+            checksumUrl = "$apkUrl.sha256",
         )
     }
 
