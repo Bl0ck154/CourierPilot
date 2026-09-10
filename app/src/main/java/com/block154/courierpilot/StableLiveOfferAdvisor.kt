@@ -72,6 +72,7 @@ internal class StableLiveOfferAdvisor(
     private var cachedDecisionLine = ""
     private var cachedDecisionBand = OfferDecisionBand.UNKNOWN
     private var cachedDecisionLoading = true
+    private var finalPresentationLocked = false
     private var decisionThresholdSnapshot: DecisionThresholdSnapshot? = null
     private var decisionThresholdPrewarmGeneration = -1L
     private var cachedRouteLine = ""
@@ -148,6 +149,11 @@ internal class StableLiveOfferAdvisor(
     fun showPending(platform: String, parsed: ParsedOffer, notificationKey: String = "") {
         if (!LiveAdvisorSettings.enabled(service)) return
         val packageName = packageForPlatform(platform)
+        val compatibleOfferEvidence = currentParsed?.let { expected ->
+            !LiveOfferResumePolicy.definitelyDifferent(expected, parsed) &&
+                (LiveOfferResumePolicy.hasCompatibleCoreIdentity(expected, parsed) ||
+                    LiveOfferResumePolicy.hasMatchingIdentity(expected, parsed))
+        } == true
         val sameSurface = LiveOfferTransactionPolicy.isSameSurface(
             dismissed = dismissed,
             hasCurrentOffer = currentParsed != null,
@@ -155,6 +161,7 @@ internal class StableLiveOfferAdvisor(
             currentNotificationKey = currentNotificationKey,
             incomingPackageName = packageName,
             incomingNotificationKey = notificationKey,
+            compatibleOfferEvidence = compatibleOfferEvidence,
         )
         val createdSurface = !sameSurface
         if (!sameSurface) {
@@ -170,6 +177,7 @@ internal class StableLiveOfferAdvisor(
             cachedDecisionLine = ""
             cachedDecisionBand = OfferDecisionBand.UNKNOWN
             cachedDecisionLoading = true
+            finalPresentationLocked = false
             decisionThresholdSnapshot = null
             decisionThresholdPrewarmGeneration = -1L
             cachedRouteLine = ""
@@ -190,7 +198,7 @@ internal class StableLiveOfferAdvisor(
         currentParsed = parsed
         prewarmDecisionThresholds()
         differentOfferConfirmation.reset()
-        renderProgressiveDecision(parsed)
+        if (!finalPresentationLocked) renderProgressiveDecision(parsed)
         if (cachedRouteLine.isBlank()) renderRouteLoadingState()
         if (!temporarilyHidden) {
             ensureView()
@@ -214,6 +222,11 @@ internal class StableLiveOfferAdvisor(
         }
 
         val packageName = packageForPlatform(platform)
+        val compatibleOfferEvidence = currentParsed?.let { expected ->
+            !LiveOfferResumePolicy.definitelyDifferent(expected, parsed) &&
+                (LiveOfferResumePolicy.hasCompatibleCoreIdentity(expected, parsed) ||
+                    LiveOfferResumePolicy.hasMatchingIdentity(expected, parsed))
+        } == true
         val samePreviewSurface = previewMode && LiveOfferTransactionPolicy.isSameSurface(
             dismissed = dismissed,
             hasCurrentOffer = currentParsed != null,
@@ -221,6 +234,7 @@ internal class StableLiveOfferAdvisor(
             currentNotificationKey = currentNotificationKey,
             incomingPackageName = packageName,
             incomingNotificationKey = notificationKey,
+            compatibleOfferEvidence = compatibleOfferEvidence,
         )
         if (samePreviewSurface) {
             val previousPrice = currentParsed?.priceCents
@@ -233,7 +247,9 @@ internal class StableLiveOfferAdvisor(
             previewMode = false
             prewarmDecisionThresholds()
             differentOfferConfirmation.reset()
-            if (cachedDecisionLoading || previousPrice != parsed.priceCents) renderProgressiveDecision(parsed)
+            if (!finalPresentationLocked && (cachedDecisionLoading || previousPrice != parsed.priceCents)) {
+                renderProgressiveDecision(parsed)
+            }
             if (cachedRouteLine.isBlank()) renderRouteLoadingState()
             if (!temporarilyHidden) {
                 ensureView()
@@ -266,6 +282,7 @@ internal class StableLiveOfferAdvisor(
         cachedDecisionLine = ""
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
         cachedDecisionLoading = true
+        finalPresentationLocked = false
         decisionThresholdSnapshot = null
         decisionThresholdPrewarmGeneration = -1L
         cachedRouteLine = ""
@@ -283,8 +300,8 @@ internal class StableLiveOfferAdvisor(
             if (dismissed || expectedGeneration != generation) return@post
             // Cache presentation first. If the courier app was already backgrounded, keep the
             // offer warm without recreating an overlay on top of another app.
-            renderProgressiveDecision(parsed)
-            renderRouteLoadingState()
+            if (!finalPresentationLocked) renderProgressiveDecision(parsed)
+            if (cachedRouteLine.isBlank()) renderRouteLoadingState()
             if (!temporarilyHidden) {
                 ensureView()
                 if (root != null) {
@@ -306,6 +323,38 @@ internal class StableLiveOfferAdvisor(
         !dismissed && currentParsed != null && expectedPackageName == packageName
 
     /**
+     * Coalesce notification churn only when the courier screen itself still shows this advisor's
+     * offer. Wolt can repost one ringing offer under new notification keys; those keys are lifetime
+     * anchors, not reliable transaction identities.
+     */
+    fun isSameOfferVisiblyPresent(packageName: String): Boolean {
+        if (!isTrackingOffer(packageName)) return false
+        val expected = currentParsed ?: return false
+        val rootNode = findVisiblePackageRoot(packageName) ?: return false
+        val visibleText = inspectVisibleSurface(rootNode).text
+        if (visibleText.isBlank()) return false
+        val visible = OfferParser.parse(visibleText)
+        val hasOfferUi = CourierSignals.looksLikeOfferScreen(visibleText, visible) || hasDecisionPair(visibleText)
+        if (!hasOfferUi || LiveOfferResumePolicy.definitelyDifferent(expected, visible)) return false
+        return LiveOfferResumePolicy.hasCompatibleCoreIdentity(expected, visible) ||
+            LiveOfferResumePolicy.hasMatchingIdentity(expected, visible)
+    }
+
+    /** Move only the notification lifetime anchor; never recreate or repaint the live card. */
+    fun retargetNotificationAnchor(packageName: String, notificationKey: String) {
+        if (!isTrackingOffer(packageName) || notificationKey.isBlank()) return
+        currentNotificationKey = notificationKey
+        currentNotificationRemoved = notificationIsAlreadyRemoved(packageName, notificationKey)
+        CaptureEventLog.append(
+            service,
+            stage = "overlay_notification_anchor_retargeted",
+            platform = currentPlatform,
+            message = "Same visible offer adopted refreshed notification lifetime anchor",
+            dedupeWindowMs = 1_000L,
+        )
+    }
+
+    /**
      * Courier UIs can briefly expose contradictory merchant/address snapshots while the same offer
      * recomposes. A single such frame must never destroy/re-arm the live card. Notifications still
      * arm truly new offers immediately; screen-only replacement needs stable conflict evidence.
@@ -320,10 +369,10 @@ internal class StableLiveOfferAdvisor(
     }
 
     fun updateRoute(comparison: RouteComparison, waypointCount: Int) {
-        if (dismissed || !LiveAdvisorSettings.enabled(service)) return
+        if (dismissed || finalPresentationLocked || !LiveAdvisorSettings.enabled(service)) return
         val expectedGeneration = generation
         handler.post {
-            if (dismissed || generation != expectedGeneration) return@post
+            if (dismissed || finalPresentationLocked || generation != expectedGeneration) return@post
             val walking = comparison.pedestrian.getOrNull()
             val cycling = comparison.cycleway.getOrNull()
             val samePreparedRoute = sameRoute(cachedPedestrianRoute, walking) &&
@@ -349,10 +398,10 @@ internal class StableLiveOfferAdvisor(
     }
 
     fun updateBoltRoute(outcome: AutomaticBoltRouteOutcome) {
-        if (dismissed || !LiveAdvisorSettings.enabled(service)) return
+        if (dismissed || finalPresentationLocked || !LiveAdvisorSettings.enabled(service)) return
         val expectedGeneration = generation
         handler.post {
-            if (dismissed || generation != expectedGeneration) return@post
+            if (dismissed || finalPresentationLocked || generation != expectedGeneration) return@post
             val comparison = outcome.comparison
             if (comparison == null) {
                 setDecisionUnavailable()
@@ -395,10 +444,10 @@ internal class StableLiveOfferAdvisor(
      * without pretending that we know separate walking/cycling legs.
      */
     fun updateHistoricalRouteDistance(routeMeters: Int) {
-        if (dismissed || routeMeters <= 0 || !LiveAdvisorSettings.enabled(service)) return
+        if (dismissed || finalPresentationLocked || routeMeters <= 0 || !LiveAdvisorSettings.enabled(service)) return
         val expectedGeneration = generation
         handler.post {
-            if (dismissed || generation != expectedGeneration) return@post
+            if (dismissed || finalPresentationLocked || generation != expectedGeneration) return@post
             val route = RouteResult(
                 provider = "history-cache",
                 profile = RouteProfile.CYCLEWAY_BIASED,
@@ -421,10 +470,10 @@ internal class StableLiveOfferAdvisor(
     }
 
     fun updateRouteUnavailable(reason: String) {
-        if (dismissed || !LiveAdvisorSettings.enabled(service)) return
+        if (dismissed || finalPresentationLocked || !LiveAdvisorSettings.enabled(service)) return
         val expectedGeneration = generation
         handler.post {
-            if (dismissed || generation != expectedGeneration) return@post
+            if (dismissed || finalPresentationLocked || generation != expectedGeneration) return@post
             // Ordinary offers never fall back to platform-distance profitability after a real route
             // failure. Wolt add-ons are different: their money and distance are already incremental,
             // while the Valhalla chain is the full remaining route, so keep the clearly-labelled
@@ -618,6 +667,9 @@ internal class StableLiveOfferAdvisor(
         cachedDecisionLine = LiveAdvisorPresentation.rateLine(decision)
         cachedDecisionBand = decision.band
         cachedDecisionLoading = false
+        // First trustworthy route verdict wins for this offer. Late GPS/geocoder/retry callbacks may
+        // still finish in the background, but they must never repaint the number or emoji mid-decision.
+        finalPresentationLocked = true
         applyDecisionPresentation()
     }
 
@@ -958,6 +1010,7 @@ internal class StableLiveOfferAdvisor(
         cachedDecisionLine = ""
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
         cachedDecisionLoading = true
+        finalPresentationLocked = false
         decisionThresholdSnapshot = null
         decisionThresholdPrewarmGeneration = -1L
         cachedRouteLine = ""

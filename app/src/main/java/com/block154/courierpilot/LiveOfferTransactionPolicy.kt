@@ -23,15 +23,17 @@ internal object LiveOfferTransactionPolicy {
         currentNotificationKey: String,
         incomingPackageName: String,
         incomingNotificationKey: String,
+        compatibleOfferEvidence: Boolean = false,
     ): Boolean {
         if (dismissed || !hasCurrentOffer || expectedPackageName != incomingPackageName) return false
 
-        // When both sides have a concrete offer token, a changed token is a hard transaction
-        // boundary even if Wolt/Bolt keeps exactly the same Activity and Compose window alive.
+        // A changed notification token is normally a transaction boundary, but Wolt can repost the
+        // same ringing offer under a fresh key. When the visible card itself still matches the
+        // current offer, the key is only a refreshed lifetime anchor and must not reset the card.
         if (currentNotificationKey.isNotBlank() && incomingNotificationKey.isNotBlank() &&
             currentNotificationKey != incomingNotificationKey
         ) {
-            return false
+            return compatibleOfferEvidence
         }
         return true
     }
