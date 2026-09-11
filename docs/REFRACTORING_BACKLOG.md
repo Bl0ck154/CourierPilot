@@ -35,7 +35,15 @@ Do not remove Wolt/Bolt parser branches just because they are marked `legacy`. C
 
 ## Phase 5 — storage and naming cleanup
 
-- Add screenshot retention controls and storage-size visibility.
-- Migrate `euroPerKilometer` to currency-neutral `moneyPerKilometer` without changing scoring semantics.
-- Split large accessibility and live-advisor classes into capture/state/routing/presentation pieces.
-- Define the minimum supported upgrade baseline before deleting one-shot database repair revisions.
+- [x] Add screenshot retention controls and storage-size visibility.
+- [x] Migrate `euroPerKilometer` to currency-neutral `moneyPerKilometer` without changing scoring semantics.
+- [ ] Split large accessibility and live-advisor classes into capture/state/routing/presentation pieces.
+  - [x] Extract low-level courier Accessibility window/tree traversal into `OfferAccessibilitySurface`.
+  - [x] Extract visible live-advisor tree inspection into `LiveAdvisorSurfaceInspector`.
+  - [ ] Extract Android screenshot acquisition/fallback/bitmap plumbing from `OfferAccessibilityService`; keep OCR, Wolt state and persistence policy outside it.
+  - [ ] Extract Wolt capture-session state/frame accumulation from `OfferAccessibilityService` after the screenshot boundary is stable.
+  - [ ] Extract overlay view/gesture rendering from `StableLiveOfferAdvisor`; keep offer lifetime and decision state in the advisor.
+  - [ ] Reassess whether the remaining route coordination needs another owner after those mechanical splits. Do not move route/scoring rules merely to satisfy a class-count target.
+- [ ] Define the minimum supported upgrade baseline before deleting one-shot database repair revisions.
+  - Current policy deliberately declares no minimum directly-upgradable historical version, so `AddressDataRepair` and `OfferDataRepair` remain supported compatibility code.
+  - Do not invent a baseline during cleanup. The product support decision and baseline-to-current replay coverage must exist first; see `docs/UPGRADE_SUPPORT_POLICY.md`.
