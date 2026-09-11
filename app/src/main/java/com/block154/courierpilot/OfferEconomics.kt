@@ -6,8 +6,8 @@ internal data class OfferEconomicsEstimate(
     val routeSeconds: Int,
     val restaurantWaitSeconds: Int,
     val handoffSeconds: Int,
-    val euroPerKilometer: Double,
-    val effectiveEuroPerHour: Double,
+    val moneyPerKilometer: Double,
+    val effectiveMoneyPerHour: Double,
     val personalizedWaitApplied: Boolean,
 )
 
@@ -24,7 +24,7 @@ internal object OfferEconomics {
         require(route.durationSeconds > 0)
         require(restaurantWaitSeconds >= 0)
         require(handoffSeconds >= 0)
-        val euros = priceCents / 100.0
+        val majorUnits = priceCents / 100.0
         val kilometers = route.distanceMeters / 1000.0
         val totalSeconds = route.durationSeconds + restaurantWaitSeconds + handoffSeconds
         return OfferEconomicsEstimate(
@@ -33,8 +33,8 @@ internal object OfferEconomics {
             route.durationSeconds,
             restaurantWaitSeconds,
             handoffSeconds,
-            euros / kilometers,
-            euros * 3600.0 / totalSeconds,
+            majorUnits / kilometers,
+            majorUnits * 3600.0 / totalSeconds,
             personalizedWaitApplied,
         )
     }
