@@ -86,6 +86,41 @@ class DashboardMoneyStatsTest {
         assertNull(day.averageMoneyPerKm)
     }
 
+    @Test
+    fun historicalDefaultEurMetadataCanBeRepairedOnlyFromExactRawMoneyEvidence() {
+        val oldBugRow = record(
+            capturedAt = 1_000_000L,
+            packageName = CourierSignals.BOLT_PACKAGE,
+            platform = "Bolt",
+            priceMinor = 1_234,
+            currencyCode = "EUR",
+            fractionDigits = 2,
+            distanceMeters = 2_000,
+            captureKey = "old-default",
+        ).copy(rawText = "£12.34\nAccept")
+        val actual = MoneyAmount(1_234L, "GBP", 2)
+
+        assertEquals(actual, OfferDataRepair.trustedHistoricalCurrencyMetadata(oldBugRow, actual))
+        assertNull(
+            OfferDataRepair.trustedHistoricalCurrencyMetadata(
+                oldBugRow,
+                MoneyAmount(1_235L, "GBP", 2),
+            )
+        )
+        assertNull(
+            OfferDataRepair.trustedHistoricalCurrencyMetadata(
+                oldBugRow.copy(rawText = "12.34\nAccept"),
+                actual,
+            )
+        )
+        assertNull(
+            OfferDataRepair.trustedHistoricalCurrencyMetadata(
+                oldBugRow.copy(currencyCode = "PLN"),
+                actual,
+            )
+        )
+    }
+
     private fun record(
         capturedAt: Long,
         packageName: String,
