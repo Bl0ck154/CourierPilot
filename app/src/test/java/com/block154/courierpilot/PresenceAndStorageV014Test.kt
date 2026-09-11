@@ -37,22 +37,29 @@ class PresenceAndStorageV014Test {
             .commit()
 
         val presence = CourierPresence.platformPresence(context, CourierSignals.BOLT_PACKAGE)
-
         assertEquals(PresenceSignal.UNKNOWN, presence.state)
         assertEquals("legacy persistent notification discarded", presence.source)
     }
 
     @Test
-    fun galleryScreenshotSavingIsOnByDefaultAndUserControlled() {
+    fun galleryScreenshotSavingAndRetentionAreUserControlled() {
         val context = RuntimeEnvironment.getApplication()
         context.getSharedPreferences("courierpilot_capture_storage", 0).edit().clear().commit()
 
         assertTrue(CaptureStorageSettings.saveOfferScreenshots(context))
+        assertEquals(90, CaptureStorageSettings.retentionDays(context))
+
         CaptureStorageSettings.setSaveOfferScreenshots(context, false)
         assertFalse(CaptureStorageSettings.saveOfferScreenshots(context))
         CaptureStorageSettings.setSaveOfferScreenshots(context, true)
         assertTrue(CaptureStorageSettings.saveOfferScreenshots(context))
+
+        CaptureStorageSettings.setRetentionDays(context, 30)
+        assertEquals(30, CaptureStorageSettings.retentionDays(context))
+        CaptureStorageSettings.setRetentionDays(context, CaptureStorageSettings.RETENTION_FOREVER)
+        assertEquals(0, CaptureStorageSettings.retentionDays(context))
     }
+
     @Test
     fun staleOnlineSignalStopsInflatingWorkTime() {
         val context = RuntimeEnvironment.getApplication()
@@ -92,7 +99,6 @@ class PresenceAndStorageV014Test {
         assertEquals(20L * 60L * 1000L, summary.totalMillis)
     }
 
-
     @Test
     fun nextOfferAfterLongGapStartsNewSessionInsteadOfBridgingIdleHours() {
         val context = RuntimeEnvironment.getApplication()
@@ -117,6 +123,4 @@ class PresenceAndStorageV014Test {
             summary.totalMillis,
         )
     }
-
-
 }
