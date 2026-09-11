@@ -1,7 +1,6 @@
 package com.block154.courierpilot
 
 import android.content.Context
-import android.widget.Toast
 
 /**
  * Learns local delivery context for customer buildings seen in the courier apps.
@@ -174,6 +173,7 @@ internal object DeliveryMemory {
         val currentOrderShowsAccessInfo = observations.isNotEmpty() ||
             AccessCodeHintPolicy.screenContainsAccessCodeInfo(text)
         if (currentOrderShowsAccessInfo) {
+            ArrivalAccessHintMonitor.cancelAll(context)
             AccessCodeSuggestions.clear(context)
             deliveryKeys.forEach { AccessCodeNotificationGate.consume(context, it) }
             observations.forEach { observation ->
@@ -227,27 +227,19 @@ internal object DeliveryMemory {
                 platform = platform,
                 updatedAt = System.currentTimeMillis(),
             )
-            AccessCodeSuggestions.save(context, suggestion)
-
-            if (AccessCodeNotificationGate.claim(context, deliveryKey)) {
-                AccessCodeNotifier.show(context, suggestion)
-                Toast.makeText(
-                    context,
-                    "Possible door code · ${canonical.second}: ${known.joinToString(" / ")}",
-                    Toast.LENGTH_LONG,
-                ).show()
-                CaptureEventLog.append(
-                    context,
-                    stage = "access_code_match",
-                    platform = platform,
-                    message = "Possible historical building access code matched locally",
-                    dedupeWindowMs = 30_000L,
-                )
-            }
+            ArrivalAccessHintMonitor.arm(
+                context = context,
+                deliveryKey = deliveryKey,
+                buildingKey = canonical.first,
+                suggestion = suggestion,
+            )
             matched = true
             break
         }
-        if (!matched && detectedAddresses.isNotEmpty()) AccessCodeSuggestions.clear(context)
+        if (!matched && detectedAddresses.isNotEmpty()) {
+            ArrivalAccessHintMonitor.cancelUnless(context, deliveryKeys)
+            AccessCodeSuggestions.clear(context)
+        }
     }
 
     private fun usableHistoricalCodes(
