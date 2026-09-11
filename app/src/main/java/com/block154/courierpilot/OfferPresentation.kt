@@ -8,6 +8,7 @@ internal object OfferPresentation {
         val candidates = (record.merchantNames + listOfNotNull(record.restaurant))
             .map(::cleanMerchant)
             .filter(::isCredibleMerchant)
+            .filterNot(::isGenericMerchantArtifact)
             .filterNot(BoltOfferTextSanitizer::isOrphanBranchFragment)
             .filterNot { record.packageName == CourierSignals.WOLT_PACKAGE && WoltOfferUiText.isMerchantUiNoise(it) }
             .distinctBy { it.lowercase(Locale.ROOT) }
@@ -70,6 +71,7 @@ internal object OfferPresentation {
     private fun isRecoverableMerchant(value: String): Boolean {
         val clean = cleanMerchant(value)
         if (!isCredibleMerchant(clean)) return false
+        if (isGenericMerchantArtifact(clean)) return false
         if (BoltOfferTextSanitizer.isOrphanBranchFragment(clean)) return false
         if (WoltOfferUiText.isMerchantUiNoise(clean)) return false
         if (MarketCurrencyParser.containsMoney(clean)) return false
@@ -77,10 +79,16 @@ internal object OfferPresentation {
         if (WoltOfferUiText.collapsedMultipleDropoffsRegex.matches(clean)) return false
         if (WoltOfferUiText.standaloneMultipleDropoffsRegex.matches(clean)) return false
         if (WoltOfferUiText.singleCustomerDropoffRegex.matches(clean)) return false
-        val lower = clean.lowercase(Locale.ROOT)
-        if (lower in RECOVERY_UI_LINES) return false
         if (Regex("(?iu)^\\+?\\s*\\d+(?:[.,]\\d+)?\\s*(?:km|m|min|stops?)\\b.*$").matches(clean)) return false
         return true
+    }
+
+    private fun isGenericMerchantArtifact(value: String): Boolean {
+        val lower = value.lowercase(Locale.ROOT).trim()
+        if (lower in RECOVERY_UI_LINES) return true
+        if (lower == "customer") return true
+        if (lower.startsWith("pickup ·") || lower.startsWith("pickup -")) return true
+        return false
     }
 
     private fun isRecoveryBoundary(value: String): Boolean {
