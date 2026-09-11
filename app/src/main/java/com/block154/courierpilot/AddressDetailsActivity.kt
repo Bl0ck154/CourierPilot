@@ -58,7 +58,7 @@ class AddressDetailsActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val addressId = intent.getLongExtra(EXTRA_ADDRESS_ID, -1L)
-        val notificationCodes = intent.getStringArrayListExtra(EXTRA_ACCESS_CODES)
+        val initialNotificationCodes = intent.getStringArrayListExtra(EXTRA_ACCESS_CODES)
             .orEmpty()
             .map(String::trim)
             .filter(String::isNotEmpty)
@@ -67,8 +67,11 @@ class AddressDetailsActivity : ComponentActivity() {
             CourierPilotTheme {
                 var loaded by remember(addressId) { mutableStateOf(false) }
                 var data by remember(addressId) { mutableStateOf<AddressDetailsData?>(null) }
+                var notificationCodes by remember(addressId) { mutableStateOf(initialNotificationCodes) }
                 var showDeleteConfirmation by remember { mutableStateOf(false) }
                 var deleting by remember { mutableStateOf(false) }
+                var codePendingDelete by remember { mutableStateOf<AddressCodeSummary?>(null) }
+                var deletingCode by remember { mutableStateOf(false) }
                 val scope = rememberCoroutineScope()
 
                 LaunchedEffect(addressId) {
@@ -93,6 +96,7 @@ class AddressDetailsActivity : ComponentActivity() {
                             onBack = ::finish,
                             onMap = { openAddressInMaps(current.address.displayAddress) },
                             onDelete = { showDeleteConfirmation = true },
+                            onDeleteCode = { codePendingDelete = it },
                         )
 
                         if (showDeleteConfirmation) {
@@ -132,6 +136,64 @@ class AddressDetailsActivity : ComponentActivity() {
                                     TextButton(
                                         onClick = { showDeleteConfirmation = false },
                                         enabled = !deleting,
+                                    ) {
+                                        Text("Cancel")
+                                    }
+                                },
+                            )
+                        }
+
+                        codePendingDelete?.let { code ->
+                            AlertDialog(
+                                onDismissRequest = { if (!deletingCode) codePendingDelete = null },
+                                icon = { Icon(Icons.Rounded.Delete, contentDescription = null) },
+                                title = { Text("Delete saved access hint?") },
+                                text = {
+                                    Text(
+                                        "${code.code} · ${current.address.displayAddress}\n\n" +
+                                            "CourierPilot will stop using this code as a historical reminder. " +
+                                            "The raw delivery-screen history is kept for source attribution. " +
+                                            "If the same code appears again on a future delivery screen, it can be learned again."
+                                    )
+                                },
+                                confirmButton = {
+                                    TextButton(
+                                        onClick = {
+                                            if (deletingCode) return@TextButton
+                                            deletingCode = true
+                                            scope.launch {
+                                                val deleted = withContext(Dispatchers.IO) {
+                                                    AccessCodeDeletion.delete(
+                                                        database = current.meta,
+                                                        buildingKey = current.address.buildingKey,
+                                                        code = code.code,
+                                                    )
+                                                }
+                                                if (deleted > 0) {
+                                                    AccessCodeSuggestions.clear(this@AddressDetailsActivity)
+                                                    notificationCodes = notificationCodes.filterNot { notificationCode ->
+                                                        AccessCodeDeletion.equivalent(notificationCode, code.code)
+                                                    }
+                                                    data = withContext(Dispatchers.IO) {
+                                                        loadAddressDetails(this@AddressDetailsActivity, addressId)
+                                                    }
+                                                }
+                                                deletingCode = false
+                                                codePendingDelete = null
+                                            }
+                                        },
+                                        enabled = !deletingCode,
+                                    ) {
+                                        Text(
+                                            if (deletingCode) "Deleting…" else "Delete hint",
+                                            color = MaterialTheme.colorScheme.error,
+                                        )
+                                    }
+                                },
+                                dismissButton = {
+                                    TextButton(
+                                        onClick = { codePendingDelete = null },
+                                        enabled = !deletingCode,
                                     ) {
                                         Text("Cancel")
                                     }
@@ -214,6 +276,7 @@ private fun AddressDetailsScreen(
     onBack: () -> Unit,
     onMap: () -> Unit,
     onDelete: () -> Unit,
+    onDeleteCode: (AddressCodeSummary) -> Unit,
 ) {
     var customersExpanded by remember(address.id) { mutableStateOf(false) }
     val visibleCustomers = if (customersExpanded) customers else customers.take(COLLAPSED_CUSTOMER_COUNT)
@@ -309,7 +372,7 @@ private fun AddressDetailsScreen(
             item {
                 AddressSection(
                     "Possible access hints",
-                    "Derived from saved screens; apartment-like legacy values are filtered out",
+                    "Derived from saved screens. Remove an outdated hint with the trash button.",
                 )
             }
             items(codes, key = { "code-${it.key}" }) { code ->
@@ -317,6 +380,7 @@ private fun AddressDetailsScreen(
                     title = code.code,
                     subtitle = "${code.platforms.joinToString(" + ")} · seen ${code.seenCount}× · ${addressDate(code.lastSeenAt)}",
                     titleSize = 18,
+                    onDelete = { onDeleteCode(code) },
                 )
             }
         }
@@ -433,18 +497,33 @@ private fun CompactMemoryRow(
     title: String,
     subtitle: String,
     titleSize: Int = 15,
+    onDelete: (() -> Unit)? = null,
 ) {
     Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp)) {
-            Text(title, fontWeight = FontWeight.SemiBold, fontSize = titleSize.sp)
-            Spacer(Modifier.height(2.dp))
-            Text(
-                subtitle,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 11.sp,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
+        Row(
+            Modifier.fillMaxWidth().padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
+                Text(title, fontWeight = FontWeight.SemiBold, fontSize = titleSize.sp)
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    subtitle,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (onDelete != null) {
+                IconButton(onClick = onDelete) {
+                    Icon(
+                        Icons.Rounded.Delete,
+                        contentDescription = "Delete saved access hint",
+                        tint = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
         }
     }
 }
