@@ -42,16 +42,28 @@ jobs:
           set -euo pipefail
           APK="app/build/outputs/apk/debug/app-debug.apk"
           adb install -r "$APK"
+          # Avoid the Android 13+ notification permission dialog masking the real launcher path.
+          adb shell pm grant com.block154.courierpilot android.permission.POST_NOTIFICATIONS || true
           adb logcat -c
           set +e
-          adb shell am start -W -n com.block154.courierpilot/.CourierPilotActivity | tee /tmp/start.txt
+          adb shell am start -W -n com.block154.courierpilot/.AppUpdateLauncherActivity | tee /tmp/start.txt
           START_RC=${PIPESTATUS[0]}
           set -e
-          sleep 3
+
+          DASHBOARD_READY=0
+          for i in $(seq 1 20); do
+            if adb shell dumpsys activity activities | grep -q "com.block154.courierpilot/.CourierPilotDashboardActivity"; then
+              DASHBOARD_READY=1
+              break
+            fi
+            sleep 1
+          done
+
           PID="$(adb shell pidof com.block154.courierpilot | tr -d '\r')"
-          if [ "$START_RC" -ne 0 ] || [ -z "$PID" ]; then
-            echo "CourierPilot failed to remain running after launcher start"
+          if [ "$START_RC" -ne 0 ] || [ -z "$PID" ] || [ "$DASHBOARD_READY" -ne 1 ]; then
+            echo "CourierPilot failed to reach the dashboard through the real launcher"
+            adb shell dumpsys activity activities >&2 || true
             adb logcat -d -v threadtime '*:S' AndroidRuntime:E ActivityTaskManager:E >&2 || true
             exit 1
           fi
-          echo "CourierPilot running as PID $PID"
+          echo "CourierPilot dashboard running as PID $PID"
