@@ -1,30 +1,13 @@
 package com.block154.courierpilot
 
 import android.accessibilityservice.AccessibilityService
-import android.content.Context
-import android.content.res.ColorStateList
-import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.speech.tts.TextToSpeech
-import android.view.Gravity
-import android.view.MotionEvent
-import android.view.View
-import android.view.ViewConfiguration
-import android.view.WindowManager
-import android.view.animation.AccelerateInterpolator
-import android.view.animation.DecelerateInterpolator
 import android.view.accessibility.AccessibilityNodeInfo
-import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.ProgressBar
-import android.widget.TextView
 import java.util.Locale
 import java.util.concurrent.Executors
-import kotlin.math.abs
 
 /**
  * Stable live card: the shell appears first with profitability data, then routing updates the same
@@ -34,16 +17,15 @@ internal class StableLiveOfferAdvisor(
     private val service: AccessibilityService,
 ) {
     private val handler = Handler(Looper.getMainLooper())
-    private val windowManager = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-    private val touchSlop = ViewConfiguration.get(service).scaledTouchSlop
     private val surfaceInspector = LiveAdvisorSurfaceInspector(service)
-
-    private var root: LinearLayout? = null
-    private var windowParams: WindowManager.LayoutParams? = null
-    private var decisionContainer: FrameLayout? = null
-    private var decisionText: TextView? = null
-    private var decisionSpinner: ProgressBar? = null
-    private var routeText: TextView? = null
+    private val overlayView by lazy {
+        LiveAdvisorOverlayView(
+            service = service,
+            onDismiss = ::dismissCurrentOfferByUser,
+            onGestureFinished = ::flushDeferredCourierWindowCheck,
+            platformProvider = { currentPlatform },
+        )
+    }
 
     private var currentPlatform = ""
     private var currentParsed: ParsedOffer? = null
@@ -59,7 +41,6 @@ internal class StableLiveOfferAdvisor(
     private var boltBaselineSurface: LiveOfferSurfaceSnapshot? = null
     private var woltBaselineSurface: LiveOfferSurfaceSnapshot? = null
     private var previewMode = false
-    private var captureSuppressed = false
     private var offerVisualStartedAtElapsed = 0L
 
     private data class DecisionThresholdSnapshot(
@@ -81,34 +62,6 @@ internal class StableLiveOfferAdvisor(
     private val differentOfferConfirmation = OfferDifferenceConfirmation()
     private val woltHomeEndConfirmation = WoltHomeEndConfirmation()
 
-    private var gestureDownX = 0f
-    private var gestureDownY = 0f
-    private var gestureStartY = 0
-    private var gesturePendingY = 0
-    private var gestureMode = GESTURE_NONE
-    private var gestureTouchActive = false
-    private var gestureStartedAtElapsed = 0L
-    private var gestureLastMoveAtElapsed = 0L
-    private var gestureMoveEvents = 0
-    private var gestureMaxMoveGapMs = 0L
-    private var gestureWindowRelayouts = 0
-    private var gestureFrameMoveScheduled = false
-    private var gestureLastWindowRelayoutAtElapsed = 0L
-    private val gestureWindowMoveRunnable = object : Runnable {
-        override fun run() {
-            gestureFrameMoveScheduled = false
-            val view = root ?: return
-            if (!gestureTouchActive || gestureMode != GESTURE_VERTICAL) return
-            val now = SystemClock.elapsedRealtime()
-            val sinceLast = now - gestureLastWindowRelayoutAtElapsed
-            if (sinceLast in 0 until GESTURE_WINDOW_RELAYOUT_MIN_INTERVAL_MS) {
-                gestureFrameMoveScheduled = true
-                view.postOnAnimationDelayed(this, GESTURE_WINDOW_RELAYOUT_MIN_INTERVAL_MS - sinceLast)
-                return
-            }
-            applyPendingVerticalWindowPosition(view)
-        }
-    }
     private var courierEventCheckScheduled = false
     private var courierEventCheckDeferred = false
     private var latestObservedPackage = ""
@@ -117,7 +70,7 @@ internal class StableLiveOfferAdvisor(
 
     private val courierWindowCheck = Runnable {
         courierEventCheckScheduled = false
-        if (gestureTouchActive) {
+        if (overlayView.isGestureTouchActive) {
             courierEventCheckDeferred = true
             return@Runnable
         }
@@ -133,7 +86,7 @@ internal class StableLiveOfferAdvisor(
             if (dismissed || currentParsed == null) return
             // Accessibility tree inspection is relatively expensive on Compose-heavy Wolt screens.
             // Never compete with touch delivery while the courier is physically dragging the card.
-            if (!gestureTouchActive) checkOfferStillVisible()
+            if (!overlayView.isGestureTouchActive) checkOfferStillVisible()
             if (!dismissed && currentParsed != null) {
                 handler.postDelayed(this, if (temporarilyHidden) HIDDEN_VISIBILITY_CHECK_MS else VISIBILITY_CHECK_MS)
             }
@@ -201,7 +154,7 @@ internal class StableLiveOfferAdvisor(
         if (!temporarilyHidden) {
             ensureView()
             applyCachedPresentation()
-            if (createdSurface && root != null) {
+            if (createdSurface && overlayView.isAttached) {
                 CaptureEventLog.append(
                     service,
                     stage = "overlay_preview",
@@ -302,7 +255,7 @@ internal class StableLiveOfferAdvisor(
             if (cachedRouteLine.isBlank()) renderRouteLoadingState()
             if (!temporarilyHidden) {
                 ensureView()
-                if (root != null) {
+                if (overlayView.isAttached) {
                     applyCachedPresentation()
                     CaptureEventLog.append(
                         service,
@@ -390,7 +343,7 @@ internal class StableLiveOfferAdvisor(
                 service,
                 stage = "route_ready",
                 platform = currentPlatform,
-                message = "Route updated cached card; points=$waypointCount; visible=${root != null}; card_age_ms=${(SystemClock.elapsedRealtime() - offerVisualStartedAtElapsed).coerceAtLeast(0L)}",
+                message = "Route updated cached card; points=$waypointCount; visible=${overlayView.isAttached}; card_age_ms=${(SystemClock.elapsedRealtime() - offerVisualStartedAtElapsed).coerceAtLeast(0L)}",
             )
         }
     }
@@ -501,7 +454,7 @@ internal class StableLiveOfferAdvisor(
 
     fun onCourierWindowEvent(packageName: String) {
         if (dismissed || currentParsed == null || packageName != expectedPackageName) return
-        if (gestureTouchActive) {
+        if (overlayView.isGestureTouchActive) {
             courierEventCheckDeferred = true
             return
         }
@@ -541,7 +494,7 @@ internal class StableLiveOfferAdvisor(
     }
 
     fun suppressCurrentOffer(reason: String = "superseded", animate: Boolean = true) {
-        if (!dismissed || root != null) {
+        if (!dismissed || overlayView.isAttached) {
             CaptureEventLog.append(
                 service,
                 stage = "overlay_hide",
@@ -686,225 +639,24 @@ internal class StableLiveOfferAdvisor(
     private fun setRouteContent(text: String, visible: Boolean = true) {
         cachedRouteLine = text
         cachedRouteVisible = visible
-        routeText?.apply {
-            visibility = if (visible) View.VISIBLE else View.INVISIBLE
-            this.text = text
-        }
+        overlayView.applyRoute(text, visible)
     }
 
     private fun applyCachedPresentation() {
         applyDecisionPresentation()
-        routeText?.apply {
-            visibility = if (cachedRouteVisible) View.VISIBLE else View.INVISIBLE
-            text = cachedRouteLine
-        }
+        overlayView.applyRoute(cachedRouteLine, cachedRouteVisible)
     }
 
     private fun applyDecisionPresentation() {
-        val loading = cachedDecisionLoading
-        decisionSpinner?.visibility = if (loading) View.VISIBLE else View.GONE
-        decisionText?.apply {
-            visibility = if (loading) View.INVISIBLE else View.VISIBLE
-            text = cachedDecisionLine
-            setTextColor(decisionColor(cachedDecisionBand))
-            when (cachedDecisionBand) {
-                OfferDecisionBand.FIRE -> setShadowLayer(dp(5).toFloat(), 0f, 0f, Color.argb(210, 255, 112, 38))
-                OfferDecisionBand.GOOD -> setShadowLayer(dp(3).toFloat(), 0f, 0f, Color.argb(120, 52, 211, 153))
-                OfferDecisionBand.OK -> setShadowLayer(dp(2).toFloat(), 0f, 0f, Color.argb(75, 245, 158, 11))
-                else -> setShadowLayer(0f, 0f, 0f, Color.TRANSPARENT)
-            }
-        }
-        // Keep the primary €/km value visually open; verdict is communicated by text color/glow.
-        decisionContainer?.background = null
+        overlayView.applyDecision(cachedDecisionLine, cachedDecisionBand, cachedDecisionLoading)
     }
 
-    private fun ensureView() {
-        if (root != null) return
+    private fun ensureView() = overlayView.ensure()
 
-        val container = LinearLayout(service).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(10), dp(5), dp(10), dp(7))
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(12).toFloat()
-                setColor(Color.argb(210, 15, 23, 36))
-                setStroke(dp(1), Color.argb(105, 71, 85, 105))
-            }
-            elevation = dp(9).toFloat()
-        }
-        installGestureSurface(container)
-
-        val topRow = LinearLayout(service).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        installGestureSurface(topRow)
-
-        val title = TextView(service).apply {
-            text = "CourierPilot · ${BuildConfig.VERSION_NAME}"
-            setTextColor(Color.rgb(148, 163, 184))
-            textSize = 9.5f
-            includeFontPadding = false
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-        }
-        installGestureSurface(title)
-        topRow.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-
-        topRow.addView(TextView(service).apply {
-            text = "×"
-            setTextColor(Color.rgb(148, 163, 184))
-            textSize = 17f
-            includeFontPadding = false
-            gravity = Gravity.CENTER
-            setPadding(dp(8), 0, 0, 0)
-            setOnClickListener { dismissCurrentOfferByUser("closed by user") }
-        })
-        container.addView(topRow)
-
-        val mainRow = LinearLayout(service).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(2), 0, 0)
-        }
-        installGestureSurface(mainRow)
-
-        routeText = TextView(service).apply {
-            setTextColor(Color.rgb(190, 200, 214))
-            textSize = 11.5f
-            includeFontPadding = false
-            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-            gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            maxLines = 2
-        }.also { view ->
-            installGestureSurface(view)
-            mainRow.addView(
-                view,
-                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginEnd = dp(8)
-                },
-            )
-        }
-
-        val rateFrame = FrameLayout(service).apply {
-            minimumWidth = dp(RATE_MIN_WIDTH_DP)
-            minimumHeight = dp(RATE_MIN_HEIGHT_DP)
-            background = null
-        }
-        installGestureSurface(rateFrame)
-        decisionContainer = rateFrame
-
-        decisionText = TextView(service).apply {
-            textSize = 24f
-            includeFontPadding = false
-            typeface = Typeface.create("monospace", Typeface.BOLD)
-            gravity = Gravity.END or Gravity.CENTER_VERTICAL
-            setPadding(dp(9), dp(3), dp(9), dp(3))
-            maxLines = 1
-        }.also { view ->
-            installGestureSurface(view)
-            rateFrame.addView(
-                view,
-                FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    Gravity.END or Gravity.CENTER_VERTICAL,
-                ),
-            )
-        }
-
-        decisionSpinner = ProgressBar(service, null, android.R.attr.progressBarStyleSmall).apply {
-            isIndeterminate = true
-            indeterminateTintList = ColorStateList.valueOf(Color.rgb(148, 163, 184))
-        }.also { spinner ->
-            rateFrame.addView(
-                spinner,
-                FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER),
-            )
-        }
-
-        mainRow.addView(
-            rateFrame,
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(RATE_MIN_HEIGHT_DP)),
-        )
-        container.addView(mainRow)
-
-        val screenWidth = service.resources.displayMetrics.widthPixels
-        val params = WindowManager.LayoutParams(
-            (screenWidth - dp(HORIZONTAL_MARGIN_DP * 2)).coerceAtLeast(1),
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
-            android.graphics.PixelFormat.TRANSLUCENT,
-        ).apply {
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            x = 0
-            y = LiveAdvisorSettings.overlayYPx(service) ?: dp(DEFAULT_Y_DP)
-        }
-        windowParams = params
-
-        runCatching { windowManager.addView(container, params) }
-            .onSuccess {
-                root = container
-                captureSuppressed = false
-                container.alpha = 0f
-                container.translationY = -dp(FADE_OFFSET_DP).toFloat()
-                container.animate()
-                    .alpha(1f)
-                    .translationY(0f)
-                    .setInterpolator(DecelerateInterpolator())
-                    .setDuration(FADE_IN_MS)
-                    .start()
-                container.post {
-                    val current = windowParams ?: return@post
-                    current.y = clampY(current.y, container)
-                    runCatching { windowManager.updateViewLayout(container, current) }
-                }
-            }
-            .onFailure { error ->
-                decisionContainer = null
-                decisionText = null
-                decisionSpinner = null
-                routeText = null
-                windowParams = null
-                CaptureEventLog.append(
-                    service,
-                    stage = "overlay_add_failed",
-                    platform = currentPlatform,
-                    message = "${error.javaClass.simpleName}: ${error.message.orEmpty()}",
-                )
-            }
-    }
-
-    private fun detachView(animate: Boolean = true) {
-        val view = root
-        root = null
-        windowParams = null
-        decisionContainer = null
-        decisionText = null
-        decisionSpinner = null
-        routeText = null
-        gestureMode = GESTURE_NONE
-        captureSuppressed = false
-        if (view == null) return
-        view.animate().cancel()
-        if (!animate || !view.isAttachedToWindow) {
-            runCatching { windowManager.removeView(view) }
-            return
-        }
-        view.animate()
-            .alpha(0f)
-            .translationY(-dp(FADE_OFFSET_DP).toFloat())
-            .setInterpolator(AccelerateInterpolator())
-            .setDuration(FADE_OUT_MS)
-            .withEndAction { runCatching { windowManager.removeView(view) } }
-            .start()
-    }
+    private fun detachView(animate: Boolean = true) = overlayView.detach(animate)
 
     /** Lightweight main-thread state used by capture polling to avoid competing with a finger drag. */
-    fun isGestureTouchActive(): Boolean = gestureTouchActive
+    fun isGestureTouchActive(): Boolean = overlayView.isGestureTouchActive
 
     /**
      * Keep Wolt visible during display fallback captures. Before price the card contains no money
@@ -912,32 +664,12 @@ internal class StableLiveOfferAdvisor(
      * flicker on Realme/ColorOS. Bolt keeps the conservative suppression path because its OCR is more
      * spatially fragile on Android versions that cannot capture a single app window.
      */
-    fun setCaptureSuppressed(suppressed: Boolean) {
-        if (!LiveAdvisorCapturePolicy.shouldSuppressOverlay(currentPlatform)) {
-            captureSuppressed = false
-            root?.apply {
-                animate().cancel()
-                translationY = 0f
-                alpha = 1f
-            }
-            return
-        }
-        if (captureSuppressed == suppressed) return
-        captureSuppressed = suppressed
-        val view = root ?: return
-        view.animate().cancel()
-        if (suppressed) {
-            view.alpha = 0f
-        } else {
-            view.translationY = 0f
-            view.alpha = 1f
-        }
-    }
+    fun setCaptureSuppressed(suppressed: Boolean) = overlayView.setCaptureSuppressed(suppressed)
 
     private fun temporarilyHide(reason: String) {
         if (dismissed || currentParsed == null) return
         val firstHide = !temporarilyHidden
-        if (firstHide || root != null) {
+        if (firstHide || overlayView.isAttached) {
             CaptureEventLog.append(
                 service,
                 stage = "overlay_suspend",
@@ -971,7 +703,7 @@ internal class StableLiveOfferAdvisor(
         val pending = OfferState.pending(service)
         if (pending != null && pending.packageName == expectedPackageName && !previewMode) return
         ensureView()
-        if (root == null) return
+        if (!overlayView.isAttached) return
         temporarilyHidden = false
         temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
         applyCachedPresentation()
@@ -990,15 +722,12 @@ internal class StableLiveOfferAdvisor(
         handler.removeCallbacks(courierWindowCheck)
         courierEventCheckScheduled = false
         courierEventCheckDeferred = false
-        root?.removeCallbacks(gestureWindowMoveRunnable)
-        gestureFrameMoveScheduled = false
-        gestureTouchActive = false
+        overlayView.resetInteraction()
         detachView(animate = animate)
         resetMissingEvidence()
         boltBaselineSurface = null
         woltBaselineSurface = null
         previewMode = false
-        captureSuppressed = false
         temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
         offerVisualStartedAtElapsed = 0L
         currentParsed = null
@@ -1019,15 +748,6 @@ internal class StableLiveOfferAdvisor(
         latestObservedText = ""
         latestObservedAtElapsed = 0L
         differentOfferConfirmation.reset()
-    }
-
-    private fun decisionColor(band: OfferDecisionBand): Int = when (band) {
-        OfferDecisionBand.FIRE -> Color.rgb(255, 139, 61)
-        OfferDecisionBand.GOOD -> Color.rgb(110, 231, 183)
-        OfferDecisionBand.OK -> Color.rgb(245, 190, 72)
-        OfferDecisionBand.BAD -> Color.rgb(177, 143, 128)
-        OfferDecisionBand.TERRIBLE -> Color.rgb(121, 132, 148)
-        OfferDecisionBand.UNKNOWN -> Color.rgb(190, 200, 214)
     }
 
     private fun sameRoute(previous: RouteResult?, current: RouteResult?): Boolean = when {
@@ -1365,144 +1085,10 @@ internal class StableLiveOfferAdvisor(
 
     private fun hasDecisionPair(text: String): Boolean = surfaceInspector.hasDecisionPair(text)
 
-    private fun installGestureSurface(view: View) {
-        view.isClickable = true
-        view.setOnTouchListener { _, event -> handleGesture(event) }
-    }
-
-    private fun handleGesture(event: MotionEvent): Boolean {
-        val view = root
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                gestureDownX = event.rawX
-                gestureDownY = event.rawY
-                gestureStartY = windowParams?.y ?: dp(DEFAULT_Y_DP)
-                gesturePendingY = gestureStartY
-                gestureMode = GESTURE_NONE
-                gestureTouchActive = true
-                gestureStartedAtElapsed = SystemClock.elapsedRealtime()
-                gestureLastMoveAtElapsed = gestureStartedAtElapsed
-                gestureMoveEvents = 0
-                gestureMaxMoveGapMs = 0L
-                gestureWindowRelayouts = 0
-                gestureLastWindowRelayoutAtElapsed = 0L
-                view?.removeCallbacks(gestureWindowMoveRunnable)
-                gestureFrameMoveScheduled = false
-                view?.animate()?.cancel()
-                view?.translationX = 0f
-                view?.translationY = 0f
-                view?.alpha = 1f
-            }
-            MotionEvent.ACTION_MOVE -> {
-                val now = SystemClock.elapsedRealtime()
-                if (gestureMoveEvents > 0) {
-                    gestureMaxMoveGapMs = maxOf(gestureMaxMoveGapMs, now - gestureLastMoveAtElapsed)
-                }
-                gestureLastMoveAtElapsed = now
-                gestureMoveEvents++
-
-                val dx = event.rawX - gestureDownX
-                val dy = event.rawY - gestureDownY
-                if (gestureMode == GESTURE_NONE) {
-                    gestureMode = when (OverlayGestureAxisPolicy.classify(dx, dy, touchSlop)) {
-                        OverlayGestureAxis.HORIZONTAL -> GESTURE_HORIZONTAL
-                        OverlayGestureAxis.VERTICAL -> GESTURE_VERTICAL
-                        null -> GESTURE_NONE
-                    }
-                }
-                if (gestureMode == GESTURE_HORIZONTAL) {
-                    view?.translationX = dx
-                    view?.alpha = (1f - abs(dx) / ((view?.width ?: 1).coerceAtLeast(1) * 1.1f)).coerceIn(0.3f, 1f)
-                } else if (gestureMode == GESTURE_VERTICAL && view != null) {
-                    // Move the actual overlay window, not the card inside a fixed-size window.
-                    // A translated child is clipped by the window bounds and looks like it is
-                    // disappearing behind an invisible wall. Coalesce relayouts to roughly 60 Hz
-                    // so high-rate touch streams cannot spam WindowManager.
-                    gesturePendingY = clampY(gestureStartY + dy.toInt(), view)
-                    scheduleVerticalWindowMove(view)
-                }
-            }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                val dx = event.rawX - gestureDownX
-                val dy = event.rawY - gestureDownY
-                val mode = gestureMode
-                view?.removeCallbacks(gestureWindowMoveRunnable)
-                gestureFrameMoveScheduled = false
-                gestureMode = GESTURE_NONE
-                gestureTouchActive = false
-                if (mode == GESTURE_HORIZONTAL) {
-                    val threshold = maxOf(dp(SWIPE_MIN_DP).toFloat(), (view?.width ?: 1) * SWIPE_FRACTION)
-                    if (event.actionMasked == MotionEvent.ACTION_UP && abs(dx) >= threshold) {
-                        logGesturePerformance(mode, dy, event.actionMasked == MotionEvent.ACTION_CANCEL)
-                        flushDeferredCourierWindowCheck()
-                        dismissCurrentOfferByUser("swiped by user")
-                        return true
-                    }
-                    view?.animate()?.translationX(0f)?.alpha(1f)?.setDuration(SNAP_BACK_MS)?.start()
-                } else if (mode == GESTURE_VERTICAL) {
-                    commitVerticalDrag(gesturePendingY)
-                }
-                logGesturePerformance(mode, dy, event.actionMasked == MotionEvent.ACTION_CANCEL)
-                flushDeferredCourierWindowCheck()
-            }
-        }
-        return true
-    }
-
     private fun flushDeferredCourierWindowCheck() {
         if (!courierEventCheckDeferred) return
         courierEventCheckDeferred = false
         scheduleCourierWindowCheck(0L)
-    }
-
-    private fun logGesturePerformance(mode: Int, dy: Float, cancelled: Boolean) {
-        if (mode == GESTURE_NONE || gestureStartedAtElapsed <= 0L) return
-        val durationMs = (SystemClock.elapsedRealtime() - gestureStartedAtElapsed).coerceAtLeast(0L)
-        val axis = if (mode == GESTURE_VERTICAL) "vertical" else "horizontal"
-        val distanceDp = (abs(dy) / service.resources.displayMetrics.density).toInt()
-        CaptureEventLog.append(
-            service,
-            stage = "overlay_drag",
-            platform = currentPlatform,
-            message = "axis=$axis; duration_ms=$durationMs; moves=$gestureMoveEvents; max_move_gap_ms=$gestureMaxMoveGapMs; window_relayouts=$gestureWindowRelayouts; distance_dp=$distanceDp; cancelled=$cancelled",
-            dedupeWindowMs = 250L,
-        )
-    }
-
-    private fun scheduleVerticalWindowMove(view: View) {
-        if (gestureFrameMoveScheduled) return
-        gestureFrameMoveScheduled = true
-        view.postOnAnimation(gestureWindowMoveRunnable)
-    }
-
-    private fun applyPendingVerticalWindowPosition(view: View? = root) {
-        val targetView = view ?: return
-        val params = windowParams ?: return
-        val targetY = clampY(gesturePendingY, targetView)
-        if (params.y == targetY) return
-        params.y = targetY
-        runCatching { windowManager.updateViewLayout(targetView, params) }
-            .onSuccess {
-                gestureWindowRelayouts += 1
-                gestureLastWindowRelayoutAtElapsed = SystemClock.elapsedRealtime()
-            }
-    }
-
-    private fun commitVerticalDrag(targetY: Int) {
-        val view = root ?: return
-        val params = windowParams ?: return
-        val finalY = clampY(targetY, view)
-        gesturePendingY = finalY
-        if (params.y != finalY) applyPendingVerticalWindowPosition(view)
-        view.translationY = 0f
-        gestureStartY = finalY
-        LiveAdvisorSettings.setOverlayYPx(service, finalY)
-    }
-
-    private fun clampY(targetY: Int, view: View): Int {
-        val min = dp(MIN_Y_DP)
-        val max = (service.resources.displayMetrics.heightPixels - view.height - dp(BOTTOM_MARGIN_DP)).coerceAtLeast(min)
-        return targetY.coerceIn(min, max)
     }
 
     private fun baseSpeech(platform: String, parsed: ParsedOffer): String {
@@ -1538,8 +1124,6 @@ internal class StableLiveOfferAdvisor(
         else -> ""
     }
 
-    private fun dp(value: Int): Int = (value * service.resources.displayMetrics.density).toInt()
-
     private companion object {
         val SCORE_PREWARM_EXECUTOR = Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "CourierPilot-ScorePrewarm").apply { isDaemon = true }
@@ -1557,24 +1141,8 @@ internal class StableLiveOfferAdvisor(
         const val WOLT_NAVIGATION_MIN_MISSING_CHECKS = 2
         const val REMOVED_NOTIFICATION_GONE_GRACE_MS = 350L
         const val REMOVED_NOTIFICATION_MIN_MISSING_CHECKS = 2
-        const val FADE_IN_MS = 380L
-        const val FADE_OUT_MS = 280L
-        const val FADE_OFFSET_DP = 10
-        const val DEFAULT_Y_DP = 48
-        const val MIN_Y_DP = 12
-        const val BOTTOM_MARGIN_DP = 16
-        const val HORIZONTAL_MARGIN_DP = 12
-        const val RATE_MIN_WIDTH_DP = 176
-        const val RATE_MIN_HEIGHT_DP = 44
-        const val SWIPE_MIN_DP = 44
-        const val SWIPE_FRACTION = 0.16f
-        const val SNAP_BACK_MS = 140L
         const val NOTIFICATION_REMOVAL_RECHECK_MS = 60L
         const val COURIER_EVENT_CHECK_DELAY_MS = 48L
         const val RECENT_SCREEN_TEXT_TTL_MS = 350L
-        const val GESTURE_WINDOW_RELAYOUT_MIN_INTERVAL_MS = 16L
-        const val GESTURE_NONE = 0
-        const val GESTURE_HORIZONTAL = 1
-        const val GESTURE_VERTICAL = 2
     }
 }
