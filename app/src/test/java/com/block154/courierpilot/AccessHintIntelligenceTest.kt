@@ -1,7 +1,6 @@
 package com.block154.courierpilot
 
 import android.content.Context
-import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -11,6 +10,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 
 @RunWith(RobolectricTestRunner::class)
 class AccessHintIntelligenceTest {
@@ -18,7 +18,7 @@ class AccessHintIntelligenceTest {
 
     @Before
     fun setUp() {
-        context = ApplicationProvider.getApplicationContext()
+        context = RuntimeEnvironment.getApplication()
         listOf(
             "courierpilot_pending_arrival_hint_v1",
             "courierpilot_access_hint_feedback_v1",
