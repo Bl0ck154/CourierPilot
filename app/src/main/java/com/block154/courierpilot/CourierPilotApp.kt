@@ -19,5 +19,12 @@ class CourierPilotApp : Application() {
         // City resolution/profile refresh and optional anonymous market upload use their own worker.
         // No network or geocoder work runs on this Application caller thread.
         MarketIntelligence.resume(this)
+
+        // Durable arrival reminders and MediaStore cleanup both touch disk. Restore/maintenance are
+        // deliberately kept off the process cold-start thread used by Accessibility/notifications.
+        Thread({
+            runCatching { ArrivalAccessHintMonitor.restore(this) }
+            runCatching { ScreenshotRetentionManager.runIfDue(this) }
+        }, "CourierPilot-startup-background-maintenance").apply { isDaemon = true }.start()
     }
 }
