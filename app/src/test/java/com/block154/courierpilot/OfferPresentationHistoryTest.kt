@@ -12,7 +12,7 @@ class OfferPresentationHistoryTest {
             packageName = CourierSignals.WOLT_PACKAGE,
             priceCents = 902,
             distanceMeters = 12_600,
-            restaurant = null,
+            restaurant = "Pickup · Vokiečių g. 7, Vilnius, LT-01130",
             screenshotUri = "",
             screenshotFilename = "",
             rawText = """
@@ -26,7 +26,7 @@ class OfferPresentationHistoryTest {
                 Versmių gatvė 65-2, Vilnius, 11307
                 Accept
             """.trimIndent(),
-            merchantNames = emptyList(),
+            merchantNames = listOf("Pickup"),
             pickupAddresses = listOf("Vokiečių g. 7, Vilnius, LT-01130"),
             dropoffAddresses = listOf("Versmių gatvė 65-2, Vilnius, 11307"),
             deliveryCount = 1,
