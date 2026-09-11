@@ -58,4 +58,15 @@ class RouteLiveLocationPolicyTest {
         assertFalse(RouteLiveLocationPolicy.shouldReuseCached(vagueGps))
         assertFalse(RouteLiveLocationPolicy.shouldReuseCached(unknownAccuracyGps))
     }
+    @Test
+    fun freshAccurateFusedFixIsReusableRegardlessOfProviderLabel() {
+        val fused = CurrentLocationFix(RoutePoint(54.68, 25.28), 12f, 4_000L, "fused-cache")
+        val stale = fused.copy(ageMillis = RouteLiveLocationPolicy.FUSED_FIX_MAX_AGE_MS + 1)
+        val vague = fused.copy(accuracyMeters = RouteLiveLocationPolicy.FUSED_FIX_MAX_ACCURACY_METERS + 1)
+
+        assertTrue(RouteLiveLocationPolicy.shouldReuseFused(fused))
+        assertFalse(RouteLiveLocationPolicy.shouldReuseFused(stale))
+        assertFalse(RouteLiveLocationPolicy.shouldReuseFused(vague))
+    }
+
 }

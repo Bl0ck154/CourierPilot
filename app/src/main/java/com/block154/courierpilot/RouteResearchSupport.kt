@@ -10,6 +10,9 @@ import android.os.Build
 import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
+import com.google.android.gms.tasks.CancellationTokenSource
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -33,6 +36,12 @@ internal object RouteLiveLocationPolicy {
             fix.accuracyMeters != null &&
             fix.accuracyMeters <= LIVE_FIX_MAX_ACCURACY_METERS
 
+    /** Google Maps and Wolt both consume the fused provider. Prefer the same origin for live offers. */
+    fun shouldReuseFused(fix: CurrentLocationFix): Boolean =
+        fix.ageMillis <= FUSED_FIX_MAX_AGE_MS &&
+            fix.accuracyMeters != null &&
+            fix.accuracyMeters <= FUSED_FIX_MAX_ACCURACY_METERS
+
     fun shouldEarlyAccept(provider: String, accuracyMeters: Float?, gpsProviderEnabled: Boolean): Boolean {
         if (accuracyMeters == null || accuracyMeters > EARLY_ACCEPT_ACCURACY_METERS) return false
         return provider.equals(LocationManager.GPS_PROVIDER, ignoreCase = true) || !gpsProviderEnabled
@@ -41,6 +50,8 @@ internal object RouteLiveLocationPolicy {
     const val EARLY_ACCEPT_ACCURACY_METERS = 25f
     const val LIVE_FIX_MAX_AGE_MS = 30_000L
     const val LIVE_FIX_MAX_ACCURACY_METERS = 80f
+    const val FUSED_FIX_MAX_AGE_MS = 20_000L
+    const val FUSED_FIX_MAX_ACCURACY_METERS = 80f
     const val GPS_FALLBACK_MAX_ACCURACY_METERS = 200f
 }
 
@@ -134,17 +145,104 @@ internal object RouteResearchLocation {
     }
 
     /**
-     * Live offers are time-sensitive. Reuse a very fresh, accurate last-known fix immediately; Wolt
-     * and Bolt already keep location hot while the courier is online. Fall back to a real current
-     * request when that cached fix is not trustworthy enough.
+     * Live Wolt routing must start from the same practical device position the courier sees in Wolt
+     * and Google Maps. Those apps use Google Play services fused location, while raw LocationManager
+     * GPS on the real ColorOS device has occasionally been displaced by well over a kilometre even
+     * with a plausible accuracy field. Race a fused high-accuracy request against the legacy raw
+     * request, but never let raw GPS win until the short fused preference window has finished.
      */
     fun requestForLiveOffer(context: Context, callback: (Result<CurrentLocationFix>) -> Unit) {
-        val cached = bestLastKnownGps(context)
-        if (cached != null && RouteLiveLocationPolicy.shouldReuseCached(cached)) {
-            callback(Result.success(cached))
+        if (!hasPermission(context)) {
+            callback(Result.failure(SecurityException("Location permission is required")))
             return
         }
-        requestCurrent(context, callback)
+        val app = context.applicationContext
+        val completed = AtomicBoolean(false)
+        val lock = Any()
+        var rawResult: Result<CurrentLocationFix>? = null
+        var fusedFinished = false
+
+        fun finish(result: Result<CurrentLocationFix>) {
+            if (completed.compareAndSet(false, true)) callback(result)
+        }
+
+        // Start the raw Android path in parallel so a device without Google Play services does not
+        // pay a second full GPS timeout. Its result is held briefly while fused location is pending.
+        requestCurrent(app) { result ->
+            val deliver = synchronized(lock) {
+                rawResult = result
+                fusedFinished
+            }
+            if (deliver) finish(result)
+        }
+
+        requestFusedForLiveOffer(app) { result ->
+            if (result.isSuccess) {
+                finish(result)
+                return@requestFusedForLiveOffer
+            }
+            val raw = synchronized(lock) {
+                fusedFinished = true
+                rawResult
+            }
+            raw?.let(::finish)
+        }
+    }
+
+    private fun requestFusedForLiveOffer(context: Context, callback: (Result<CurrentLocationFix>) -> Unit) {
+        val completed = AtomicBoolean(false)
+        val freshStarted = AtomicBoolean(false)
+        val handler = Handler(Looper.getMainLooper())
+        val tokenSource = CancellationTokenSource()
+
+        fun finish(result: Result<CurrentLocationFix>) {
+            if (!completed.compareAndSet(false, true)) return
+            handler.removeCallbacksAndMessages(FUSED_TIMEOUT_TOKEN)
+            tokenSource.cancel()
+            callback(result)
+        }
+
+        fun requestFresh(client: com.google.android.gms.location.FusedLocationProviderClient) {
+            if (!freshStarted.compareAndSet(false, true) || completed.get()) return
+            runCatching {
+                client.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, tokenSource.token)
+                    .addOnSuccessListener { location ->
+                        if (location == null) {
+                            finish(Result.failure(IllegalStateException("Fused location returned no fix")))
+                        } else {
+                            finish(Result.success(location.toFix(providerOverride = "fused")))
+                        }
+                    }
+                    .addOnFailureListener { failure -> finish(Result.failure(failure)) }
+            }.onFailure { failure -> finish(Result.failure(failure)) }
+        }
+
+        handler.postAtTime(
+            {
+                finish(Result.failure(IllegalStateException("Fused location timed out")))
+            },
+            FUSED_TIMEOUT_TOKEN,
+            android.os.SystemClock.uptimeMillis() + FUSED_LOCATION_TIMEOUT_MS,
+        )
+
+        val client = runCatching { LocationServices.getFusedLocationProviderClient(context) }
+            .getOrElse {
+                finish(Result.failure(it))
+                return
+            }
+        runCatching {
+            client.lastLocation
+                .addOnSuccessListener { location ->
+                    if (completed.get()) return@addOnSuccessListener
+                    val fix = location?.toFix(providerOverride = "fused-cache")
+                    if (fix != null && RouteLiveLocationPolicy.shouldReuseFused(fix)) {
+                        finish(Result.success(fix))
+                    } else {
+                        requestFresh(client)
+                    }
+                }
+                .addOnFailureListener { requestFresh(client) }
+        }.onFailure { requestFresh(client) }
     }
 
     private fun bestLastKnownGps(context: Context): CurrentLocationFix? {
@@ -171,15 +269,17 @@ internal object RouteResearchLocation {
         return -accuracy - agePenalty * 0.25
     }
 
-    private fun Location.toFix(): CurrentLocationFix = CurrentLocationFix(
+    private fun Location.toFix(providerOverride: String? = null): CurrentLocationFix = CurrentLocationFix(
         point = RoutePoint(latitude, longitude),
         accuracyMeters = accuracy.takeIf { hasAccuracy() },
         ageMillis = (System.currentTimeMillis() - time).coerceAtLeast(0L),
-        provider = provider.orEmpty(),
+        provider = providerOverride ?: provider.orEmpty(),
     )
 
     private const val CURRENT_LOCATION_TIMEOUT_MS = 8_000L
+    private const val FUSED_LOCATION_TIMEOUT_MS = 3_000L
     private val TIMEOUT_TOKEN = Any()
+    private val FUSED_TIMEOUT_TOKEN = Any()
 }
 
 internal object RouteGeocodeQueryPolicy {
