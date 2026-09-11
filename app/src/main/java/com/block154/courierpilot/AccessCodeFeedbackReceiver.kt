@@ -58,20 +58,25 @@ class AccessCodeFeedbackReceiver : BroadcastReceiver() {
         if (!intent.hasExtra(EXTRA_ARRIVAL_LATITUDE) || !intent.hasExtra(EXTRA_ARRIVAL_LONGITUDE)) return null
         val capturedAt = intent.getLongExtra(EXTRA_ARRIVAL_CAPTURED_AT, 0L)
         if (capturedAt <= 0L) return null
+        val latitude = intent.getDoubleExtra(EXTRA_ARRIVAL_LATITUDE, Double.NaN)
+        val longitude = intent.getDoubleExtra(EXTRA_ARRIVAL_LONGITUDE, Double.NaN)
+        if (!latitude.isFinite() || latitude !in -90.0..90.0) return null
+        if (!longitude.isFinite() || longitude !in -180.0..180.0) return null
+
         val accuracy = if (intent.hasExtra(EXTRA_ARRIVAL_ACCURACY_METERS)) {
             intent.getFloatExtra(EXTRA_ARRIVAL_ACCURACY_METERS, Float.MAX_VALUE)
-        } else null
-        val fix = CurrentLocationFix(
-            point = RoutePoint(
-                latitude = intent.getDoubleExtra(EXTRA_ARRIVAL_LATITUDE, Double.NaN),
-                longitude = intent.getDoubleExtra(EXTRA_ARRIVAL_LONGITUDE, Double.NaN),
-            ),
+                .takeIf { it.isFinite() && it in 0f..ArrivalAccessHintPolicy.MAX_LOCATION_ACCURACY_METERS }
+                ?: return null
+        } else return null
+        val ageMillis = intent.getLongExtra(EXTRA_ARRIVAL_FIX_AGE_MS, Long.MAX_VALUE)
+        if (ageMillis !in 0..ArrivalAccessHintPolicy.MAX_LOCATION_AGE_MS) return null
+
+        return CurrentLocationFix(
+            point = RoutePoint(latitude = latitude, longitude = longitude),
             accuracyMeters = accuracy,
-            ageMillis = intent.getLongExtra(EXTRA_ARRIVAL_FIX_AGE_MS, Long.MAX_VALUE),
+            ageMillis = ageMillis,
             provider = "arrival-notification",
-        )
-        if (!fix.point.latitude.isFinite() || !fix.point.longitude.isFinite()) return null
-        return fix to capturedAt
+        ) to capturedAt
     }
 
     companion object {
