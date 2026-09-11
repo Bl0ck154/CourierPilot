@@ -65,8 +65,8 @@ class AddressMemoryUiProjectionTest {
                 seenAt = 400,
                 platform = "Wolt",
                 customerName = "Jelena",
-                detailsText = "Entrance code *2580*",
-                rawText = "Dropoff to\nJelena\nTestu g. 1\nEntrance code\n*2580*\nFloor\n1",
+                detailsText = "Entry code *2580*",
+                rawText = "Dropoff to\nJelena\nTestu g. 1\nEntry code\n*2580*\nFloor\n1",
             ),
             AddressObservationRecord(
                 id = 10,
