@@ -342,7 +342,7 @@ private fun DashboardMarket(padding: PaddingValues, refreshToken: Int) {
             ),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item { DashboardSection("Pay comparison", "Loading local and city €/km data") }
+            item { DashboardSection("Pay comparison", "Loading local and city pay/km data") }
             item { DashboardEmpty("Loading pay insights…") }
         }
         return
@@ -393,7 +393,7 @@ private fun DashboardMarket(padding: PaddingValues, refreshToken: Int) {
 private data class DashboardHomeData(
     val presence: List<PlatformPresence>,
     val work: AutomaticWorkSummary,
-    val today: OfferSummary,
+    val today: DashboardMoneySummary,
     val recent: List<OfferRecord>,
 )
 
@@ -418,7 +418,7 @@ private fun DashboardHome(
             DashboardHomeData(
                 presence = CourierPresence.all(context),
                 work = meta.workSummarySince(dashStartOfDay(0)),
-                today = offers.summarySince(dashStartOfDay(0)),
+                today = DashboardMoneyStats.summarySince(offers, dashStartOfDay(0)),
                 recent = offers.recent(4).map { it.withCurrentParsedStructure() },
             )
         }
@@ -772,15 +772,15 @@ private fun DashboardAddresses(
 }
 
 private data class DashboardStatsData(
-    val today: OfferSummary,
-    val seven: OfferSummary,
-    val thirty: OfferSummary,
+    val today: DashboardMoneySummary,
+    val seven: DashboardMoneySummary,
+    val thirty: DashboardMoneySummary,
     val workToday: AutomaticWorkSummary,
     val workSeven: AutomaticWorkSummary,
     val workThirty: AutomaticWorkSummary,
-    val wolt: OfferSummary,
-    val bolt: OfferSummary,
-    val days: List<DaySummary>,
+    val wolt: DashboardMoneySummary,
+    val bolt: DashboardMoneySummary,
+    val days: List<DashboardMoneyDaySummary>,
 )
 
 @Composable
@@ -797,15 +797,15 @@ private fun DashboardStats(
     LaunchedEffect(refreshToken) {
         stats = withContext(Dispatchers.IO) {
             DashboardStatsData(
-                today = offers.summarySince(dashStartOfDay(0)),
-                seven = offers.summarySince(dashStartOfDay(6)),
-                thirty = offers.summarySince(dashStartOfDay(29)),
+                today = DashboardMoneyStats.summarySince(offers, dashStartOfDay(0)),
+                seven = DashboardMoneyStats.summarySince(offers, dashStartOfDay(6)),
+                thirty = DashboardMoneyStats.summarySince(offers, dashStartOfDay(29)),
                 workToday = meta.workSummarySince(dashStartOfDay(0)),
                 workSeven = meta.workSummarySince(dashStartOfDay(6)),
                 workThirty = meta.workSummarySince(dashStartOfDay(29)),
-                wolt = offers.summarySince(dashStartOfDay(29), "Wolt"),
-                bolt = offers.summarySince(dashStartOfDay(29), "Bolt"),
-                days = offers.dailyStats(14),
+                wolt = DashboardMoneyStats.summarySince(offers, dashStartOfDay(29), "Wolt"),
+                bolt = DashboardMoneyStats.summarySince(offers, dashStartOfDay(29), "Bolt"),
+                days = DashboardMoneyStats.dailyStats(offers, 14),
             )
         }
     }
@@ -837,30 +837,30 @@ private fun DashboardStats(
                 item { DashboardEmpty("No daily statistics yet.") }
             } else {
                 items(loaded.days, key = { it.day }) { day ->
-                Card(onClick = onHistory, shape = RoundedCornerShape(18.dp)) {
-                    Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(day.day, fontWeight = FontWeight.SemiBold)
-                            Text(
-                                "Wolt ${day.woltCount} · Bolt ${day.boltCount}",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 12.sp,
-                            )
+                    Card(onClick = onHistory, shape = RoundedCornerShape(18.dp)) {
+                        Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(day.day, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "Wolt ${day.woltCount} · Bolt ${day.boltCount}",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 12.sp,
+                                )
+                            }
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text("${day.count} offers", fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    dashDayAverage(day),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 12.sp,
+                                )
+                            }
+                            Spacer(Modifier.size(8.dp))
+                            Icon(Icons.Rounded.ChevronRight, contentDescription = null)
                         }
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text("${day.count} offers", fontWeight = FontWeight.SemiBold)
-                            Text(
-                                day.averagePriceCents?.let { "€%.2f avg".format(it / 100.0) } ?: "—",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 12.sp,
-                            )
-                        }
-                        Spacer(Modifier.size(8.dp))
-                        Icon(Icons.Rounded.ChevronRight, contentDescription = null)
                     }
                 }
             }
-        }
         }
 
         item {
@@ -883,7 +883,7 @@ private fun DashboardStats(
 @Composable
 private fun StatsPeriod(
     label: String,
-    summary: OfferSummary,
+    summary: DashboardMoneySummary,
     work: AutomaticWorkSummary,
     onClick: () -> Unit,
 ) {
@@ -902,7 +902,7 @@ private fun StatsPeriod(
                 Text(dashAveragePrice(summary))
             }
             Row {
-                Text("Avg €/km", Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(dashboardRateLabel(summary.currencyCode, summary.mixedCurrency), Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(dashPerKm(summary))
             }
             Row {
@@ -1005,7 +1005,7 @@ private fun DashboardSettings(
             }
         }
 
-        item { DashboardSection("Pay comparison", "Adaptive €/km scoring from recent anonymous city offers") }
+        item { DashboardSection("Pay comparison", "Adaptive pay/km scoring from recent anonymous city offers") }
         item {
             Card(shape = RoundedCornerShape(20.dp)) {
                 Column(Modifier.padding(16.dp)) {
@@ -1313,7 +1313,7 @@ private fun DashboardOfferCard(record: OfferRecord, onClick: () -> Unit) {
                     fontSize = 12.sp,
                 )
             }
-            Text("€${"%.2f".format(record.priceCents / 100.0)}", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            Text(formatDashboardOfferMoney(record), fontWeight = FontWeight.Bold, fontSize = 18.sp)
             Spacer(Modifier.size(6.dp))
             Icon(Icons.Rounded.ChevronRight, contentDescription = null)
         }
@@ -1368,11 +1368,28 @@ private fun dashStartOfDay(daysBack: Int): Long = Calendar.getInstance().apply {
     set(Calendar.MILLISECOND, 0)
 }.timeInMillis
 
-private fun dashAveragePrice(summary: OfferSummary): String =
-    summary.averagePriceCents?.let { "€%.2f".format(it / 100.0) } ?: "—"
+private fun dashAveragePrice(summary: DashboardMoneySummary): String = formatDashboardMoney(
+    amount = summary.averageMoney,
+    currencyCode = summary.currencyCode,
+    fractionDigits = summary.fractionDigits,
+    mixedCurrency = summary.mixedCurrency,
+)
 
-private fun dashPerKm(summary: OfferSummary): String =
-    summary.averageEurPerKm?.let { "€%.2f/km".format(it) } ?: "—"
+private fun dashPerKm(summary: DashboardMoneySummary): String = formatDashboardRate(
+    rate = summary.averageMoneyPerKm,
+    currencyCode = summary.currencyCode,
+    mixedCurrency = summary.mixedCurrency,
+)
+
+private fun dashDayAverage(day: DashboardMoneyDaySummary): String {
+    val formatted = formatDashboardMoney(
+        amount = day.averageMoney,
+        currencyCode = day.currencyCode,
+        fractionDigits = day.fractionDigits,
+        mixedCurrency = day.mixedCurrency,
+    )
+    return if (formatted == "—" || day.mixedCurrency) formatted else "$formatted avg"
+}
 
 private fun dashDuration(ms: Long): String {
     val minutes = (ms / 60_000L).coerceAtLeast(0L)

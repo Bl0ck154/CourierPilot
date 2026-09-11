@@ -270,6 +270,8 @@ class OfferDatabase private constructor(context: Context) :
             put("platform", record.platform)
             put("package_name", record.packageName)
             put("price_cents", record.priceCents)
+            put("currency_code", record.currencyCode)
+            put("currency_fraction_digits", record.currencyFractionDigits)
             record.distanceMeters?.let { put("distance_meters", it) }
             put("restaurant", record.restaurant)
             put("screenshot_uri", record.screenshotUri)

@@ -12,10 +12,11 @@ import android.net.Uri
 internal object OfferDataRepair {
     private const val PREFS = "courier_offer_repairs"
     private const val KEY_REVISION = "parser_repair_revision"
-    // Revision 18 also removes Wolt boost/promo card metadata from persisted merchant identity and
-    // re-runs the current route parser so old 0.15.58 rows can recover the real venue/drop-off from
-    // their stored raw card text.
-    private const val CURRENT_REVISION = 18
+    // Revision 19 repairs the pre-0.15.76 insert bug that could leave non-EUR offers stored with the
+    // schema's EUR/2 defaults. Money amount remains immutable: only currency metadata is corrected,
+    // and only when the current parser finds an explicit raw money token with the exact same minor
+    // amount as the persisted capture. Revision 18's route/promo repairs remain idempotent below.
+    private const val CURRENT_REVISION = 19
     private const val LIST_SEPARATOR = "\u001F"
 
     @Synchronized
@@ -48,6 +49,7 @@ internal object OfferDataRepair {
 
                 val rawParsed = original.rawText.takeIf(String::isNotBlank)?.let(OfferParser::parse)
                 val trustedIncrementalMoney = trustedHistoricalIncrementalMoney(original, rawParsed)
+                val trustedCurrencyMetadata = trustedHistoricalCurrencyMetadata(original, rawParsed?.money)
                 val reparsed = if (trustedIncrementalMoney != null && rawParsed != null) {
                     // The old persisted arrays for this exact offer family are known to be unsafe:
                     // 0.15.58 could promote a customer stop to pickup and keep the old destination
@@ -68,12 +70,22 @@ internal object OfferDataRepair {
                         estimatedMinutesMax = rawParsed.estimatedMinutesMax ?: original.estimatedMinutesMax,
                     )
                 } else {
-                    original.withCurrentParsedStructure()
+                    original.withCurrentParsedStructure().let { structural ->
+                        trustedCurrencyMetadata?.let { money ->
+                            structural.copy(
+                                currencyCode = money.currencyCode,
+                                currencyFractionDigits = money.fractionDigits,
+                            )
+                        } ?: structural
+                    }
                 }
                 val visualFingerprint = original.visualFingerprint.ifBlank { visualBackfills[original.id].orEmpty() }
                 val repairedIncrementalMoney = trustedIncrementalMoney != null &&
                     (reparsed.priceCents != original.priceCents ||
                         reparsed.currencyCode != original.currencyCode ||
+                        reparsed.currencyFractionDigits != original.currencyFractionDigits)
+                val repairedCurrencyMetadata = trustedCurrencyMetadata != null &&
+                    (reparsed.currencyCode != original.currencyCode ||
                         reparsed.currencyFractionDigits != original.currencyFractionDigits)
                 val incrementalFullRouteIsUntrusted = rawParsed?.isIncrementalOffer == true &&
                     original.marketRouteDistanceMeters != null
@@ -105,7 +117,9 @@ internal object OfferDataRepair {
                     repaired.marketRouteSource.takeIf(String::isNotBlank)?.let { put("market_route_source", it) } ?: putNull("market_route_source")
                 }
                 sqlite.update("offers", values, "id = ?", arrayOf(original.id.toString()))
-                if (rejectedHistoricalRoute || repairedIncrementalMoney) {
+                if (rejectedHistoricalRoute || repairedIncrementalMoney || repairedCurrencyMetadata) {
+                    // A market observation carries currency metadata too. Drop it when the source row
+                    // is corrected so stale EUR-tagged history cannot continue influencing scoring.
                     sqlite.delete("market_observations", "offer_id = ?", arrayOf(original.id.toString()))
                 }
 
@@ -201,6 +215,26 @@ internal object OfferDataRepair {
                 line.startsWith("+") && MarketCurrencyParser.parse(line) == money
             }
         return money.takeIf { hasExplicitIncrementalMoney }
+    }
+
+    /**
+     * The pre-0.15.76 insert path forgot to persist currency columns, so SQLite supplied EUR/2 even
+     * for a correctly captured non-EUR MoneyAmount. Repair only that exact default-shaped state and
+     * only from an explicit raw money token whose minor amount is identical to persisted truth.
+     * This deliberately cannot change the captured amount.
+     */
+    internal fun trustedHistoricalCurrencyMetadata(record: OfferRecord, parsedMoney: MoneyAmount?): MoneyAmount? {
+        if (!record.currencyCode.equals("EUR", ignoreCase = true) || record.currencyFractionDigits != 2) return null
+        val money = parsedMoney ?: return null
+        if (money.amountMinor != record.priceCents.toLong() || money.amountMinor <= 0L) return null
+        if (money.currencyCode.equals(record.currencyCode, ignoreCase = true) &&
+            money.fractionDigits == record.currencyFractionDigits
+        ) return null
+        val hasExplicitRawMoney = record.rawText.lineSequence()
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .any { line -> MarketCurrencyParser.parse(line) == money }
+        return money.takeIf { hasExplicitRawMoney }
     }
 
     private fun deleteDuplicateRow(sqlite: android.database.sqlite.SQLiteDatabase, offerId: Long) {
