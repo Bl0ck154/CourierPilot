@@ -3,6 +3,7 @@ package com.block154.courierpilot
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -183,7 +184,7 @@ private fun OfferDetailsScreen(
                         }
                         Spacer(Modifier.size(14.dp))
                         Text(
-                            "€${"%.2f".format(offer.priceCents / 100.0)}",
+                            formatOfferMoney(offer),
                             fontSize = 31.sp,
                             fontWeight = FontWeight.Bold,
                         )
@@ -198,7 +199,7 @@ private fun OfferDetailsScreen(
                         }
                         offer.deliveryCount?.let { add("$it ${if (it == 1) "delivery" else "deliveries"}") }
                         offerEta(offer)?.let { add("ETA $it") }
-                        offerEurPerKm(offer)?.let { add("€%.2f/km".format(it)) }
+                        offerMoneyPerKm(offer)?.let { add(formatOfferRate(offer.currencyCode, it)) }
                     }
                     if (facts.isNotEmpty()) {
                         Text(
@@ -376,14 +377,34 @@ private fun OfferSection(title: String, subtitle: String) {
 
 private fun openOfferScreenshot(context: android.content.Context, uriString: String) {
     if (uriString.isBlank()) return
+    val uri = Uri.parse(uriString)
+    val readable = runCatching {
+        context.contentResolver.openFileDescriptor(uri, "r")?.use { true } ?: false
+    }.getOrDefault(false)
+    if (!readable) {
+        Toast.makeText(
+            context,
+            "Saved screenshot is no longer available. It may have been removed by your retention setting.",
+            Toast.LENGTH_LONG,
+        ).show()
+        CaptureEventLog.append(
+            context,
+            stage = "screenshot_not_available",
+            message = "Stored screenshot URI is no longer readable",
+            dedupeWindowMs = 5_000L,
+        )
+        return
+    }
+
     runCatching {
         context.startActivity(
             Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(Uri.parse(uriString), "image/png")
+                setDataAndType(uri, "image/png")
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
         )
     }.onFailure {
+        Toast.makeText(context, "No app could open this screenshot.", Toast.LENGTH_SHORT).show()
         CaptureEventLog.append(
             context,
             stage = "ui_error",
@@ -400,11 +421,27 @@ private fun offerEta(record: OfferRecord): String? = when {
     else -> null
 }
 
-private fun offerEurPerKm(record: OfferRecord): Double? {
+private fun offerMoney(record: OfferRecord): MoneyAmount = MoneyAmount(
+    amountMinor = record.priceCents.toLong(),
+    currencyCode = record.currencyCode,
+    fractionDigits = record.currencyFractionDigits,
+)
+
+private fun formatOfferMoney(record: OfferRecord): String {
+    val money = offerMoney(record)
+    val major = money.major().toPlainString()
+    return if (money.currencyCode.equals("EUR", ignoreCase = true)) "€$major" else "${money.currencyCode} $major"
+}
+
+private fun offerMoneyPerKm(record: OfferRecord): Double? {
     val distance = record.effectiveRouteDistanceMeters ?: return null
     if (distance <= 0) return null
-    return record.priceCents * 10.0 / distance
+    return offerMoney(record).major().toDouble() * 1000.0 / distance
 }
+
+private fun formatOfferRate(currencyCode: String, rate: Double): String =
+    if (currencyCode.equals("EUR", ignoreCase = true)) "€%.2f/km".format(Locale.US, rate)
+    else "$currencyCode %.2f/km".format(Locale.US, rate)
 
 private fun offerDate(timestamp: Long): String =
     SimpleDateFormat("EEE, d MMM · HH:mm:ss", Locale.getDefault()).format(Date(timestamp))

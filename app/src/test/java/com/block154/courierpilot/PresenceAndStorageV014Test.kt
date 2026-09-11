@@ -47,7 +47,7 @@ class PresenceAndStorageV014Test {
         context.getSharedPreferences("courierpilot_capture_storage", 0).edit().clear().commit()
 
         assertTrue(CaptureStorageSettings.saveOfferScreenshots(context))
-        assertEquals(90, CaptureStorageSettings.retentionDays(context))
+        assertEquals(CaptureStorageSettings.RETENTION_FOREVER, CaptureStorageSettings.retentionDays(context))
 
         CaptureStorageSettings.setSaveOfferScreenshots(context, false)
         assertFalse(CaptureStorageSettings.saveOfferScreenshots(context))

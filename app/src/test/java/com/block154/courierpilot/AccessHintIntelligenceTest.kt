@@ -1,6 +1,7 @@
 package com.block154.courierpilot
 
 import android.content.Context
+import android.content.Intent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -111,6 +112,57 @@ class AccessHintIntelligenceTest {
         val preferred = LearnedEntranceStore.preferred(context, building, now + 2_000L)
         assertNotNull(preferred)
         assertTrue(ArrivalAccessHintPolicy.distanceMeters(preferred!!, RoutePoint(54.680025, 25.270025)) < 15.0)
+    }
+
+    @Test
+    fun worksFeedbackLearnsArrivalSnapshotRatherThanLaterButtonLocation() {
+        val building = "feedback-arrival-building"
+        val now = System.currentTimeMillis()
+        val receiver = AccessCodeFeedbackReceiver()
+
+        fun confirm(lat: Double, lon: Double, capturedAt: Long) {
+            receiver.onReceive(
+                context,
+                Intent(context, AccessCodeFeedbackReceiver::class.java).apply {
+                    action = AccessCodeFeedbackReceiver.ACTION_WORKS
+                    putExtra(AccessCodeFeedbackReceiver.EXTRA_BUILDING_KEY, building)
+                    putStringArrayListExtra(AccessCodeFeedbackReceiver.EXTRA_CODES, arrayListOf("4321"))
+                    putExtra(AccessCodeFeedbackReceiver.EXTRA_ARRIVAL_LATITUDE, lat)
+                    putExtra(AccessCodeFeedbackReceiver.EXTRA_ARRIVAL_LONGITUDE, lon)
+                    putExtra(AccessCodeFeedbackReceiver.EXTRA_ARRIVAL_ACCURACY_METERS, 10f)
+                    putExtra(AccessCodeFeedbackReceiver.EXTRA_ARRIVAL_FIX_AGE_MS, 1_000L)
+                    putExtra(AccessCodeFeedbackReceiver.EXTRA_ARRIVAL_CAPTURED_AT, capturedAt)
+                },
+            )
+        }
+
+        confirm(54.68100, 25.27100, now)
+        confirm(54.68104, 25.27104, now + 1_000L)
+
+        assertEquals(2, LearnedEntranceStore.sampleCount(context, building, now + 2_000L))
+        val preferred = LearnedEntranceStore.preferred(context, building, now + 2_000L)
+        assertNotNull(preferred)
+        assertTrue(
+            ArrivalAccessHintPolicy.distanceMeters(
+                preferred!!,
+                RoutePoint(54.68102, 25.27102),
+            ) < 10.0,
+        )
+    }
+
+    @Test
+    fun worksFeedbackWithoutArrivalSnapshotDoesNotInventEntranceSample() {
+        val building = "feedback-no-snapshot"
+        AccessCodeFeedbackReceiver().onReceive(
+            context,
+            Intent(context, AccessCodeFeedbackReceiver::class.java).apply {
+                action = AccessCodeFeedbackReceiver.ACTION_WORKS
+                putExtra(AccessCodeFeedbackReceiver.EXTRA_BUILDING_KEY, building)
+                putStringArrayListExtra(AccessCodeFeedbackReceiver.EXTRA_CODES, arrayListOf("1111"))
+            },
+        )
+
+        assertEquals(0, LearnedEntranceStore.sampleCount(context, building))
     }
 
     companion object {

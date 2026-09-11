@@ -14,7 +14,13 @@ import android.os.Build
 internal object AccessCodeNotifier {
     private const val CHANNEL_ID = "courierpilot_access_codes"
 
-    fun show(context: Context, suggestion: AccessCodeSuggestion, buildingKey: String): Boolean {
+    fun show(
+        context: Context,
+        suggestion: AccessCodeSuggestion,
+        buildingKey: String,
+        arrivalFix: CurrentLocationFix? = null,
+        arrivalCapturedAt: Long = System.currentTimeMillis(),
+    ): Boolean {
         val app = context.applicationContext
         if (Build.VERSION.SDK_INT >= 33 &&
             app.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -38,6 +44,8 @@ internal object AccessCodeNotifier {
             notificationId = notificationId,
             buildingKey = buildingKey,
             codes = suggestion.codes,
+            arrivalFix = arrivalFix,
+            arrivalCapturedAt = arrivalCapturedAt,
         )
         val wrongIntent = feedbackIntent(
             app = app,
@@ -46,6 +54,8 @@ internal object AccessCodeNotifier {
             notificationId = notificationId,
             buildingKey = buildingKey,
             codes = suggestion.codes,
+            arrivalFix = null,
+            arrivalCapturedAt = 0L,
         )
         val codeText = suggestion.codes.joinToString(" / ")
         val title = "Door code · ${suggestion.displayAddress}"
@@ -97,6 +107,8 @@ internal object AccessCodeNotifier {
         notificationId: Int,
         buildingKey: String,
         codes: List<String>,
+        arrivalFix: CurrentLocationFix?,
+        arrivalCapturedAt: Long,
     ): PendingIntent = PendingIntent.getBroadcast(
         app,
         requestCode,
@@ -105,6 +117,15 @@ internal object AccessCodeNotifier {
             putExtra(AccessCodeFeedbackReceiver.EXTRA_BUILDING_KEY, buildingKey)
             putStringArrayListExtra(AccessCodeFeedbackReceiver.EXTRA_CODES, ArrayList(codes))
             putExtra(AccessCodeFeedbackReceiver.EXTRA_NOTIFICATION_ID, notificationId)
+            if (arrivalFix != null) {
+                putExtra(AccessCodeFeedbackReceiver.EXTRA_ARRIVAL_LATITUDE, arrivalFix.point.latitude)
+                putExtra(AccessCodeFeedbackReceiver.EXTRA_ARRIVAL_LONGITUDE, arrivalFix.point.longitude)
+                arrivalFix.accuracyMeters?.let {
+                    putExtra(AccessCodeFeedbackReceiver.EXTRA_ARRIVAL_ACCURACY_METERS, it)
+                }
+                putExtra(AccessCodeFeedbackReceiver.EXTRA_ARRIVAL_FIX_AGE_MS, arrivalFix.ageMillis)
+                putExtra(AccessCodeFeedbackReceiver.EXTRA_ARRIVAL_CAPTURED_AT, arrivalCapturedAt)
+            }
         },
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
