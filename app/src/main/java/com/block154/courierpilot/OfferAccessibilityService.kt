@@ -18,12 +18,12 @@ import android.view.accessibility.AccessibilityNodeInfo
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
-import java.util.ArrayDeque
 
 class OfferAccessibilityService : AccessibilityService() {
 
     private val handler = Handler(Looper.getMainLooper())
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
+    private val accessibilitySurface by lazy { OfferAccessibilitySurface(this) }
     private var captureInFlight = false
     private val captureGuard = CaptureFlightGuard(CAPTURE_OPERATION_TIMEOUT_MS)
     private var lastHandledArmedAt = 0L
@@ -877,107 +877,22 @@ class OfferAccessibilityService : AccessibilityService() {
     private fun hasVisibleAccessibilityText(
         root: AccessibilityNodeInfo,
         matches: (String) -> Boolean,
-    ): Boolean {
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(root)
-        var visited = 0
-        while (queue.isNotEmpty() && visited < 700) {
-            val node = queue.removeFirst()
-            visited += 1
-            val values = listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
-                .map { it.trim().replace(Regex("\\s+"), " ") }
-                .filter { it.isNotBlank() }
-            if (node.isVisibleToUser && values.any(matches)) return true
-            for (i in 0 until node.childCount) node.getChild(i)?.let(queue::addLast)
-        }
-        return false
-    }
+    ): Boolean = accessibilitySurface.hasVisibleText(root, matches)
 
     private fun hasVisibleClickableAccessibilityText(
         root: AccessibilityNodeInfo,
         matches: (String) -> Boolean,
-    ): Boolean {
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(root)
-        var visited = 0
-        while (queue.isNotEmpty() && visited < 700) {
-            val node = queue.removeFirst()
-            visited += 1
-            val values = listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
-                .map { it.trim().replace(Regex("\\s+"), " ") }
-                .filter { it.isNotBlank() }
-            if (node.isVisibleToUser && values.any(matches)) {
-                var candidate: AccessibilityNodeInfo? = node
-                repeat(6) {
-                    val current = candidate ?: return@repeat
-                    if (current.isVisibleToUser && current.isClickable && current.isEnabled) return true
-                    candidate = current.parent
-                }
-            }
-            for (i in 0 until node.childCount) node.getChild(i)?.let(queue::addLast)
-        }
-        return false
-    }
+    ): Boolean = accessibilitySurface.hasVisibleClickableText(root, matches)
 
     private fun clickAccessibilityText(
         root: AccessibilityNodeInfo,
         matches: (String) -> Boolean,
-    ): Boolean {
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
-        queue.add(root)
-        var visited = 0
-        while (queue.isNotEmpty() && visited < 700) {
-            val node = queue.removeFirst()
-            visited += 1
-            val values = listOfNotNull(node.text?.toString(), node.contentDescription?.toString())
-                .map { it.trim().replace(Regex("\\s+"), " ") }
-                .filter { it.isNotBlank() }
-            if (node.isVisibleToUser && values.any(matches)) {
-                var clickable: AccessibilityNodeInfo? = node
-                repeat(5) {
-                    val candidate = clickable ?: return@repeat
-                    if (candidate.isClickable && candidate.isEnabled &&
-                        candidate.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    ) {
-                        return true
-                    }
-                    clickable = candidate.parent
-                }
-            }
-            for (i in 0 until node.childCount) node.getChild(i)?.let(queue::addLast)
-        }
-        return false
-    }
+    ): Boolean = accessibilitySurface.clickVisibleText(root, matches)
 
-    private data class CourierWindow(val root: AccessibilityNodeInfo, val windowId: Int, val packageName: String)
+    private fun findAnyCourierWindow(): CourierWindow? = accessibilitySurface.findAnyCourierWindow()
 
-    private fun findAnyCourierWindow(): CourierWindow? {
-        val active = rootInActiveWindow
-        val activePackage = active?.packageName?.toString().orEmpty()
-        if (active != null && CourierSignals.isCourierPackage(activePackage)) {
-            return CourierWindow(active, active.windowId, activePackage)
-        }
-        windows.forEach { window ->
-            val root = runCatching { window.root }.getOrNull() ?: return@forEach
-            val pkg = root.packageName?.toString().orEmpty()
-            if (CourierSignals.isCourierPackage(pkg)) return CourierWindow(root, window.id, pkg)
-        }
-        return null
-    }
-
-    private fun findCourierWindow(pending: PendingOffer): CourierWindow? {
-        val active = rootInActiveWindow
-        if (active?.packageName?.toString() == pending.packageName) {
-            return CourierWindow(active, active.windowId, pending.packageName)
-        }
-        windows.forEach { window ->
-            val root = runCatching { window.root }.getOrNull() ?: return@forEach
-            if (root.packageName?.toString() == pending.packageName) {
-                return CourierWindow(root, window.id, pending.packageName)
-            }
-        }
-        return null
-    }
+    private fun findCourierWindow(pending: PendingOffer): CourierWindow? =
+        accessibilitySurface.findCourierWindow(pending.packageName)
 
     private fun observeCourierScreen(
         packageName: String,
@@ -1941,42 +1856,21 @@ class OfferAccessibilityService : AccessibilityService() {
     // Historical name kept for compatibility: this intentionally collects every Accessibility
     // node, including non-visible semantics. Some older Wolt screens depended on that behaviour.
     private fun collectVisibleText(root: AccessibilityNodeInfo): String =
-        collectAccessibilityPieces(root, visibleFilter = null).joinToString("\n")
+        accessibilitySurface.collectAllText(root)
 
     private fun collectStrictlyVisibleText(root: AccessibilityNodeInfo): String =
-        collectStrictlyVisibleAccessibilityPieces(root).joinToString("\n")
+        accessibilitySurface.collectStrictlyVisibleText(root)
 
     private fun collectStrictlyVisibleAccessibilityPieces(root: AccessibilityNodeInfo): List<String> =
-        collectAccessibilityPieces(root, visibleFilter = true)
+        accessibilitySurface.collectStrictlyVisiblePieces(root)
 
     private fun collectHiddenAccessibilityPieces(root: AccessibilityNodeInfo): List<String> =
-        collectAccessibilityPieces(root, visibleFilter = false)
+        accessibilitySurface.collectHiddenPieces(root)
 
     private fun collectAccessibilityPieces(
         root: AccessibilityNodeInfo,
         visibleFilter: Boolean?,
-    ): List<String> {
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
-        val pieces = mutableListOf<String>()
-        queue.add(root)
-        var visited = 0
-
-        fun addPiece(value: CharSequence?, eligible: Boolean) {
-            if (!eligible) return
-            val cleaned = value?.toString()?.trim()?.takeIf { it.isNotEmpty() } ?: return
-            if (pieces.lastOrNull() != cleaned) pieces += cleaned
-        }
-
-        while (queue.isNotEmpty() && visited < 700) {
-            val node = queue.removeFirst()
-            visited++
-            val eligible = visibleFilter == null || node.isVisibleToUser == visibleFilter
-            addPiece(node.text, eligible)
-            addPiece(node.contentDescription, eligible)
-            for (i in 0 until node.childCount) node.getChild(i)?.let(queue::addLast)
-        }
-        return pieces
-    }
+    ): List<String> = accessibilitySurface.collectPieces(root, visibleFilter)
 
     private fun mergeText(accessibilityText: String, ocrText: String): String =
         listOf(accessibilityText.trim(), ocrText.trim())
