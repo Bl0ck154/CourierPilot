@@ -394,7 +394,7 @@ internal object ArrivalAccessHintMonitor {
             }
 
             if (ArrivalAccessHintPolicy.shouldNotify(distance, fix.accuracyMeters, fix.ageMillis)) {
-                notifyAtArrival(app, current, distance)
+                notifyAtArrival(app, current, distance, fix, now)
             } else {
                 scheduleCheck(ArrivalAccessHintPolicy.nextCheckDelayMs(distance))
             }
@@ -437,7 +437,13 @@ internal object ArrivalAccessHintMonitor {
         }
     }
 
-    private fun notifyAtArrival(app: Context, reminder: ArmedReminder, distanceMeters: Double) {
+    private fun notifyAtArrival(
+        app: Context,
+        reminder: ArmedReminder,
+        distanceMeters: Double,
+        arrivalFix: CurrentLocationFix,
+        arrivalCapturedAt: Long,
+    ) {
         val database = CourierMetaDatabase.get(app)
         val liveCodes = database.codesForBuilding(reminder.buildingKey, limit = 50)
             .filter { AccessHintFeedbackStore.shouldSurface(app, it) }
@@ -460,7 +466,13 @@ internal object ArrivalAccessHintMonitor {
         if (!claimed) return
 
         AccessCodeSuggestions.save(app, suggestion)
-        AccessCodeNotifier.show(app, suggestion, reminder.buildingKey)
+        AccessCodeNotifier.show(
+            app,
+            suggestion,
+            reminder.buildingKey,
+            arrivalFix = arrivalFix,
+            arrivalCapturedAt = arrivalCapturedAt,
+        )
         Toast.makeText(
             app,
             "Possible door code · ${suggestion.displayAddress}: ${suggestion.codes.joinToString(" / ")}",
