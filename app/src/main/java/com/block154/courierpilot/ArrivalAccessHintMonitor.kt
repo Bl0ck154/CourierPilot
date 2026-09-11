@@ -119,9 +119,9 @@ internal object ArrivalLocationPermission {
 
 /**
  * Arms a historical door-code hint when a delivery address is recognized, but does not notify yet.
- * The accessibility service keeps CourierPilot's process alive during deliveries, so this monitor can
- * cheaply sample the fused-location cache that Wolt/Google Maps already keep fresh. A fresh location
- * request is used only when that cache is stale.
+ * Active state is mirrored to SharedPreferences, so process death no longer silently drops the
+ * reminder. Once the courier has explicitly confirmed a code at the entrance at least twice, the
+ * learned entrance point is preferred over the geocoder's representative parcel point.
  */
 internal object ArrivalAccessHintMonitor {
     private data class ArmedReminder(
@@ -148,6 +148,44 @@ internal object ArrivalAccessHintMonitor {
         if (app != null) check(app)
     }
 
+    fun restore(context: Context) {
+        val app = context.applicationContext
+        val stored = PendingArrivalReminderStore.load(app) ?: return
+        val database = CourierMetaDatabase.get(app)
+        val liveCodes = database.codesForBuilding(stored.buildingKey, limit = 50).map { it.code }
+        val stillValid = stored.suggestion.codes.filter { candidate ->
+            liveCodes.any { storedCode -> equivalentCode(candidate, storedCode) }
+        }
+        if (stillValid.isEmpty()) {
+            PendingArrivalReminderStore.clear(app)
+            return
+        }
+
+        synchronized(lock) {
+            if (active != null) return
+            generationCounter++
+            appContext = app
+            active = ArmedReminder(
+                generation = generationCounter,
+                deliveryKey = stored.deliveryKey,
+                buildingKey = stored.buildingKey,
+                suggestion = stored.suggestion.copy(codes = stillValid),
+                armedAt = stored.armedAt,
+                destination = stored.destination,
+            )
+            geocodeGeneration = null
+            locationGeneration = null
+        }
+        if (stored.destination == null) resolveDestination(app) else scheduleCheck(0L)
+        CaptureEventLog.append(
+            app,
+            stage = "access_code_arrival_restored",
+            platform = stored.suggestion.platform,
+            message = "Restored pending arrival reminder after process restart",
+            dedupeWindowMs = 30_000L,
+        )
+    }
+
     fun arm(
         context: Context,
         deliveryKey: String,
@@ -165,6 +203,7 @@ internal object ArrivalAccessHintMonitor {
         val now = System.currentTimeMillis()
         var shouldResolve = false
         var shouldPoke = false
+        var snapshot: ArmedReminder? = null
 
         synchronized(lock) {
             appContext = app
@@ -178,6 +217,7 @@ internal object ArrivalAccessHintMonitor {
                     buildingKey = buildingKey,
                     suggestion = suggestion.copy(codes = mergedCodes, updatedAt = now),
                 )
+                snapshot = active
                 shouldResolve = current.destination == null && geocodeGeneration != current.generation
                 shouldPoke = current.destination != null && now - current.lastCheckStartedAt >= SCREEN_POKE_MIN_MS
             } else {
@@ -189,12 +229,14 @@ internal object ArrivalAccessHintMonitor {
                     suggestion = suggestion,
                     armedAt = now,
                 )
+                snapshot = active
                 geocodeGeneration = null
                 locationGeneration = null
                 shouldResolve = true
                 shouldPoke = false
             }
         }
+        snapshot?.let { persist(app, it) }
 
         if (shouldResolve) resolveDestination(app)
         if (shouldPoke) scheduleCheck(0L)
@@ -212,32 +254,65 @@ internal object ArrivalAccessHintMonitor {
     }
 
     fun cancelAll(context: Context? = null) {
-        synchronized(lock) {
+        val app = synchronized(lock) {
             if (context != null) appContext = context.applicationContext
+            val currentApp = appContext
             active = null
             geocodeGeneration = null
             locationGeneration = null
+            currentApp
         }
         handler.removeCallbacks(checkRunnable)
+        app?.let(PendingArrivalReminderStore::clear)
     }
 
     private fun resolveDestination(app: Context) {
         val reminder = synchronized(lock) {
             val current = active ?: return
             if (current.destination != null || geocodeGeneration == current.generation) return
-            geocodeGeneration = current.generation
             current
+        }
+
+        val learned = LearnedEntranceStore.preferred(app, reminder.buildingKey)
+        if (learned != null) {
+            synchronized(lock) {
+                val current = active
+                if (current != null && current.generation == reminder.generation) {
+                    active = current.copy(destination = learned)
+                    persist(app, active!!)
+                }
+            }
+            CaptureEventLog.append(
+                app,
+                stage = "access_code_arrival_learned_entrance",
+                platform = reminder.suggestion.platform,
+                message = "Using learned entrance from ${LearnedEntranceStore.sampleCount(app, reminder.buildingKey)} confirmations",
+                dedupeWindowMs = 30_000L,
+            )
+            scheduleCheck(0L)
+            return
+        }
+
+        synchronized(lock) {
+            val current = active ?: return
+            if (current.generation != reminder.generation || geocodeGeneration == current.generation) return
+            geocodeGeneration = current.generation
         }
 
         RouteResearchGeocoder.resolve(app, reminder.suggestion.displayAddress) { result ->
             val point = result.getOrNull()
+            var persisted: ArmedReminder? = null
             val stillActive = synchronized(lock) {
                 val current = active
                 if (current == null || current.generation != reminder.generation) return@synchronized false
                 if (geocodeGeneration == reminder.generation) geocodeGeneration = null
-                if (point != null) active = current.copy(destination = point)
+                if (point != null) {
+                    active = current.copy(destination = point)
+                    persisted = active
+                }
                 true
             }
+            persisted?.let { persist(app, it) }
             if (!stillActive) return@resolve
 
             if (point == null) {
@@ -270,6 +345,7 @@ internal object ArrivalAccessHintMonitor {
                 active = null
                 geocodeGeneration = null
                 locationGeneration = null
+                PendingArrivalReminderStore.clear(app)
                 return
             }
             if (current.destination == null) {
@@ -364,6 +440,7 @@ internal object ArrivalAccessHintMonitor {
     private fun notifyAtArrival(app: Context, reminder: ArmedReminder, distanceMeters: Double) {
         val database = CourierMetaDatabase.get(app)
         val liveCodes = database.codesForBuilding(reminder.buildingKey, limit = 50)
+            .filter { AccessHintFeedbackStore.shouldSurface(app, it) }
             .map { it.code }
         val stillValidCodes = reminder.suggestion.codes.filter { candidate ->
             liveCodes.any { stored -> equivalentCode(candidate, stored) }
@@ -383,7 +460,7 @@ internal object ArrivalAccessHintMonitor {
         if (!claimed) return
 
         AccessCodeSuggestions.save(app, suggestion)
-        AccessCodeNotifier.show(app, suggestion)
+        AccessCodeNotifier.show(app, suggestion, reminder.buildingKey)
         Toast.makeText(
             app,
             "Possible door code · ${suggestion.displayAddress}: ${suggestion.codes.joinToString(" / ")}",
@@ -395,6 +472,19 @@ internal object ArrivalAccessHintMonitor {
             platform = suggestion.platform,
             message = "Historical access hint shown at ${String.format(Locale.US, "%.0f", distanceMeters)} m from destination",
             dedupeWindowMs = 30_000L,
+        )
+    }
+
+    private fun persist(app: Context, reminder: ArmedReminder) {
+        PendingArrivalReminderStore.save(
+            app,
+            PendingArrivalReminder(
+                deliveryKey = reminder.deliveryKey,
+                buildingKey = reminder.buildingKey,
+                suggestion = reminder.suggestion,
+                armedAt = reminder.armedAt,
+                destination = reminder.destination,
+            )
         )
     }
 
