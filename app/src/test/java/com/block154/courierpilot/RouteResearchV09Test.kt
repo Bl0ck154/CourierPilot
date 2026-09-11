@@ -76,7 +76,7 @@ class RouteResearchV09Test {
     fun economicsUsesRouteDistanceAndTimeTransparently() {
         val route = RouteResult("valhalla", RouteProfile.CYCLEWAY_BIASED, 5000, 1200, emptyList())
         val estimate = OfferEconomics.estimate(600, route, restaurantWaitSeconds = 300)
-        assertEquals(1.2, estimate.euroPerKilometer, 0.001)
-        assertEquals(14.4, estimate.effectiveEuroPerHour, 0.001)
+        assertEquals(1.2, estimate.moneyPerKilometer, 0.001)
+        assertEquals(14.4, estimate.effectiveMoneyPerHour, 0.001)
     }
 }
