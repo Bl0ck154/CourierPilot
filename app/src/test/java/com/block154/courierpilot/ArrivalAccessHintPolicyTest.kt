@@ -32,6 +32,13 @@ class ArrivalAccessHintPolicyTest {
         assertFalse(
             ArrivalAccessHintPolicy.shouldNotify(
                 distanceMeters = 40.0,
+                accuracyMeters = null,
+                ageMillis = 1_000L,
+            )
+        )
+        assertFalse(
+            ArrivalAccessHintPolicy.shouldNotify(
+                distanceMeters = 40.0,
                 accuracyMeters = 12f,
                 ageMillis = ArrivalAccessHintPolicy.MAX_LOCATION_AGE_MS + 1,
             )
