@@ -2,6 +2,7 @@ package com.block154.courierpilot
 
 import android.content.ContentUris
 import android.content.Context
+import android.os.Environment
 import android.provider.MediaStore
 
 internal data class ScreenshotStorageStats(
@@ -21,6 +22,7 @@ internal object ScreenshotRetentionManager {
     private const val KEY_LAST_CLEANUP = "last_cleanup_at"
     private const val CLEANUP_INTERVAL_MS = 24L * 60L * 60L * 1000L
     private const val DAY_MS = 24L * 60L * 60L * 1000L
+    private val RELATIVE_PATH = Environment.DIRECTORY_PICTURES + "/CourierOffers/"
 
     fun runIfDue(context: Context, force: Boolean = false): ScreenshotCleanupResult {
         val app = context.applicationContext
@@ -51,8 +53,8 @@ internal object ScreenshotRetentionManager {
             resolver.query(
                 collection,
                 projection,
-                "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?",
-                arrayOf("%CourierOffers%"),
+                "${MediaStore.Images.Media.RELATIVE_PATH} = ?",
+                arrayOf(RELATIVE_PATH),
                 null,
             )?.use { cursor ->
                 val idIndex = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
@@ -115,8 +117,8 @@ internal object ScreenshotRetentionManager {
             app.contentResolver.query(
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
                 projection,
-                "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ?",
-                arrayOf("%CourierOffers%"),
+                "${MediaStore.Images.Media.RELATIVE_PATH} = ?",
+                arrayOf(RELATIVE_PATH),
                 null,
             )?.use { cursor ->
                 val sizeIndex = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.SIZE)
