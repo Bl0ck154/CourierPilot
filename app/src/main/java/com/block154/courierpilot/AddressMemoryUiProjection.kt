@@ -75,6 +75,34 @@ internal object AddressMemoryUiProjection {
             .sortedWith(compareByDescending<AddressCodeSummary> { it.lastSeenAt }.thenByDescending { it.seenCount })
     }
 
+    /**
+     * Finds the newest raw delivery screen that actually explains an access-code reminder.
+     *
+     * The raw history remains durable internal evidence, but ordinary address details should not
+     * render that history as a user-facing timeline. We expose one source row only when the user
+     * explicitly arrives from an access-hint notification.
+     */
+    fun findAccessHintSource(
+        observations: List<AddressObservationRecord>,
+        codes: List<String>,
+    ): AddressObservationRecord? {
+        val candidates = codes
+            .asSequence()
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .distinct()
+            .toList()
+        if (candidates.isEmpty()) return null
+
+        return observations
+            .asSequence()
+            .sortedByDescending { it.seenAt }
+            .firstOrNull { observation ->
+                AccessCodeHintPolicy.screenContainsAccessCodeInfo(observation.rawText) &&
+                    candidates.any { code -> AccessCodeHintPolicy.isAlreadyVisible(observation.rawText, code) }
+            }
+    }
+
     internal fun canonicalName(value: String): String = Normalizer.normalize(value, Normalizer.Form.NFD)
         .replace(Regex("\\p{M}+"), "")
         .lowercase(Locale.ROOT)

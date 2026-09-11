@@ -26,7 +26,6 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -59,6 +58,11 @@ class AddressDetailsActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val addressId = intent.getLongExtra(EXTRA_ADDRESS_ID, -1L)
+        val notificationCodes = intent.getStringArrayListExtra(EXTRA_ACCESS_CODES)
+            .orEmpty()
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .distinct()
         setContent {
             CourierPilotTheme {
                 var loaded by remember(addressId) { mutableStateOf(false) }
@@ -81,7 +85,11 @@ class AddressDetailsActivity : ComponentActivity() {
                             address = current.address,
                             codes = current.codes,
                             customers = current.customers,
-                            observations = current.observations,
+                            notificationCodes = notificationCodes,
+                            notificationSource = AddressMemoryUiProjection.findAccessHintSource(
+                                current.observations,
+                                notificationCodes,
+                            ),
                             onBack = ::finish,
                             onMap = { openAddressInMaps(current.address.displayAddress) },
                             onDelete = { showDeleteConfirmation = true },
@@ -138,6 +146,7 @@ class AddressDetailsActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_ADDRESS_ID = "address_id"
+        const val EXTRA_ACCESS_CODES = "access_codes"
     }
 }
 
@@ -156,9 +165,8 @@ private fun loadAddressDetails(
     val meta = CourierMetaDatabase.get(context)
     val address = meta.findAddressById(addressId) ?: return null
 
-    // Keep storage source-rich, but make the screen a bounded read projection. Hundreds of rows are
-    // cheap for SQLite and LazyColumn; loading unbounded history into Compose is not. The durable DB
-    // keeps older rows even when this screen shows only the newest projection window.
+    // Raw screen history remains durable internal evidence for parsing and source attribution, but
+    // the ordinary address screen no longer renders that implementation detail as a timeline.
     val observations = meta.observationsForAddress(address.id, limit = 200)
     val rawCustomers = meta.entitiesForAddress(address.id, CourierMetaDatabase.ENTITY_CUSTOMER, limit = 300)
     val rawCodes = meta.codesForBuilding(address.buildingKey, limit = 20)
@@ -201,15 +209,14 @@ private fun AddressDetailsScreen(
     address: AddressRecord,
     codes: List<AddressCodeSummary>,
     customers: List<AddressCustomerSummary>,
-    observations: List<AddressObservationRecord>,
+    notificationCodes: List<String>,
+    notificationSource: AddressObservationRecord?,
     onBack: () -> Unit,
     onMap: () -> Unit,
     onDelete: () -> Unit,
 ) {
     var customersExpanded by remember(address.id) { mutableStateOf(false) }
-    var observationsExpanded by remember(address.id) { mutableStateOf(false) }
     val visibleCustomers = if (customersExpanded) customers else customers.take(COLLAPSED_CUSTOMER_COUNT)
-    val visibleObservations = if (observationsExpanded) observations else observations.take(COLLAPSED_OBSERVATION_COUNT)
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -278,8 +285,23 @@ private fun AddressDetailsScreen(
             }
         }
 
+        if (notificationCodes.isNotEmpty()) {
+            item {
+                AddressSection(
+                    "Why this reminder appeared",
+                    "Source of the saved access hint from the notification",
+                )
+            }
+            item {
+                AccessHintSourceCard(
+                    codes = notificationCodes,
+                    source = notificationSource,
+                )
+            }
+        }
+
         address.latestDetails?.takeIf(String::isNotBlank)?.let { details ->
-            item { AddressSection("Latest delivery info", "Newest parsed convenience view; full screen snapshots remain below") }
+            item { AddressSection("Latest delivery info", "Newest parsed delivery details") }
             item { AddressInfoCard(details) }
         }
 
@@ -324,52 +346,70 @@ private fun AddressDetailsScreen(
                 }
             }
         }
+    }
+}
 
-        item {
-            AddressSection(
-                "Saved screens · ${observations.size}${if (observations.size >= 200) "+" else ""}",
-                if (observations.size >= 200) {
-                    "Showing the newest 200 snapshots; older raw history stays stored locally"
-                } else {
-                    "Raw address context is kept so future parsers can re-process it"
-                },
+@Composable
+private fun AccessHintSourceCard(
+    codes: List<String>,
+    source: AddressObservationRecord?,
+) {
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+    ) {
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                "Possible code: ${codes.joinToString(" / ")}",
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 16.sp,
             )
-        }
-        if (observations.isEmpty()) {
-            item { AddressInfoCard("No screen snapshots saved yet.") }
-        } else {
-            items(visibleObservations, key = { "observation-${it.id}" }) { observation ->
-                Card(shape = RoundedCornerShape(16.dp)) {
-                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(observation.platform, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                            Text(addressDate(observation.seenAt), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
-                        }
-                        observation.customerName?.takeIf(String::isNotBlank)?.let {
-                            Text(it, fontWeight = FontWeight.Medium, fontSize = 13.sp)
-                        }
-                        val body = observation.detailsText?.takeIf(String::isNotBlank) ?: observation.rawText
-                        Text(
-                            body,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 12.sp,
-                            maxLines = 8,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
+            if (source == null) {
+                Text(
+                    "This reminder came from saved address history, but the exact originating screen is outside the recent local source window.",
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    fontSize = 12.sp,
+                )
+            } else {
+                Text(
+                    "${source.platform} · captured ${addressDate(source.seenAt)}",
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    fontSize = 11.sp,
+                )
+                source.customerName?.takeIf(String::isNotBlank)?.let {
+                    Text(it, fontWeight = FontWeight.Medium, fontSize = 13.sp)
                 }
-            }
-            if (observations.size > COLLAPSED_OBSERVATION_COUNT) {
-                item {
-                    ExpandCollapseButton(
-                        expanded = observationsExpanded,
-                        collapsedLabel = "Show recent ${observations.size} snapshots",
-                        onClick = { observationsExpanded = !observationsExpanded },
-                    )
-                }
+                Text(
+                    accessHintSourceExcerpt(source, codes),
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    fontSize = 12.sp,
+                )
             }
         }
     }
+}
+
+private fun accessHintSourceExcerpt(
+    source: AddressObservationRecord,
+    codes: List<String>,
+): String {
+    val lines = source.rawText
+        .lineSequence()
+        .map { it.trim() }
+        .filter(String::isNotEmpty)
+        .toList()
+    if (lines.isEmpty()) return source.detailsText.orEmpty()
+
+    val index = lines.indexOfFirst { line ->
+        codes.any { code -> AccessCodeHintPolicy.isAlreadyVisible(line, code) }
+    }
+    if (index < 0) {
+        return source.detailsText?.takeIf(String::isNotBlank) ?: lines.take(8).joinToString("\n")
+    }
+
+    val start = (index - 3).coerceAtLeast(0)
+    val end = (index + 4).coerceAtMost(lines.size)
+    return lines.subList(start, end).joinToString("\n")
 }
 
 @Composable
@@ -433,4 +473,3 @@ private fun addressDate(timestamp: Long): String =
     SimpleDateFormat("d MMM yyyy · HH:mm", Locale.getDefault()).format(Date(timestamp))
 
 private const val COLLAPSED_CUSTOMER_COUNT = 5
-private const val COLLAPSED_OBSERVATION_COUNT = 5
