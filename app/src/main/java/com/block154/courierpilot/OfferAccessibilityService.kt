@@ -12,7 +12,6 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.google.mlkit.vision.common.InputImage
@@ -24,6 +23,7 @@ class OfferAccessibilityService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
     private val accessibilitySurface by lazy { OfferAccessibilitySurface(this) }
+    private val screenshotCapture by lazy { OfferScreenshotCapture(this, handler) }
     private var captureInFlight = false
     private val captureGuard = CaptureFlightGuard(CAPTURE_OPERATION_TIMEOUT_MS)
     private var lastHandledArmedAt = 0L
@@ -1387,142 +1387,13 @@ class OfferAccessibilityService : AccessibilityService() {
         return true
     }
 
-    private fun discardScreenshot(screenshot: ScreenshotResult) {
-        runCatching { screenshot.hardwareBuffer.close() }
-    }
+    private fun discardScreenshot(screenshot: ScreenshotResult) = screenshotCapture.discard(screenshot)
 
     private fun takeTargetScreenshot(
         windowId: Int,
         callback: TakeScreenshotCallback,
         preferDisplay: Boolean = false,
-    ) {
-        if (Build.VERSION.SDK_INT < 34) {
-            LiveAdvisorHub.setCaptureSuppressed(this, true)
-            val cleanCallback = object : TakeScreenshotCallback {
-                override fun onSuccess(screenshot: ScreenshotResult) {
-                    LiveAdvisorHub.setCaptureSuppressed(this@OfferAccessibilityService, false)
-                    callback.onSuccess(screenshot)
-                }
-
-                override fun onFailure(errorCode: Int) {
-                    LiveAdvisorHub.setCaptureSuppressed(this@OfferAccessibilityService, false)
-                    callback.onFailure(errorCode)
-                }
-            }
-            runCatching { takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, cleanCallback) }
-                .onFailure {
-                    LiveAdvisorHub.setCaptureSuppressed(this, false)
-                    CaptureEventLog.append(
-                        this,
-                        "screenshot_request_exception",
-                        "Display screenshot request threw ${it.javaClass.simpleName}",
-                        dedupeWindowMs = 3_000L,
-                    )
-                    callback.onFailure(ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR)
-                }
-            return
-        }
-
-        // On the real Android 16/ColorOS courier device takeScreenshotOfWindow can sit for several
-        // seconds and fail only after Wolt has already replaced the offer. A display capture returns
-        // much sooner and the overlay is suppressed around it, so use that direct path for
-        // time-critical Wolt OCR/proof frames.
-        if (preferDisplay) {
-            requestDisplayScreenshot(callback, fallback = false)
-            return
-        }
-
-        // Window-scoped capture is ideal, but courier activities transition quickly and Android can
-        // reject a perfectly valid request because the window id went stale between discovery and
-        // capture. Fall back to a display screenshot instead of losing the offer.
-        val windowCallback = object : TakeScreenshotCallback {
-            override fun onSuccess(screenshot: ScreenshotResult) {
-                callback.onSuccess(screenshot)
-            }
-
-            override fun onFailure(errorCode: Int) {
-                if (!shouldFallbackToDisplayScreenshot(errorCode)) {
-                    callback.onFailure(errorCode)
-                    return
-                }
-
-                val delay = if (errorCode == ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT) {
-                    DISPLAY_SCREENSHOT_RATE_LIMIT_RETRY_MS
-                } else {
-                    DISPLAY_SCREENSHOT_FALLBACK_DELAY_MS
-                }
-                CaptureEventLog.append(
-                    this@OfferAccessibilityService,
-                    "screenshot_window_fallback",
-                    "Window screenshot failed with Android error $errorCode; retrying as display capture",
-                    dedupeWindowMs = 2_000L,
-                )
-                handler.postDelayed({ requestDisplayScreenshot(callback, fallback = true) }, delay)
-            }
-        }
-
-        runCatching { takeScreenshotOfWindow(windowId, mainExecutor, windowCallback) }
-            .onFailure {
-                CaptureEventLog.append(
-                    this,
-                    "screenshot_window_exception",
-                    "Window screenshot request threw ${it.javaClass.simpleName}; trying display capture",
-                    dedupeWindowMs = 3_000L,
-                )
-                handler.postDelayed(
-                    { requestDisplayScreenshot(callback, fallback = true) },
-                    DISPLAY_SCREENSHOT_FALLBACK_DELAY_MS,
-                )
-            }
-    }
-
-    private fun requestDisplayScreenshot(callback: TakeScreenshotCallback, fallback: Boolean) {
-        LiveAdvisorHub.setCaptureSuppressed(this, true)
-        val displayCallback = object : TakeScreenshotCallback {
-            override fun onSuccess(screenshot: ScreenshotResult) {
-                LiveAdvisorHub.setCaptureSuppressed(this@OfferAccessibilityService, false)
-                CaptureEventLog.append(
-                    this@OfferAccessibilityService,
-                    if (fallback) "screenshot_display_fallback_ok" else "screenshot_display_direct_ok",
-                    if (fallback) "Display screenshot fallback succeeded" else "Direct display screenshot succeeded",
-                    dedupeWindowMs = 3_000L,
-                )
-                callback.onSuccess(screenshot)
-            }
-
-            override fun onFailure(displayErrorCode: Int) {
-                LiveAdvisorHub.setCaptureSuppressed(this@OfferAccessibilityService, false)
-                CaptureEventLog.append(
-                    this@OfferAccessibilityService,
-                    if (fallback) "screenshot_display_fallback_failed" else "screenshot_display_direct_failed",
-                    if (fallback) {
-                        "Display screenshot fallback failed with Android error $displayErrorCode"
-                    } else {
-                        "Direct display screenshot failed with Android error $displayErrorCode"
-                    },
-                    dedupeWindowMs = 3_000L,
-                )
-                callback.onFailure(displayErrorCode)
-            }
-        }
-        runCatching { takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, displayCallback) }
-            .onFailure {
-                LiveAdvisorHub.setCaptureSuppressed(this, false)
-                CaptureEventLog.append(
-                    this,
-                    "screenshot_display_exception",
-                    "Display screenshot request threw ${it.javaClass.simpleName}",
-                    dedupeWindowMs = 3_000L,
-                )
-                callback.onFailure(ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR)
-            }
-    }
-
-    private fun shouldFallbackToDisplayScreenshot(errorCode: Int): Boolean {
-        if (errorCode == ERROR_TAKE_SCREENSHOT_NO_ACCESSIBILITY_ACCESS) return false
-        if (Build.VERSION.SDK_INT >= 34 && errorCode == ERROR_TAKE_SCREENSHOT_SECURE_WINDOW) return false
-        return true
-    }
+    ) = screenshotCapture.takeTargetScreenshot(windowId, callback, preferDisplay)
 
     private fun isVisibleWoltOfferSurface(pending: PendingOffer): Boolean {
         if (pending.packageName != CourierSignals.WOLT_PACKAGE) return true
@@ -1686,21 +1557,7 @@ class OfferAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun screenshotToBitmap(screenshot: ScreenshotResult): Bitmap? {
-        val buffer = screenshot.hardwareBuffer
-        return try {
-            val hardwareBitmap = Bitmap.wrapHardwareBuffer(buffer, screenshot.colorSpace) ?: return null
-            try {
-                hardwareBitmap.copy(Bitmap.Config.ARGB_8888, false)
-            } finally {
-                hardwareBitmap.recycle()
-            }
-        } catch (_: Throwable) {
-            null
-        } finally {
-            buffer.close()
-        }
-    }
+    private fun screenshotToBitmap(screenshot: ScreenshotResult): Bitmap? = screenshotCapture.toBitmap(screenshot)
 
     private fun handleScreenshotFailure(
         errorCode: Int,
@@ -1717,7 +1574,7 @@ class OfferAccessibilityService : AccessibilityService() {
                 OfferState.platformLabel(pending.packageName),
                 2_000L,
             )
-            if (retry) scheduleAttempt(DISPLAY_SCREENSHOT_RATE_LIMIT_RETRY_MS)
+            if (retry) scheduleAttempt(OfferScreenshotCapture.RATE_LIMIT_RETRY_MS)
             return
         }
         val reason = when (errorCode) {
@@ -1905,8 +1762,6 @@ class OfferAccessibilityService : AccessibilityService() {
         private const val DISCOVERY_EVENT_WINDOW_MS = 1_500L
         private const val DISCOVERY_OCR_MIN_INTERVAL_MS = 1_800L
         private const val DISCOVERY_SCREENSHOT_RETRY_MS = 1_200L
-        private const val DISPLAY_SCREENSHOT_FALLBACK_DELAY_MS = 120L
-        private const val DISPLAY_SCREENSHOT_RATE_LIMIT_RETRY_MS = 750L
         private const val OPTIONAL_SCREENSHOT_FAILURE_LIMIT = 3
         private const val CAPTURE_OPERATION_TIMEOUT_MS = 8_000L
     }
