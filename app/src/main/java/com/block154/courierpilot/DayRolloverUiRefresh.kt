@@ -15,7 +15,7 @@ import java.util.Locale
  *
  * The dashboard already schedules a midnight recomposition, but Android may pause/resume activities
  * around courier-app switching or defer callbacks. This guard tracks the actual local calendar day
- * and recreates the visible CourierPilot dashboard/home once when that day changes.
+ * and recreates the visible CourierPilot dashboard once when that day changes.
  */
 internal object DayRolloverUiRefresh : Application.ActivityLifecycleCallbacks {
     private const val CHECK_INTERVAL_MS = 30_000L
@@ -58,7 +58,7 @@ internal object DayRolloverUiRefresh : Application.ActivityLifecycleCallbacks {
         val current = dayKey()
         if (current == lastDayKey) return
         lastDayKey = current
-        if (activity is CourierPilotDashboardActivity || activity is CourierPilotHomeActivity) {
+        if (activity is CourierPilotDashboardActivity) {
             activity.recreate()
         }
     }
