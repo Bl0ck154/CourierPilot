@@ -1,6 +1,7 @@
 package com.block154.courierpilot
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -44,6 +45,62 @@ class AddressMemoryUiProjectionTest {
         val projected = AddressMemoryUiProjection.summarizeCodes(codes, observations)
 
         assertEquals(listOf("*2580*"), projected.map { it.code })
+    }
+
+    @Test
+    fun accessHintSourceUsesNewestRawScreenThatActuallyCarriesAccessCue() {
+        val observations = listOf(
+            AddressObservationRecord(
+                id = 12,
+                addressId = 5,
+                seenAt = 500,
+                platform = "Wolt",
+                customerName = "Jelena",
+                detailsText = "Apartment 2580",
+                rawText = "Dropoff to\nJelena\nTestu g. 1\nApartment, flat or suite number\n2580\nFloor\n1",
+            ),
+            AddressObservationRecord(
+                id = 11,
+                addressId = 5,
+                seenAt = 400,
+                platform = "Wolt",
+                customerName = "Jelena",
+                detailsText = "Entrance code *2580*",
+                rawText = "Dropoff to\nJelena\nTestu g. 1\nEntrance code\n*2580*\nFloor\n1",
+            ),
+            AddressObservationRecord(
+                id = 10,
+                addressId = 5,
+                seenAt = 300,
+                platform = "Bolt",
+                customerName = "Jelena",
+                detailsText = "Door code *2580*",
+                rawText = "Address\nTestu g. 1\nDoor code: *2580*",
+            ),
+        )
+
+        val source = AddressMemoryUiProjection.findAccessHintSource(observations, listOf("*2580*"))
+
+        assertEquals(11L, source?.id)
+    }
+
+    @Test
+    fun accessHintSourceDoesNotTreatBareNumericCoincidenceAsProof() {
+        val observations = listOf(
+            AddressObservationRecord(
+                id = 20,
+                addressId = 5,
+                seenAt = 600,
+                platform = "Wolt",
+                customerName = "Jelena",
+                detailsText = "Apartment 145",
+                rawText = "Dropoff to\nJelena\nTestu g. 1\nApartment, flat or suite number\n145\nFloor\n1",
+            )
+        )
+
+        val source = AddressMemoryUiProjection.findAccessHintSource(observations, listOf("145"))
+
+        assertNull(source)
     }
 
     private fun customer(
