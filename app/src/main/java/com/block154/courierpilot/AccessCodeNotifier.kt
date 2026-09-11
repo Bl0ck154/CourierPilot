@@ -24,23 +24,7 @@ internal object AccessCodeNotifier {
         ensureChannel(manager)
 
         val notificationId = notificationId(suggestion.displayAddress)
-        val savedAddress = runCatching {
-            CourierMetaDatabase.get(app).findAddressForDisplayAddress(suggestion.displayAddress)
-        }.getOrNull()
-        val intent = if (savedAddress != null) {
-            Intent(app, AddressDetailsActivity::class.java).apply {
-                putExtra(AddressDetailsActivity.EXTRA_ADDRESS_ID, savedAddress.id)
-                putStringArrayListExtra(
-                    AddressDetailsActivity.EXTRA_ACCESS_CODES,
-                    ArrayList(suggestion.codes.map(String::trim).filter(String::isNotEmpty).distinct()),
-                )
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            }
-        } else {
-            Intent(app, CourierPilotDashboardActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-            }
-        }
+        val intent = navigationIntent(app, suggestion)
         val contentIntent = PendingIntent.getActivity(
             app,
             notificationId,
@@ -65,6 +49,27 @@ internal object AccessCodeNotifier {
 
         manager.notify(notificationId, notification)
         return true
+    }
+
+    internal fun navigationIntent(context: Context, suggestion: AccessCodeSuggestion): Intent {
+        val app = context.applicationContext
+        val savedAddress = runCatching {
+            CourierMetaDatabase.get(app).findAddressForDisplayAddress(suggestion.displayAddress)
+        }.getOrNull()
+        return if (savedAddress != null) {
+            Intent(app, AddressDetailsActivity::class.java).apply {
+                putExtra(AddressDetailsActivity.EXTRA_ADDRESS_ID, savedAddress.id)
+                putStringArrayListExtra(
+                    AddressDetailsActivity.EXTRA_ACCESS_CODES,
+                    ArrayList(suggestion.codes.map(String::trim).filter(String::isNotEmpty).distinct()),
+                )
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+        } else {
+            Intent(app, CourierPilotDashboardActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+        }
     }
 
     private fun ensureChannel(manager: NotificationManager) {
