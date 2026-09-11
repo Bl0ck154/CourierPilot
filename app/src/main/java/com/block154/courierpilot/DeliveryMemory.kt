@@ -37,6 +37,19 @@ internal object DeliveryMemory {
         if (source != ScreenTextSource.ACCESSIBILITY) return
         LiveAdvisorHub.observeScreen(context, packageName, text)
 
+        // A reminder is armed for up to a few hours, so explicitly retire it when the courier UI
+        // proves that the task ended. Wolt returning to its stable idle home is also authoritative
+        // enough to discard a reminder that never fired (for example after cancellation elsewhere).
+        val terminalLifecycle = DeliveryLifecycleTracking.detect(text)?.type
+        val terminalTask = terminalLifecycle == DeliveryEventType.DELIVERED ||
+            terminalLifecycle == DeliveryEventType.CANCELLED
+        val woltIdleHome = packageName == CourierSignals.WOLT_PACKAGE &&
+            CourierSignals.looksLikeIdleHomeScreen(packageName, text)
+        if (terminalTask || woltIdleHome) {
+            ArrivalAccessHintMonitor.cancelAll(context)
+            AccessCodeSuggestions.clear(context)
+        }
+
         val platform = OfferState.platformLabel(packageName)
         val database = CourierMetaDatabase.get(context)
         val screenDetails = DeliveryScreenDetailsExtractor.extractForPlatform(packageName, text)
@@ -227,6 +240,9 @@ internal object DeliveryMemory {
                 platform = platform,
                 updatedAt = System.currentTimeMillis(),
             )
+            // Do not expose the ephemeral suggestion until the arrival gate actually fires. This
+            // also clears any leftover pre-arrival suggestion from an older order/app version.
+            AccessCodeSuggestions.clear(context)
             ArrivalAccessHintMonitor.arm(
                 context = context,
                 deliveryKey = deliveryKey,
