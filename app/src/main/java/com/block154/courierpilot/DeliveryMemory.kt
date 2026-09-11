@@ -37,15 +37,13 @@ internal object DeliveryMemory {
         if (source != ScreenTextSource.ACCESSIBILITY) return
         LiveAdvisorHub.observeScreen(context, packageName, text)
 
-        // A reminder is armed for up to a few hours, so explicitly retire it when the courier UI
-        // proves that the task ended. Wolt returning to its stable idle home is also authoritative
-        // enough to discard a reminder that never fired (for example after cancellation elsewhere).
+        // A reminder may stay armed while navigation is in another app. Explicit terminal courier
+        // UI is strong enough to retire it; transient Wolt home semantics are deliberately ignored
+        // here because Compose can expose them under a still-active task/offer surface.
         val terminalLifecycle = DeliveryLifecycleTracking.detect(text)?.type
         val terminalTask = terminalLifecycle == DeliveryEventType.DELIVERED ||
             terminalLifecycle == DeliveryEventType.CANCELLED
-        val woltIdleHome = packageName == CourierSignals.WOLT_PACKAGE &&
-            CourierSignals.looksLikeIdleHomeScreen(packageName, text)
-        if (terminalTask || woltIdleHome) {
+        if (terminalTask) {
             ArrivalAccessHintMonitor.cancelAll(context)
             AccessCodeSuggestions.clear(context)
         }
