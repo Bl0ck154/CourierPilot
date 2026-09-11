@@ -31,8 +31,8 @@ android {
         applicationId = "com.block154.courierpilot"
         minSdk = 30
         targetSdk = 35
-        versionCode = 114
-        versionName = "0.15.73"
+        versionCode = 115
+        versionName = "0.15.74"
     }
 
     signingConfigs {
@@ -70,10 +70,6 @@ android {
 }
 
 tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
-    // Robolectric resolves its instrumented Android SDK at test runtime instead of through Gradle's
-    // normal dependency graph. Its legacy default is repo1.maven.org, which intermittently returns
-    // HTTP 403 to GitHub-hosted runners. Pin the canonical Maven Central endpoint explicitly so a
-    // healthy test suite cannot fail because that legacy hostname blocks the runner.
     systemProperty("robolectric.dependency.repo.url", "https://repo.maven.apache.org/maven2")
 
     testLogging {

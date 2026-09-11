@@ -14,7 +14,7 @@ import android.os.Build
 internal object AccessCodeNotifier {
     private const val CHANNEL_ID = "courierpilot_access_codes"
 
-    fun show(context: Context, suggestion: AccessCodeSuggestion): Boolean {
+    fun show(context: Context, suggestion: AccessCodeSuggestion, buildingKey: String): Boolean {
         val app = context.applicationContext
         if (Build.VERSION.SDK_INT >= 33 &&
             app.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -31,6 +31,22 @@ internal object AccessCodeNotifier {
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        val worksIntent = feedbackIntent(
+            app = app,
+            action = AccessCodeFeedbackReceiver.ACTION_WORKS,
+            requestCode = notificationId * 10 + 1,
+            notificationId = notificationId,
+            buildingKey = buildingKey,
+            codes = suggestion.codes,
+        )
+        val wrongIntent = feedbackIntent(
+            app = app,
+            action = AccessCodeFeedbackReceiver.ACTION_WRONG_OLD,
+            requestCode = notificationId * 10 + 2,
+            notificationId = notificationId,
+            buildingKey = buildingKey,
+            codes = suggestion.codes,
+        )
         val codeText = suggestion.codes.joinToString(" / ")
         val title = "Door code · ${suggestion.displayAddress}"
         val body = "Possible saved code: $codeText"
@@ -45,6 +61,8 @@ internal object AccessCodeNotifier {
             .setAutoCancel(true)
             .setContentIntent(contentIntent)
             .setPriority(Notification.PRIORITY_HIGH)
+            .addAction(0, "Works", worksIntent)
+            .addAction(0, "Wrong / old", wrongIntent)
             .build()
 
         manager.notify(notificationId, notification)
@@ -71,6 +89,25 @@ internal object AccessCodeNotifier {
             }
         }
     }
+
+    private fun feedbackIntent(
+        app: Context,
+        action: String,
+        requestCode: Int,
+        notificationId: Int,
+        buildingKey: String,
+        codes: List<String>,
+    ): PendingIntent = PendingIntent.getBroadcast(
+        app,
+        requestCode,
+        Intent(app, AccessCodeFeedbackReceiver::class.java).apply {
+            this.action = action
+            putExtra(AccessCodeFeedbackReceiver.EXTRA_BUILDING_KEY, buildingKey)
+            putStringArrayListExtra(AccessCodeFeedbackReceiver.EXTRA_CODES, ArrayList(codes))
+            putExtra(AccessCodeFeedbackReceiver.EXTRA_NOTIFICATION_ID, notificationId)
+        },
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
 
     private fun ensureChannel(manager: NotificationManager) {
         if (Build.VERSION.SDK_INT < 26) return

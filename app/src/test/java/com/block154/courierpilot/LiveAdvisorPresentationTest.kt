@@ -7,18 +7,16 @@ import org.junit.Test
 
 class LiveAdvisorPresentationTest {
     @Test
-    fun rateLineShowsOnlyPrimaryEuroPerKilometerAndEmoji() {
+    fun rateLineShowsOnlyPrimaryMoneyPerKilometerAndEmoji() {
         val decision = OfferDecision(
             rating = 5,
             band = OfferDecisionBand.FIRE,
-            euroPerKilometer = 2.97,
+            moneyPerKilometer = 2.97,
             routeDistanceMeters = 1744,
             routeVerifiedKilometerRate = true,
             currencyCode = "EUR",
         )
-
         val line = LiveAdvisorPresentation.rateLine(decision)
-
         assertEquals("≈ €2.97/km  🔥", line)
         assertEquals(1, Regex("/km").findAll(line).count())
         assertFalse(line.contains("/h"))
@@ -29,14 +27,12 @@ class LiveAdvisorPresentationTest {
         val decision = OfferDecision(
             rating = 4,
             band = OfferDecisionBand.GOOD,
-            euroPerKilometer = 5.25,
+            moneyPerKilometer = 5.25,
             routeDistanceMeters = 4000,
             routeVerifiedKilometerRate = true,
             currencyCode = "PLN",
         )
-
         val line = LiveAdvisorPresentation.rateLine(decision)
-
         assertEquals("≈ PLN 5.25/km  👍", line)
         assertFalse(line.contains("€"))
         assertFalse(line.contains("/h"))
@@ -48,7 +44,6 @@ class LiveAdvisorPresentationTest {
             money = MoneyAmount(533, "EUR", 2),
             estimatedRouteMeters = 7500,
         )
-
         assertEquals("≈ €0.71/km  ⏳", line)
         assertFalse(line!!.contains("💩"))
         assertFalse(line.contains("🔥"))
@@ -61,7 +56,6 @@ class LiveAdvisorPresentationTest {
             estimatedRouteMeters = 2300,
             marker = "Wolt",
         )
-
         assertEquals("≈ €1.21/km  Wolt", line)
     }
 
@@ -73,23 +67,9 @@ class LiveAdvisorPresentationTest {
 
     @Test
     fun routeLineShowsOnlyWalkingAndCyclingProfiles() {
-        val walking = RouteResult(
-            provider = "test",
-            profile = RouteProfile.PEDESTRIAN_SHORTCUT,
-            distanceMeters = 4100,
-            durationSeconds = 900,
-            legShapes = emptyList(),
-        )
-        val cycling = RouteResult(
-            provider = "test",
-            profile = RouteProfile.CYCLEWAY_BIASED,
-            distanceMeters = 4500,
-            durationSeconds = 700,
-            legShapes = emptyList(),
-        )
-
+        val walking = RouteResult("test", RouteProfile.PEDESTRIAN_SHORTCUT, 4100, 900, emptyList())
+        val cycling = RouteResult("test", RouteProfile.CYCLEWAY_BIASED, 4500, 700, emptyList())
         val line = LiveAdvisorPresentation.routeLine(walking, cycling)
-
         assertTrue(line.contains("🚶 4.10 km"))
         assertTrue(line.contains("🚲 4.50 km"))
         assertFalse(line.contains("≈"))

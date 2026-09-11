@@ -11,4 +11,16 @@
             android:targetPackage="com.block154.courierpilot"
             android:targetClass="com.block154.courierpilot.RouteTraceActivity" />
     </shortcut>
+
+    <shortcut
+        android:shortcutId="storage"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_storage_short"
+        android:shortcutLongLabel="@string/shortcut_storage_long">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetPackage="com.block154.courierpilot"
+            android:targetClass="com.block154.courierpilot.StorageSettingsActivity" />
+    </shortcut>
 </shortcuts>

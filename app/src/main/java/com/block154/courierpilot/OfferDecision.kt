@@ -18,14 +18,12 @@ internal enum class OfferDecisionBand(val emoji: String, val rating: Int?) {
 internal data class OfferDecision(
     val rating: Int?,
     val band: OfferDecisionBand,
-    val euroPerKilometer: Double?,
+    /** Amount in the offer's native currency per real Valhalla route kilometre. */
+    val moneyPerKilometer: Double?,
     val routeDistanceMeters: Int?,
     val routeVerifiedKilometerRate: Boolean,
     val currencyCode: String? = null,
-) {
-    /** Native-money/km. Kept as an alias while legacy callers still use the old field name. */
-    val moneyPerKilometer: Double? get() = euroPerKilometer
-}
+)
 
 /**
  * Sorted native-money/km percentile edges for the five live bands. Equal percentile boundaries are
@@ -43,7 +41,6 @@ internal data class OfferDecisionThresholds(
         require(okAtMost >= badBelow)
         require(goodBelow >= okAtMost)
     }
-
 }
 
 /**
@@ -83,7 +80,7 @@ internal object OfferDecisionEngine {
         return OfferDecision(
             rating = band.rating,
             band = band,
-            euroPerKilometer = perKm,
+            moneyPerKilometer = perKm,
             routeDistanceMeters = routeMeters,
             routeVerifiedKilometerRate = routeMeters != null,
             currencyCode = money?.currencyCode,

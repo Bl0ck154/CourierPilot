@@ -39,6 +39,7 @@
             android:name=".CourierPilotDashboardActivity"
             android:exported="true" />
 
+        <activity android:name=".StorageSettingsActivity" android:exported="true" />
         <activity android:name=".OfferDetailsActivity" android:exported="false" />
         <activity android:name=".AddressDetailsActivity" android:exported="false" />
         <activity android:name=".ReliabilityActivity" android:exported="false" />
@@ -68,6 +69,10 @@
 
         <receiver
             android:name=".AppUpdateNotificationReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".AccessCodeFeedbackReceiver"
             android:exported="false" />
 
         <service

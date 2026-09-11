@@ -1,6 +1,7 @@
 package com.block154.courierpilot
 
 import android.content.Context
+import java.util.Locale
 
 /**
  * Learns local delivery context for customer buildings seen in the courier apps.
@@ -33,13 +34,9 @@ internal object DeliveryMemory {
             CourierPresence.markOfferOnline(context, packageName, "offer screen")
         }
 
-        // OCR may enrich live offer parsing, but cannot advance lifecycle or mutate address memory.
         if (source != ScreenTextSource.ACCESSIBILITY) return
         LiveAdvisorHub.observeScreen(context, packageName, text)
 
-        // A reminder may stay armed while navigation is in another app. Explicit terminal courier
-        // UI is strong enough to retire it; transient Wolt home semantics are deliberately ignored
-        // here because Compose can expose them under a still-active task/offer surface.
         val terminalLifecycle = DeliveryLifecycleTracking.detect(text)?.type
         val terminalTask = terminalLifecycle == DeliveryEventType.DELIVERED ||
             terminalLifecycle == DeliveryEventType.CANCELLED
@@ -101,9 +98,6 @@ internal object DeliveryMemory {
                 val detailsAddress = details.address ?: return@takeIf false
                 DeliveryAddressNormalizer.matchScore(detailsAddress, rawAddress) >= 0.86
             }
-            // Parsed fields are only optional convenience metadata. The complete trusted
-            // Accessibility frame is always passed as rawText and remains the durable source of
-            // truth for later parsing/re-processing.
             val customer = matchedScreenDetails?.customerName
                 ?.trim()
                 ?.takeIf(String::isNotEmpty)
@@ -161,11 +155,6 @@ internal object DeliveryMemory {
             )
         }.distinct()
 
-        // Code extraction is only a best-effort derived view over the raw snapshot. Never let a
-        // numeric apartment/flat value become a learned code. If the current order already exposes
-        // access-code information, suppress historical hints for this delivery even when the exact
-        // code format is too unusual for our parser; the courier can already see the authoritative
-        // current-order text.
         val extractedCodeObservations = CourierSignals.extractAccessCodeObservations(text, fallback)
         val observations = extractedCodeObservations
             .filter { AccessCodeHintPolicy.shouldLearnCandidate(text, it.code) }
@@ -190,6 +179,11 @@ internal object DeliveryMemory {
             observations.forEach { observation ->
                 runCatching { database.saveAccessCode(observation, platform) }
                     .onSuccess {
+                        AccessHintFeedbackStore.markObserved(
+                            context,
+                            observation.buildingKey,
+                            observation.code,
+                        )
                         CaptureEventLog.append(
                             context,
                             stage = "access_code",
@@ -238,8 +232,6 @@ internal object DeliveryMemory {
                 platform = platform,
                 updatedAt = System.currentTimeMillis(),
             )
-            // Do not expose the ephemeral suggestion until the arrival gate actually fires. This
-            // also clears any leftover pre-arrival suggestion from an older order/app version.
             AccessCodeSuggestions.clear(context)
             ArrivalAccessHintMonitor.arm(
                 context = context,
@@ -269,17 +261,27 @@ internal object DeliveryMemory {
             .map { it.rawText }
 
         return database.codesForBuilding(buildingKey)
-            .map { it.code }
-            .distinct()
-            .filterNot { code -> AccessCodeHintPolicy.isAlreadyVisible(currentText, code) }
-            .filter { code ->
-                // Existing installs may already contain bad numeric rows learned before this fix.
-                // If any preserved raw snapshot proves that candidate was actually an apartment or
-                // flat number, keep the raw history but never surface that derived row as a hint.
+            .distinctBy { it.code.trim().uppercase(Locale.ROOT) }
+            .filter { record -> AccessHintFeedbackStore.shouldSurface(context, record) }
+            .filterNot { record -> AccessCodeHintPolicy.isAlreadyVisible(currentText, record.code) }
+            .filter { record ->
                 rawHistory.none { historicalText ->
-                    !AccessCodeHintPolicy.shouldLearnCandidate(historicalText, code)
+                    !AccessCodeHintPolicy.shouldLearnCandidate(historicalText, record.code)
                 }
             }
+            .sortedWith(
+                compareByDescending<AccessCodeRecord> {
+                    when (AccessHintFeedbackStore.confidenceLabel(context, it)) {
+                        "high" -> 3
+                        "medium" -> 2
+                        else -> 1
+                    }
+                }.thenByDescending { it.lastSeenAt }
+            )
+            // One actionable reminder at a time keeps Works/Wrong feedback unambiguous. Other
+            // historical candidates remain in address memory and can surface on later deliveries.
+            .take(1)
+            .map { it.code }
     }
 
     private fun addressContext(text: String, address: String): String? {
