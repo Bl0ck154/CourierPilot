@@ -15,9 +15,16 @@ class ArrivalAccessHintPolicyTest {
                 ageMillis = 2_000L,
             )
         )
+        assertTrue(
+            ArrivalAccessHintPolicy.shouldNotify(
+                distanceMeters = 260.0,
+                accuracyMeters = 10f,
+                ageMillis = 1_000L,
+            )
+        )
         assertFalse(
             ArrivalAccessHintPolicy.shouldNotify(
-                distanceMeters = 180.0,
+                distanceMeters = 360.0,
                 accuracyMeters = 10f,
                 ageMillis = 1_000L,
             )
@@ -50,7 +57,7 @@ class ArrivalAccessHintPolicyTest {
         assertEquals(60_000L, ArrivalAccessHintPolicy.nextCheckDelayMs(2_000.0))
         assertEquals(30_000L, ArrivalAccessHintPolicy.nextCheckDelayMs(900.0))
         assertEquals(15_000L, ArrivalAccessHintPolicy.nextCheckDelayMs(400.0))
-        assertEquals(8_000L, ArrivalAccessHintPolicy.nextCheckDelayMs(90.0))
+        assertEquals(8_000L, ArrivalAccessHintPolicy.nextCheckDelayMs(290.0))
     }
 
     @Test

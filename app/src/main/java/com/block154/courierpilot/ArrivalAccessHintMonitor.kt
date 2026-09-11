@@ -24,7 +24,9 @@ import kotlin.math.sqrt
 
 /** Pure arrival policy kept separate so timing and distance rules can be regression-tested. */
 internal object ArrivalAccessHintPolicy {
-    const val ARRIVAL_RADIUS_METERS = 100.0
+    // Geocoders commonly return one representative point for an entire parcel/building complex.
+    // 300 m leaves enough headroom for large properties while still keeping the hint arrival-scoped.
+    const val ARRIVAL_RADIUS_METERS = 300.0
     const val MAX_LOCATION_ACCURACY_METERS = 80f
     const val MAX_LOCATION_AGE_MS = 45_000L
     const val REMINDER_TTL_MS = 3L * 60L * 60L * 1000L
@@ -39,7 +41,7 @@ internal object ArrivalAccessHintPolicy {
         distanceMeters == null -> 30_000L
         distanceMeters > 1_500.0 -> 60_000L
         distanceMeters > 500.0 -> 30_000L
-        distanceMeters > 250.0 -> 15_000L
+        distanceMeters > ARRIVAL_RADIUS_METERS -> 15_000L
         else -> 8_000L
     }
 
@@ -271,7 +273,6 @@ internal object ArrivalAccessHintMonitor {
                 return
             }
             if (current.destination == null) {
-                // Resolve again after a transient network/geocoder failure.
                 current
             } else {
                 if (locationGeneration == current.generation) return
