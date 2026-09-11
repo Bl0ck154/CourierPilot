@@ -9,9 +9,6 @@ import java.text.Normalizer
  * price and rejects obvious OCR branch fragments such as "str.)".
  */
 internal object BoltOfferTextSanitizer {
-    private val priceRegex = Regex(
-        "(?i)(?:€\\s*|EUR\\s*)(\\d+(?:[.,]\\d{1,2})?)|(\\d+(?:[.,]\\d{1,2})?)\\s*(?:€|EUR)"
-    )
     private val addressRegex = Regex(
         "(?i).*(?:\\bvilnius\\b|\\bLT-?\\d{5}\\b|\\bgatv(?:ė|e)\\b|\\bg\\.\\s*\\d|\\bstr\\.?\\s*\\d).*$"
     )
@@ -32,9 +29,10 @@ internal object BoltOfferTextSanitizer {
 
         // When an older capture accidentally contains the whole Bolt screen, the offer price lives
         // in the lower card and therefore appears after account/earnings amounts. Anchor on the last
-        // currency line, retain the nearby card text, and discard every earlier € line even when the
-        // textual window is wide enough to include an account total.
-        val priceIndices = lines.indices.filter { priceRegex.containsMatchIn(lines[it]) }
+        // supported currency line, retain the nearby card text, and discard every earlier money line
+        // even when the textual window is wide enough to include an account total. Do not hard-code
+        // EUR here: the parser already knows the supported native currencies and fraction scales.
+        val priceIndices = lines.indices.filter { MarketCurrencyParser.containsMoney(lines[it]) }
         if (priceIndices.isEmpty()) return lines.joinToString("\n")
         val priceIndex = priceIndices.last()
 
@@ -52,7 +50,7 @@ internal object BoltOfferTextSanitizer {
         return (start..end)
             .mapNotNull { index ->
                 val line = lines[index]
-                line.takeUnless { index != priceIndex && priceRegex.containsMatchIn(it) }
+                line.takeUnless { index != priceIndex && MarketCurrencyParser.containsMoney(line) }
             }
             .joinToString("\n")
     }
