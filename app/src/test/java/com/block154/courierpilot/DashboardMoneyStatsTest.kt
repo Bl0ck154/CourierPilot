@@ -1,5 +1,7 @@
 package com.block154.courierpilot
 
+import android.content.ContentValues
+import android.content.Context
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -11,14 +13,16 @@ import org.robolectric.RuntimeEnvironment
 
 @RunWith(RobolectricTestRunner::class)
 class DashboardMoneyStatsTest {
+    private lateinit var context: Context
     private lateinit var database: OfferDatabase
 
     @Before
     fun setUp() {
-        val context = RuntimeEnvironment.getApplication()
+        context = RuntimeEnvironment.getApplication()
         database = OfferDatabase.get(context)
         database.writableDatabase.delete("offers", null, null)
         database.writableDatabase.delete("market_observations", null, null)
+        context.getSharedPreferences("courier_offer_repairs", Context.MODE_PRIVATE).edit().clear().commit()
     }
 
     @Test
@@ -118,6 +122,45 @@ class DashboardMoneyStatsTest {
                 oldBugRow.copy(currencyCode = "PLN"),
                 actual,
             )
+        )
+    }
+
+    @Test
+    fun revision19RepairsOldInsertDefaultWithoutChangingCapturedAmount() {
+        val raw = "16 min, 19,50 PLN\nAccept"
+        val oldId = database.writableDatabase.insertOrThrow(
+            "offers",
+            null,
+            ContentValues().apply {
+                put("captured_at", System.currentTimeMillis())
+                put("platform", "Bolt")
+                put("package_name", CourierSignals.BOLT_PACKAGE)
+                put("price_cents", 1_950)
+                put("currency_code", "EUR")
+                put("currency_fraction_digits", 2)
+                put("distance_meters", 2_000)
+                put("restaurant", "Historical test")
+                put("screenshot_uri", "")
+                put("screenshot_filename", "")
+                put("raw_text", raw)
+                put("capture_key", "old-currency-default")
+            },
+        )
+        context.getSharedPreferences("courier_offer_repairs", Context.MODE_PRIVATE)
+            .edit()
+            .putInt("parser_repair_revision", 18)
+            .commit()
+
+        OfferDataRepair.runIfNeeded(context)
+
+        val repaired = database.findById(oldId)!!
+        assertEquals(1_950, repaired.priceCents)
+        assertEquals("PLN", repaired.currencyCode)
+        assertEquals(2, repaired.currencyFractionDigits)
+        assertEquals(
+            19,
+            context.getSharedPreferences("courier_offer_repairs", Context.MODE_PRIVATE)
+                .getInt("parser_repair_revision", 0),
         )
     }
 
