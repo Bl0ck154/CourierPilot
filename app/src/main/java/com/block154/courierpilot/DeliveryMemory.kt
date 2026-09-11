@@ -190,6 +190,13 @@ internal object DeliveryMemory {
             observations.forEach { observation ->
                 runCatching { database.saveAccessCode(observation, platform) }
                     .onSuccess {
+                        // A newly observed code is authoritative live evidence. It may legitimately
+                        // revive a code that the courier marked wrong/old on an earlier visit.
+                        AccessHintFeedbackStore.markObserved(
+                            context,
+                            observation.buildingKey,
+                            observation.code,
+                        )
                         CaptureEventLog.append(
                             context,
                             stage = "access_code",
@@ -269,17 +276,27 @@ internal object DeliveryMemory {
             .map { it.rawText }
 
         return database.codesForBuilding(buildingKey)
-            .map { it.code }
-            .distinct()
-            .filterNot { code -> AccessCodeHintPolicy.isAlreadyVisible(currentText, code) }
-            .filter { code ->
+            .distinctBy { it.code.trim().uppercase() }
+            .filter { record -> AccessHintFeedbackStore.shouldSurface(context, record) }
+            .filterNot { record -> AccessCodeHintPolicy.isAlreadyVisible(currentText, record.code) }
+            .filter { record ->
                 // Existing installs may already contain bad numeric rows learned before this fix.
                 // If any preserved raw snapshot proves that candidate was actually an apartment or
                 // flat number, keep the raw history but never surface that derived row as a hint.
                 rawHistory.none { historicalText ->
-                    !AccessCodeHintPolicy.shouldLearnCandidate(historicalText, code)
+                    !AccessCodeHintPolicy.shouldLearnCandidate(historicalText, record.code)
                 }
             }
+            .sortedWith(
+                compareByDescending<AccessCodeRecord> {
+                    when (AccessHintFeedbackStore.confidenceLabel(context, it)) {
+                        "high" -> 3
+                        "medium" -> 2
+                        else -> 1
+                    }
+                }.thenByDescending { it.lastSeenAt }
+            )
+            .map { it.code }
     }
 
     private fun addressContext(text: String, address: String): String? {
