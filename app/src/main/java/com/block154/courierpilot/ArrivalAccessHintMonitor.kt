@@ -1,9 +1,19 @@
 package com.block154.courierpilot
 
+import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.location.Location
+import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.widget.Toast
 import com.google.android.gms.location.LocationServices
 import java.util.Locale
@@ -45,12 +55,71 @@ internal object ArrivalAccessHintPolicy {
     }
 }
 
+/** Background location is required because Wolt/Maps, not CourierPilot, is foreground on the trip. */
+internal object ArrivalLocationPermission {
+    private const val CHANNEL_ID = "courierpilot_arrival_setup"
+    private const val NOTIFICATION_ID = 0x4D71
+
+    fun hasBackgroundAccess(context: Context): Boolean =
+        RouteResearchLocation.hasPermission(context) &&
+            context.checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    fun showSetup(context: Context) {
+        val app = context.applicationContext
+        if (hasBackgroundAccess(app)) {
+            clearSetup(app)
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 33 &&
+            app.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
+
+        val manager = app.getSystemService(NotificationManager::class.java) ?: return
+        manager.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_ID,
+                "Arrival reminder setup",
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply {
+                description = "Setup needed for door-code reminders at the delivery address"
+                setShowBadge(false)
+            }
+        )
+
+        val settingsIntent = Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.parse("package:${app.packageName}"),
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val contentIntent = PendingIntent.getActivity(
+            app,
+            NOTIFICATION_ID,
+            settingsIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val body = "Open Permissions → Location and choose Allow all the time. This lets CourierPilot show saved door codes when you reach the delivery address."
+        val notification = Notification.Builder(app, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_stat_courierpilot)
+            .setContentTitle("Enable arrival code reminders")
+            .setContentText(body)
+            .setStyle(Notification.BigTextStyle().bigText(body))
+            .setContentIntent(contentIntent)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .build()
+        manager.notify(NOTIFICATION_ID, notification)
+    }
+
+    fun clearSetup(context: Context) {
+        context.applicationContext.getSystemService(NotificationManager::class.java)
+            ?.cancel(NOTIFICATION_ID)
+    }
+}
+
 /**
  * Arms a historical door-code hint when a delivery address is recognized, but does not notify yet.
  * The accessibility service keeps CourierPilot's process alive during deliveries, so this monitor can
  * cheaply sample the fused-location cache that Wolt/Google Maps already keep fresh. A fresh location
- * request is used only when that cache is stale. No background-location permission or permanent
- * tracking service is required.
+ * request is used only when that cache is stale.
  */
 internal object ArrivalAccessHintMonitor {
     private data class ArmedReminder(
@@ -85,6 +154,12 @@ internal object ArrivalAccessHintMonitor {
     ) {
         if (deliveryKey.isBlank() || buildingKey.isBlank() || suggestion.codes.isEmpty()) return
         val app = context.applicationContext
+        if (ArrivalLocationPermission.hasBackgroundAccess(app)) {
+            ArrivalLocationPermission.clearSetup(app)
+        } else {
+            ArrivalLocationPermission.showSetup(app)
+        }
+
         val now = System.currentTimeMillis()
         var shouldResolve = false
         var shouldPoke = false
@@ -250,10 +325,12 @@ internal object ArrivalAccessHintMonitor {
     }
 
     private fun requestArrivalFix(context: Context, callback: (Result<CurrentLocationFix>) -> Unit) {
-        if (!RouteResearchLocation.hasPermission(context)) {
-            callback(Result.failure(SecurityException("Location permission is required for arrival-timed access hints")))
+        if (!ArrivalLocationPermission.hasBackgroundAccess(context)) {
+            ArrivalLocationPermission.showSetup(context)
+            callback(Result.failure(SecurityException("Background location is required for arrival-timed access hints")))
             return
         }
+        ArrivalLocationPermission.clearSetup(context)
 
         val client = runCatching { LocationServices.getFusedLocationProviderClient(context) }
             .getOrElse {
