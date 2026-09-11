@@ -9,7 +9,9 @@ internal object CaptureStorageSettings {
     private const val KEY_RETENTION_DAYS = "screenshot_retention_days"
 
     const val RETENTION_FOREVER = 0
-    const val DEFAULT_RETENTION_DAYS = 90
+    // Existing installs may have years of proof screenshots referenced from offer history. Never
+    // silently delete those on upgrade; bounded retention is explicitly opt-in from Storage.
+    const val DEFAULT_RETENTION_DAYS = RETENTION_FOREVER
     val SUPPORTED_RETENTION_DAYS = listOf(7, 30, 90, RETENTION_FOREVER)
 
     /**
@@ -27,7 +29,7 @@ internal object CaptureStorageSettings {
             .apply()
     }
 
-    /** 0 means keep gallery screenshots forever. New installs default to 90 days. */
+    /** 0 means keep gallery screenshots forever. */
     fun retentionDays(context: Context): Int =
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getInt(KEY_RETENTION_DAYS, DEFAULT_RETENTION_DAYS)
