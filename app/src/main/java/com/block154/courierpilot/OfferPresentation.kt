@@ -8,14 +8,23 @@ internal object OfferPresentation {
         val candidates = (record.merchantNames + listOfNotNull(record.restaurant))
             .map(::cleanMerchant)
             .filter(::isCredibleMerchant)
+            .filterNot(BoltOfferTextSanitizer::isOrphanBranchFragment)
             .filterNot { record.packageName == CourierSignals.WOLT_PACKAGE && WoltOfferUiText.isMerchantUiNoise(it) }
             .distinctBy { it.lowercase(Locale.ROOT) }
 
         val first = candidates.firstOrNull()?.let { stripLeakedBuildingSuffixPrefix(it, record.dropoffAddresses) }
         if (first != null) return first
 
-        val pickup = record.pickupAddresses.firstOrNull()?.trim().orEmpty()
-        return if (pickup.isNotBlank()) "Pickup · $pickup" else record.platform
+        // Older Wolt captures sometimes retained the correct pickup address/raw screen but lost the
+        // merchant name because Accessibility and OCR arrived in a different node order. Recover a
+        // title only when it is locally anchored immediately before a pickup address that we already
+        // trust. This is presentation-only: the saved raw text and captured amount stay untouched.
+        recoverWoltMerchantNearPickup(record)?.let { return it }
+
+        // Never put an address into the merchant-title slot. It looked useful at first, but in
+        // History it is visually indistinguishable from a restaurant name and produced rows such as
+        // `Pickup · Vokiečių g. 7`. An honest platform label is better than invented venue identity.
+        return record.platform.ifBlank { "Venue unknown" }
     }
 
     fun cleanMerchant(value: String): String = value
@@ -28,6 +37,57 @@ internal object OfferPresentation {
         // `Holy Donut (...), 8 min`. It is UI metadata, not part of the venue name.
         .replace(Regex("(?iu),\\s*\\d+(?:[.,]\\d+)?\\s*(?:min|km|m)?\\s*$"), "")
         .trim(' ', ',')
+
+    private fun recoverWoltMerchantNearPickup(record: OfferRecord): String? {
+        if (record.packageName != CourierSignals.WOLT_PACKAGE || record.rawText.isBlank()) return null
+        val pickupKeys = record.pickupAddresses
+            .mapNotNull(DeliveryAddressNormalizer::key)
+            .toSet()
+        if (pickupKeys.isEmpty()) return null
+
+        val lines = record.rawText.lineSequence()
+            .map(::cleanMerchant)
+            .filter(String::isNotBlank)
+            .toList()
+
+        lines.forEachIndexed { addressIndex, line ->
+            val key = DeliveryAddressNormalizer.key(line) ?: return@forEachIndexed
+            if (key !in pickupKeys) return@forEachIndexed
+
+            val start = (addressIndex - MERCHANT_RECOVERY_LOOKBACK_LINES).coerceAtLeast(0)
+            for (candidateIndex in addressIndex - 1 downTo start) {
+                val candidate = lines[candidateIndex]
+                // Do not jump across another address into an unrelated map/card row.
+                if (candidateIndex != addressIndex - 1 && looksLikeAddress(candidate)) break
+                if (isRecoveryBoundary(candidate)) break
+                if (!isRecoverableMerchant(candidate)) continue
+                return stripLeakedBuildingSuffixPrefix(candidate, record.dropoffAddresses)
+            }
+        }
+        return null
+    }
+
+    private fun isRecoverableMerchant(value: String): Boolean {
+        val clean = cleanMerchant(value)
+        if (!isCredibleMerchant(clean)) return false
+        if (BoltOfferTextSanitizer.isOrphanBranchFragment(clean)) return false
+        if (WoltOfferUiText.isMerchantUiNoise(clean)) return false
+        if (MarketCurrencyParser.containsMoney(clean)) return false
+        if (WoltOfferUiText.modernRouteSummaryRegex.matches(clean)) return false
+        if (WoltOfferUiText.collapsedMultipleDropoffsRegex.matches(clean)) return false
+        if (WoltOfferUiText.standaloneMultipleDropoffsRegex.matches(clean)) return false
+        if (WoltOfferUiText.singleCustomerDropoffRegex.matches(clean)) return false
+        val lower = clean.lowercase(Locale.ROOT)
+        if (lower in RECOVERY_UI_LINES) return false
+        if (Regex("(?iu)^\\+?\\s*\\d+(?:[.,]\\d+)?\\s*(?:km|m|min|stops?)\\b.*$").matches(clean)) return false
+        return true
+    }
+
+    private fun isRecoveryBoundary(value: String): Boolean {
+        if (MarketCurrencyParser.containsMoney(value)) return true
+        if (WoltOfferUiText.isEarningsLabel(value)) return true
+        return false
+    }
 
     private fun isCredibleMerchant(value: String): Boolean {
         if (value.length < 2) return false
@@ -53,4 +113,14 @@ internal object OfferPresentation {
             Regex("(?i)\\b(?:g|pr|pl|al|skg)\\.\\s*\\d").containsMatchIn(value) ||
             Regex("(?i)\\bstr\\.?\\s*\\d").containsMatchIn(value)
     }
+
+    private val RECOVERY_UI_LINES = setOf(
+        "pickup", "dropoff", "customer drop-off", "multiple drop-offs", "collect cash",
+        "accept", "decline", "reject", "ready", "show map", "done", "timeline",
+        "route distance", "estimated", "delivery from",
+        WoltOfferUiText.LEGACY_EARNINGS_LABEL,
+        WoltOfferUiText.MODERN_EARNINGS_LABEL,
+    )
+
+    private const val MERCHANT_RECOVERY_LOOKBACK_LINES = 8
 }
