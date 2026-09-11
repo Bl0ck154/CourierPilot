@@ -70,6 +70,10 @@
             android:name=".AppUpdateNotificationReceiver"
             android:exported="false" />
 
+        <receiver
+            android:name=".AccessCodeFeedbackReceiver"
+            android:exported="false" />
+
         <service
             android:name=".AppUpdateJobService"
             android:permission="android.permission.BIND_JOB_SERVICE"
