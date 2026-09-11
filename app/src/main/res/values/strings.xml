@@ -5,4 +5,6 @@
     <string name="bolt_diagnostics_accessibility_description">Research-only one-shot Bolt screen tree dump. It runs only when explicitly armed from CourierPilot and may contain private on-screen delivery data.</string>
     <string name="shortcut_ride_trace_short">Ride trace</string>
     <string name="shortcut_ride_trace_long">Record GPS ride trace</string>
+    <string name="shortcut_storage_short">Storage</string>
+    <string name="shortcut_storage_long">Manage CourierPilot screenshots</string>
 </resources>
