@@ -1,7 +1,6 @@
 package com.block154.courierpilot
 
 import android.content.Context
-import android.widget.Toast
 
 /**
  * Learns local delivery context for customer buildings seen in the courier apps.
@@ -37,6 +36,17 @@ internal object DeliveryMemory {
         // OCR may enrich live offer parsing, but cannot advance lifecycle or mutate address memory.
         if (source != ScreenTextSource.ACCESSIBILITY) return
         LiveAdvisorHub.observeScreen(context, packageName, text)
+
+        // A reminder may stay armed while navigation is in another app. Explicit terminal courier
+        // UI is strong enough to retire it; transient Wolt home semantics are deliberately ignored
+        // here because Compose can expose them under a still-active task/offer surface.
+        val terminalLifecycle = DeliveryLifecycleTracking.detect(text)?.type
+        val terminalTask = terminalLifecycle == DeliveryEventType.DELIVERED ||
+            terminalLifecycle == DeliveryEventType.CANCELLED
+        if (terminalTask) {
+            ArrivalAccessHintMonitor.cancelAll(context)
+            AccessCodeSuggestions.clear(context)
+        }
 
         val platform = OfferState.platformLabel(packageName)
         val database = CourierMetaDatabase.get(context)
@@ -174,6 +184,7 @@ internal object DeliveryMemory {
         val currentOrderShowsAccessInfo = observations.isNotEmpty() ||
             AccessCodeHintPolicy.screenContainsAccessCodeInfo(text)
         if (currentOrderShowsAccessInfo) {
+            ArrivalAccessHintMonitor.cancelAll(context)
             AccessCodeSuggestions.clear(context)
             deliveryKeys.forEach { AccessCodeNotificationGate.consume(context, it) }
             observations.forEach { observation ->
@@ -227,27 +238,22 @@ internal object DeliveryMemory {
                 platform = platform,
                 updatedAt = System.currentTimeMillis(),
             )
-            AccessCodeSuggestions.save(context, suggestion)
-
-            if (AccessCodeNotificationGate.claim(context, deliveryKey)) {
-                AccessCodeNotifier.show(context, suggestion)
-                Toast.makeText(
-                    context,
-                    "Possible door code · ${canonical.second}: ${known.joinToString(" / ")}",
-                    Toast.LENGTH_LONG,
-                ).show()
-                CaptureEventLog.append(
-                    context,
-                    stage = "access_code_match",
-                    platform = platform,
-                    message = "Possible historical building access code matched locally",
-                    dedupeWindowMs = 30_000L,
-                )
-            }
+            // Do not expose the ephemeral suggestion until the arrival gate actually fires. This
+            // also clears any leftover pre-arrival suggestion from an older order/app version.
+            AccessCodeSuggestions.clear(context)
+            ArrivalAccessHintMonitor.arm(
+                context = context,
+                deliveryKey = deliveryKey,
+                buildingKey = canonical.first,
+                suggestion = suggestion,
+            )
             matched = true
             break
         }
-        if (!matched && detectedAddresses.isNotEmpty()) AccessCodeSuggestions.clear(context)
+        if (!matched && detectedAddresses.isNotEmpty()) {
+            ArrivalAccessHintMonitor.cancelUnless(context, deliveryKeys)
+            AccessCodeSuggestions.clear(context)
+        }
     }
 
     private fun usableHistoricalCodes(
