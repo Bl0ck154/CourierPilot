@@ -37,4 +37,23 @@ internal object LiveOfferTransactionPolicy {
         }
         return true
     }
+
+    /**
+     * Persistence can finish a few milliseconds after Wolt rotates the ringing notification key.
+     * A key mismatch alone must not throw away the just-captured offer when the visible/preview
+     * screen still proves it is the same card; otherwise the advisor is left forever in loading
+     * state and the persisted route is never started.
+     */
+    fun shouldIgnorePersistedOffer(
+        activePackageName: String?,
+        activeNotificationKey: String?,
+        persistedPackageName: String,
+        persistedCaptureKey: String,
+        compatibleOfferEvidence: Boolean,
+    ): Boolean {
+        if (activePackageName.isNullOrBlank() || activePackageName != persistedPackageName) return false
+        if (activeNotificationKey.isNullOrBlank() || persistedCaptureKey.isBlank()) return false
+        if (activeNotificationKey == persistedCaptureKey) return false
+        return !compatibleOfferEvidence
+    }
 }

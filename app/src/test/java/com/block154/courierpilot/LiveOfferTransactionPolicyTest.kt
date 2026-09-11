@@ -44,6 +44,32 @@ class LiveOfferTransactionPolicyTest {
     }
 
     @Test
+    fun persistedOfferSurvivesNotificationKeyRotationWhenScreenIdentityMatches() {
+        assertFalse(
+            LiveOfferTransactionPolicy.shouldIgnorePersistedOffer(
+                activePackageName = CourierSignals.WOLT_PACKAGE,
+                activeNotificationKey = "new-key",
+                persistedPackageName = CourierSignals.WOLT_PACKAGE,
+                persistedCaptureKey = "old-key",
+                compatibleOfferEvidence = true,
+            ),
+        )
+    }
+
+    @Test
+    fun persistedOfferIsIgnoredWhenNotificationKeyRotatedToDifferentVisibleOffer() {
+        assertTrue(
+            LiveOfferTransactionPolicy.shouldIgnorePersistedOffer(
+                activePackageName = CourierSignals.WOLT_PACKAGE,
+                activeNotificationKey = "new-key",
+                persistedPackageName = CourierSignals.WOLT_PACKAGE,
+                persistedCaptureKey = "old-key",
+                compatibleOfferEvidence = false,
+            ),
+        )
+    }
+
+    @Test
     fun repeatedUpdateOfExactNotificationKeepsSameSurface() {
         assertTrue(
             LiveOfferTransactionPolicy.isSameSurface(
