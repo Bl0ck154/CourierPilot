@@ -4,7 +4,6 @@ import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Color
-import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
@@ -23,7 +22,6 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
-import java.util.ArrayDeque
 import java.util.Locale
 import java.util.concurrent.Executors
 import kotlin.math.abs
@@ -38,6 +36,7 @@ internal class StableLiveOfferAdvisor(
     private val handler = Handler(Looper.getMainLooper())
     private val windowManager = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val touchSlop = ViewConfiguration.get(service).scaledTouchSlop
+    private val surfaceInspector = LiveAdvisorSurfaceInspector(service)
 
     private var root: LinearLayout? = null
     private var windowParams: WindowManager.LayoutParams? = null
@@ -112,7 +111,6 @@ internal class StableLiveOfferAdvisor(
     }
     private var courierEventCheckScheduled = false
     private var courierEventCheckDeferred = false
-    private var lastSlowSurfaceLogAtElapsed = 0L
     private var latestObservedPackage = ""
     private var latestObservedText = ""
     private var latestObservedAtElapsed = 0L
@@ -1023,7 +1021,6 @@ internal class StableLiveOfferAdvisor(
         differentOfferConfirmation.reset()
     }
 
-
     private fun decisionColor(band: OfferDecisionBand): Int = when (band) {
         OfferDecisionBand.FIRE -> Color.rgb(255, 139, 61)
         OfferDecisionBand.GOOD -> Color.rgb(110, 231, 183)
@@ -1319,22 +1316,8 @@ internal class StableLiveOfferAdvisor(
             packageName == "com.oplus.screenshot" ||
             packageName == "com.coloros.screenshot"
 
-    private fun findVisiblePackageRoot(packageName: String): AccessibilityNodeInfo? {
-        fun refreshed(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
-            val candidate = node ?: return null
-            if (candidate.packageName?.toString() != packageName) return null
-            val valid = runCatching { candidate.refresh() }.getOrDefault(false)
-            if (!valid || candidate.packageName?.toString() != packageName) return null
-            return candidate
-        }
-
-        refreshed(service.rootInActiveWindow)?.let { return it }
-        service.windows.forEach { window ->
-            val candidate = runCatching { window.root }.getOrNull()
-            refreshed(candidate)?.let { return it }
-        }
-        return null
-    }
+    private fun findVisiblePackageRoot(packageName: String): AccessibilityNodeInfo? =
+        surfaceInspector.findVisiblePackageRoot(packageName)
 
     private fun registerMissingEvidence(
         now: Long = SystemClock.elapsedRealtime(),
@@ -1350,11 +1333,6 @@ internal class StableLiveOfferAdvisor(
         missingSince = 0L
         missingChecks = 0
     }
-
-    private data class SurfaceInspection(
-        val text: String,
-        val snapshot: LiveOfferSurfaceSnapshot,
-    )
 
     private fun acceptRecentSameOfferObservation(expectedPackage: String, expectedOffer: ParsedOffer): Boolean {
         if (latestObservedPackage != expectedPackage) return false
@@ -1382,88 +1360,10 @@ internal class StableLiveOfferAdvisor(
         return true
     }
 
-    /**
-     * Accessibility trees can retain Compose nodes after they are visually hidden. Only visible
-     * nodes are allowed to keep an offer alive; otherwise stale Accept/Decline text can pin the
-     * advisor on screen until the user opens another menu.
-     */
-    private fun inspectVisibleSurface(rootNode: AccessibilityNodeInfo): SurfaceInspection {
-        val startedAtElapsed = SystemClock.elapsedRealtime()
-        val queue = ArrayDeque<AccessibilityNodeInfo>()
-        val pieces = mutableListOf<String>()
-        val interactiveSlots = linkedSetOf<String>()
-        val screenWidth = service.resources.displayMetrics.widthPixels.coerceAtLeast(1)
-        val screenHeight = service.resources.displayMetrics.heightPixels.coerceAtLeast(1)
-        val bounds = Rect()
-        queue.add(rootNode)
-        var visited = 0
-        var visibleNodes = 0
-        var leafNodes = 0
-        var bottomNodes = 0
+    private fun inspectVisibleSurface(rootNode: AccessibilityNodeInfo): LiveAdvisorSurfaceInspection =
+        surfaceInspector.inspectVisibleSurface(rootNode, currentPlatform)
 
-        while (queue.isNotEmpty() && visited < MAX_SURFACE_NODES) {
-            val node = queue.removeFirst()
-            visited += 1
-            val childCount = node.childCount
-            for (index in 0 until childCount) node.getChild(index)?.let(queue::addLast)
-
-            if (!runCatching { node.isVisibleToUser }.getOrDefault(true)) continue
-            visibleNodes += 1
-            if (childCount == 0) leafNodes += 1
-
-            listOf(node.text, node.contentDescription).forEach { value ->
-                val cleaned = value?.toString()?.trim().orEmpty()
-                if (cleaned.isNotEmpty() && pieces.lastOrNull() != cleaned) pieces += cleaned
-            }
-
-            bounds.setEmpty()
-            runCatching { node.getBoundsInScreen(bounds) }
-            val centerY = bounds.centerY()
-            if (centerY >= (screenHeight * 55 / 100)) bottomNodes += 1
-
-            val interactive = runCatching { node.isClickable || node.isLongClickable }.getOrDefault(false)
-            if (interactive && !bounds.isEmpty) {
-                val className = node.className?.toString()?.substringAfterLast('.') ?: "node"
-                val centerXBin = (bounds.centerX().coerceIn(0, screenWidth) * 20 / screenWidth)
-                val centerYBin = (bounds.centerY().coerceIn(0, screenHeight) * 20 / screenHeight)
-                val widthBin = (bounds.width().coerceAtLeast(0) * 20 / screenWidth).coerceAtMost(20)
-                val heightBin = (bounds.height().coerceAtLeast(0) * 20 / screenHeight).coerceAtMost(20)
-                interactiveSlots += "$className:$centerXBin:$centerYBin:$widthBin:$heightBin"
-            }
-        }
-
-        val text = pieces.joinToString("\n")
-        val inspection = SurfaceInspection(
-            text = text,
-            snapshot = LiveOfferSurfaceSnapshot(
-                windowId = rootNode.windowId,
-                nodeCount = visibleNodes,
-                leafCount = leafNodes,
-                bottomNodeCount = bottomNodes,
-                interactiveSlots = interactiveSlots,
-                stableLines = LiveOfferSurfaceEvidence.normalizeStableLines(pieces),
-            ),
-        )
-        val finishedAtElapsed = SystemClock.elapsedRealtime()
-        val durationMs = (finishedAtElapsed - startedAtElapsed).coerceAtLeast(0L)
-        if (durationMs >= SLOW_SURFACE_SCAN_MS && finishedAtElapsed - lastSlowSurfaceLogAtElapsed >= SLOW_SURFACE_LOG_INTERVAL_MS) {
-            lastSlowSurfaceLogAtElapsed = finishedAtElapsed
-            CaptureEventLog.append(
-                service,
-                stage = "overlay_tree_slow",
-                platform = currentPlatform,
-                message = "duration_ms=$durationMs; visited=$visited; visible=$visibleNodes; leaves=$leafNodes; text_items=${pieces.size}; capped=${visited >= MAX_SURFACE_NODES}",
-            )
-        }
-        return inspection
-    }
-
-    private fun hasDecisionPair(text: String): Boolean {
-        val lower = text.lowercase(Locale.ROOT)
-        val accept = listOf("accept", "priimti", "принять", "прийняти").any(lower::contains)
-        val decline = listOf("decline", "reject", "atmesti", "отклонить", "відхилити").any(lower::contains)
-        return accept && decline
-    }
+    private fun hasDecisionPair(text: String): Boolean = surfaceInspector.hasDecisionPair(text)
 
     private fun installGestureSurface(view: View) {
         view.isClickable = true
@@ -1605,7 +1505,6 @@ internal class StableLiveOfferAdvisor(
         return targetY.coerceIn(min, max)
     }
 
-
     private fun baseSpeech(platform: String, parsed: ParsedOffer): String {
         val price = parsed.money?.let { "${it.major().toPlainString()} ${it.currencyCode}" }
         return listOfNotNull(platform, price).joinToString(". ") + "."
@@ -1674,9 +1573,6 @@ internal class StableLiveOfferAdvisor(
         const val COURIER_EVENT_CHECK_DELAY_MS = 48L
         const val RECENT_SCREEN_TEXT_TTL_MS = 350L
         const val GESTURE_WINDOW_RELAYOUT_MIN_INTERVAL_MS = 16L
-        const val MAX_SURFACE_NODES = 600
-        const val SLOW_SURFACE_SCAN_MS = 32L
-        const val SLOW_SURFACE_LOG_INTERVAL_MS = 5_000L
         const val GESTURE_NONE = 0
         const val GESTURE_HORIZONTAL = 1
         const val GESTURE_VERTICAL = 2
