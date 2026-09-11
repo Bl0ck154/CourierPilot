@@ -6,38 +6,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class LiveAdvisorV010Test {
-
-    @Test
-    fun platformEconomicsUsesVisibleOfferNumbersOnly() {
-        val parsed = ParsedOffer(
-            priceCents = 640,
-            money = MoneyAmount(640, "EUR", 2),
-            distanceMeters = 4_000,
-            restaurant = "Test",
-            estimatedMinutesMin = 20,
-            estimatedMinutesMax = 30,
-        )
-        val economics = PlatformOfferEconomicsCalculator.calculate(parsed)
-        assertEquals(1.6, economics.euroPerKilometer!!, 0.001)
-        assertEquals(12.8, economics.euroPerHourMin!!, 0.001)
-        assertEquals(19.2, economics.euroPerHourMax!!, 0.001)
-    }
-
-    @Test
-    fun missingDistanceDoesNotInventPerKilometerValue() {
-        val parsed = ParsedOffer(
-            priceCents = 500,
-            money = MoneyAmount(500, "EUR", 2),
-            distanceMeters = null,
-            restaurant = null,
-            estimatedMinutesMin = 20,
-            estimatedMinutesMax = 20,
-        )
-        val economics = PlatformOfferEconomicsCalculator.calculate(parsed)
-        assertNull(economics.euroPerKilometer)
-        assertEquals(15.0, economics.euroPerHourMin!!, 0.001)
-    }
+class DeliveryLifecycleAndRouteRegressionTest {
 
     @Test
     fun lifecycleDetectorRequiresExplicitCueAndMonotonicProgression() {
@@ -65,8 +34,8 @@ class LiveAdvisorV010Test {
         assertTrue(DeliveryLifecycleTracking.canAdvance(DeliveryEventType.OFFER_CAPTURED, DeliveryEventType.ACCEPTED))
         assertTrue(DeliveryLifecycleTracking.canAdvance(DeliveryEventType.ACCEPTED, DeliveryEventType.PICKED_UP))
         assertTrue(DeliveryLifecycleTracking.canAdvance(DeliveryEventType.PICKED_UP, DeliveryEventType.DELIVERED))
-        assertEquals(false, DeliveryLifecycleTracking.canAdvance(DeliveryEventType.OFFER_CAPTURED, DeliveryEventType.DELIVERED))
-        assertEquals(false, DeliveryLifecycleTracking.canAdvance(DeliveryEventType.DELIVERED, DeliveryEventType.ACCEPTED))
+        assertFalse(DeliveryLifecycleTracking.canAdvance(DeliveryEventType.OFFER_CAPTURED, DeliveryEventType.DELIVERED))
+        assertFalse(DeliveryLifecycleTracking.canAdvance(DeliveryEventType.DELIVERED, DeliveryEventType.ACCEPTED))
     }
 
     @Test

@@ -8,9 +8,9 @@ import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
-class CourierPilotActivityStartupTest {
+class CourierPilotDashboardActivityStartupTest {
     @Test
-    fun launcherActivityStartsAndResumes() {
+    fun dashboardStartsAndResumes() {
         Robolectric.buildActivity(CourierPilotDashboardActivity::class.java).setup().use { controller ->
             check(controller.get() != null)
         }
