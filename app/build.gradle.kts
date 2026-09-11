@@ -31,8 +31,8 @@ android {
         applicationId = "com.block154.courierpilot"
         minSdk = 30
         targetSdk = 35
-        versionCode = 109
-        versionName = "0.15.68"
+        versionCode = 110
+        versionName = "0.15.69"
     }
 
     signingConfigs {
@@ -84,6 +84,7 @@ tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
 
 dependencies {
     implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
+    implementation("com.google.android.gms:play-services-location:21.3.0")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("org.osmdroid:osmdroid-android:6.1.20")
 
