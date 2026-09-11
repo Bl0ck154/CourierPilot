@@ -22,7 +22,8 @@ internal object ArrivalAccessHintPolicy {
     fun shouldNotify(distanceMeters: Double, accuracyMeters: Float?, ageMillis: Long): Boolean =
         distanceMeters <= ARRIVAL_RADIUS_METERS &&
             ageMillis in 0..MAX_LOCATION_AGE_MS &&
-            (accuracyMeters == null || accuracyMeters <= MAX_LOCATION_ACCURACY_METERS)
+            accuracyMeters != null &&
+            accuracyMeters <= MAX_LOCATION_ACCURACY_METERS
 
     fun nextCheckDelayMs(distanceMeters: Double?): Long = when {
         distanceMeters == null -> 30_000L
@@ -266,7 +267,8 @@ internal object ArrivalAccessHintMonitor {
                     val cached = location?.toCurrentFix("fused-cache")
                     if (cached != null &&
                         cached.ageMillis <= ArrivalAccessHintPolicy.MAX_LOCATION_AGE_MS &&
-                        (cached.accuracyMeters == null || cached.accuracyMeters <= ArrivalAccessHintPolicy.MAX_LOCATION_ACCURACY_METERS)
+                        cached.accuracyMeters != null &&
+                        cached.accuracyMeters <= ArrivalAccessHintPolicy.MAX_LOCATION_ACCURACY_METERS
                     ) {
                         callback(Result.success(cached))
                     } else {
