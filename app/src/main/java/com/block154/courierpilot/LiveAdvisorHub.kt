@@ -393,28 +393,55 @@ internal object LiveAdvisorHub {
     fun onOfferPersisted(offerId: Long, record: OfferRecord) {
         val service = serviceRef.get() ?: return
         val currentAdvisor = advisor ?: return
+        // Reparse the same captured screen text here so the sequential Timeline stop order remains
+        // available to the router without changing the stable offer-history DB schema.
+        val parsedFromScreen = OfferParser.parse(record.rawText)
         val activePending = OfferState.pending(service)
-        if (activePending != null &&
-            activePending.packageName == record.packageName &&
-            activePending.notificationKey.isNotBlank() &&
-            record.captureKey.isNotBlank() &&
-            activePending.notificationKey != record.captureKey
+        val previewIdentityMatches = pendingPreview
+            ?.takeIf { it.packageName == record.packageName }
+            ?.parsed
+            ?.let { preview ->
+                !LiveOfferResumePolicy.definitelyDifferent(preview, parsedFromScreen) &&
+                    (LiveOfferResumePolicy.hasCompatibleCoreIdentity(preview, parsedFromScreen) ||
+                        LiveOfferResumePolicy.hasMatchingIdentity(preview, parsedFromScreen))
+            } == true
+        val visibleIdentityMatches = currentAdvisor.isSameOfferVisiblyPresent(record.packageName)
+        val compatibleOfferEvidence = previewIdentityMatches || visibleIdentityMatches
+        if (LiveOfferTransactionPolicy.shouldIgnorePersistedOffer(
+                activePackageName = activePending?.packageName,
+                activeNotificationKey = activePending?.notificationKey,
+                persistedPackageName = record.packageName,
+                persistedCaptureKey = record.captureKey,
+                compatibleOfferEvidence = compatibleOfferEvidence,
+            )
         ) {
-            // A new notification can arrive during the tiny DB-insert window after persistOffer's
-            // stale-callback check. Never let the just-finished old insert promote itself over the
-            // newer transaction that already owns the live card.
+            // A genuinely different notification can arrive during the tiny DB-insert window after
+            // persistOffer's stale-callback check. Keep the newer transaction only when the current
+            // screen/preview no longer matches the just-persisted offer.
             CaptureEventLog.append(
                 service,
                 stage = "advisor_stale_persist_ignored",
                 platform = record.platform,
-                message = "Persisted offer belongs to a superseded notification; live advisor left on the newer offer",
+                message = "Persisted offer belongs to a superseded notification and visible identity differs; live advisor left on the newer offer",
                 dedupeWindowMs = 1_000L,
             )
             return
         }
-        // Reparse the same captured screen text here so the sequential Timeline stop order remains
-        // available to the router without changing the stable offer-history DB schema.
-        val parsedFromScreen = OfferParser.parse(record.rawText)
+        if (activePending != null &&
+            activePending.packageName == record.packageName &&
+            activePending.notificationKey.isNotBlank() &&
+            record.captureKey.isNotBlank() &&
+            activePending.notificationKey != record.captureKey &&
+            compatibleOfferEvidence
+        ) {
+            CaptureEventLog.append(
+                service,
+                stage = "advisor_persist_key_churn_coalesced",
+                platform = record.platform,
+                message = "Notification key rotated during persistence but visible offer identity still matches; promoting persisted offer and starting route",
+                dedupeWindowMs = 1_000L,
+            )
+        }
         val parsed = parsedFromScreen.copy(
             priceCents = record.priceCents,
             money = MoneyAmount(record.priceCents.toLong(), record.currencyCode, record.currencyFractionDigits),

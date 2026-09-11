@@ -247,6 +247,28 @@ class OfferParserTest {
     }
 
     @Test
+    fun parsesCozyAntakalnioSingleDropoffFromLiveWoltCard() {
+        val parsed = OfferParser.parse(
+            """
+            €9.10
+            2 stops (11.6 km) • 25–38 min
+            Cozy
+            Dominikonų gatvė 10, Vilnius, LT13169
+            Customer drop-off
+            Antakalnio gatvė 17, Vilnius, 10312
+            Accept
+            """.trimIndent()
+        )
+
+        assertEquals(910, parsed.priceCents)
+        assertEquals(11600, parsed.distanceMeters)
+        assertEquals(listOf("Dominikonų gatvė 10, Vilnius, LT13169"), parsed.pickupAddresses)
+        assertEquals(listOf("Antakalnio gatvė 17, Vilnius, 10312"), parsed.dropoffAddresses)
+        assertEquals(1, parsed.deliveryCount)
+        assertTrue(AutomaticWoltRouteCoordinator.routeFingerprint(parsed) != null)
+    }
+
+    @Test
     fun infersSingleDropoffWhenWoltOmitsSummaryAndCustomerLabelButShowsTwoAddresses() {
         val parsed = OfferParser.parse(
             """
