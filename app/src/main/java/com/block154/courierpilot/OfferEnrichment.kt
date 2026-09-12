@@ -156,6 +156,7 @@ private fun ParsedOffer.withRecoveredTrailingWoltMerchants(rawText: String): Par
         .sortedBy { (pickup, _) -> pickupAddresses.indexOfFirst { address -> addressesSemanticallyEqual(address, pickup) } }
         .map { it.second }
         .distinctBy(::identityToken)
+        .toList()
 
     if (recovered.isEmpty()) return this
     return copy(
