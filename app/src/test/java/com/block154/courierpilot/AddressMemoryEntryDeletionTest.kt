@@ -18,8 +18,10 @@ class AddressMemoryEntryDeletionTest {
     fun deletingCustomerRemovesProjectionButKeepsRawObservation() {
         val context: Context = RuntimeEnvironment.getApplication()
         val database = CourierMetaDatabase.get(context)
-        val house = (System.nanoTime() and 0xfffffff).coerceAtLeast(10_000L)
-        val address = "Testų g. $house, Vilnius"
+        // DeliveryAddressNormalizer intentionally accepts only realistic 1-4 digit house numbers.
+        // Keep the fixture unique without accidentally turning it into a five-plus-digit non-address.
+        val house = ((System.nanoTime() and 0x7fff) % 8_000L) + 1_000L
+        val address = "Testų g. $house, Vilnius, LT-01130"
         val rawText = "Customer Živilė\n$address\nFloor 4 · leave at door"
         val addressId = requireNotNull(
             database.saveAddressObservation(
@@ -80,8 +82,8 @@ class AddressMemoryEntryDeletionTest {
     fun clearingLatestDeliveryInfoKeepsRawObservation() {
         val context: Context = RuntimeEnvironment.getApplication()
         val database = CourierMetaDatabase.get(context)
-        val house = (System.nanoTime() and 0xfffffff).coerceAtLeast(20_000L)
-        val address = "Atminties g. $house, Vilnius"
+        val house = ((System.nanoTime() and 0x7fff) % 8_000L) + 1_000L
+        val address = "Atminties g. $house, Vilnius, LT-03201"
         val rawText = "Customer\n$address\nDoor on courtyard side"
         val addressId = requireNotNull(
             database.saveAddressObservation(
