@@ -50,13 +50,13 @@ class LiveAdvisorPresentationTest {
     }
 
     @Test
-    fun addonProvisionalRateCanBeLabelledAsWoltIncrementalDistance() {
+    fun addonProvisionalRateDoesNotExposePlatformSourceInUi() {
         val line = LiveAdvisorPresentation.provisionalRateLine(
             money = MoneyAmount(278, "EUR", 2),
             estimatedRouteMeters = 2300,
-            marker = "Wolt",
         )
-        assertEquals("≈ €1.21/km  Wolt", line)
+        assertEquals("≈ €1.21/km  ⏳", line)
+        assertFalse(line!!.contains("Wolt", ignoreCase = true))
     }
 
     @Test
