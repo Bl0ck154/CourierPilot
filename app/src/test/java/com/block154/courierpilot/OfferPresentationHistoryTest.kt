@@ -51,7 +51,7 @@ class OfferPresentationHistoryTest {
             pickupAddresses = listOf("Palangos g. 2, Vilnius, LT01117"),
         )
 
-        assertEquals("Wolt", OfferPresentation.merchantTitle(record))
+        assertEquals("Venue unknown", OfferPresentation.merchantTitle(record))
     }
 
     @Test
@@ -70,7 +70,7 @@ class OfferPresentationHistoryTest {
             pickupAddresses = listOf("Laisvės prospektas 85, Vilnius, 06123"),
         )
 
-        assertEquals("Wolt", OfferPresentation.merchantTitle(record))
+        assertEquals("Venue unknown", OfferPresentation.merchantTitle(record))
     }
 
     @Test
@@ -91,4 +91,43 @@ class OfferPresentationHistoryTest {
 
         assertEquals("No Forks Mexican Grill (Vokiečių str.)", OfferPresentation.merchantTitle(record))
     }
+    @Test
+    fun staleGoogleMapMerchantIsRejectedAndRealMerchantRecoveredFromPickupAnchor() {
+        val raw = """
+            Decline
+            +€4.87
+            Google Map
+            +2 stops (3.5 km) • 7–14 min extra
+            Eat More Chinese & Shimai Sushi (Palangos g.)
+            Palangos g. 2, Vilnius, LT01117
+            Customer drop-off
+            Aguonų gatvė 14, Vilnius
+            Customer drop-off
+            Burbiškių g. 6b, Vilnius, 03153
+            Accept
+            Map Marker
+        """.trimIndent()
+        val brokenStored = OfferRecord(
+            capturedAt = 5L,
+            platform = "Wolt",
+            packageName = CourierSignals.WOLT_PACKAGE,
+            priceCents = 487,
+            distanceMeters = 3500,
+            restaurant = "Google Map",
+            screenshotUri = "",
+            screenshotFilename = "",
+            rawText = raw,
+            merchantNames = listOf("Google Map"),
+            pickupAddresses = listOf("Palangos g. 2, Vilnius, LT01117"),
+            dropoffAddresses = listOf("Aguonų gatvė 14, Vilnius", "Burbiškių g. 6b, Vilnius, 03153"),
+            deliveryCount = 2,
+        )
+
+        val repaired = brokenStored.withCurrentParsedStructure()
+
+        assertEquals(listOf("Eat More Chinese & Shimai Sushi (Palangos g.)"), repaired.merchantNames)
+        assertEquals("Eat More Chinese & Shimai Sushi (Palangos g.)", repaired.restaurant)
+        assertEquals("Eat More Chinese & Shimai Sushi (Palangos g.)", OfferPresentation.merchantTitle(repaired))
+    }
+
 }
