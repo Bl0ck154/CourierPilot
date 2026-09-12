@@ -31,8 +31,8 @@ android {
         applicationId = "com.block154.courierpilot"
         minSdk = 30
         targetSdk = 35
-        versionCode = 119
-        versionName = "0.15.78"
+        versionCode = 120
+        versionName = "0.15.79"
     }
 
     signingConfigs {
