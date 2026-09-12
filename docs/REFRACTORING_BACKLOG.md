@@ -43,6 +43,8 @@ Do not remove Wolt/Bolt parser branches just because they are marked `legacy`. C
   - [x] Extract Android screenshot acquisition/fallback/bitmap plumbing into `OfferScreenshotCapture`; OCR and persistence policy remain in `OfferAccessibilityService`.
   - [x] Extract Wolt capture-session state/frame accumulation into `WoltCaptureSession`; capture policy, route recovery and OCR timing remain in `OfferAccessibilityService`.
   - [x] Extract overlay view/gesture rendering into `LiveAdvisorOverlayView`; offer lifetime, scoring and cached decision state remain in `StableLiveOfferAdvisor`.
+  - [x] Extract TextToSpeech ownership, queueing and offer speech formatting into `LiveAdvisorSpeech`; voice-enable policy and offer lifetime remain in `StableLiveOfferAdvisor`.
+  - [x] Extract per-offer frozen decision-threshold snapshot/prewarm ownership into `LiveAdvisorDecisionThresholds`; `OfferDecisionEngine` scoring and live-card presentation remain unchanged.
   - [x] Reassess route ownership. `AutomaticWoltRouteCoordinator` already owns GPS, geocoding, Valhalla computation, prepared-route reuse and route outcomes. Wolt disclosure/semantics recovery remains in `OfferAccessibilityService` because it is part of the Accessibility capture transaction, not route computation.
   - Further extraction is allowed only when another cohesive responsibility becomes independently testable; class size alone is not a reason to move lifetime/scoring rules.
 - [ ] Define the minimum supported upgrade baseline before deleting one-shot database repair revisions.
