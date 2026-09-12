@@ -243,13 +243,13 @@ class AccessHintIntelligenceTest {
             context,
             buildingKey,
             CurrentLocationFix(RoutePoint(54.68000, 25.27000), 10f, 1_000L, "test"),
-            now,
+            now - 2_000L,
         )
         LearnedEntranceStore.record(
             context,
             buildingKey,
             CurrentLocationFix(RoutePoint(54.68003, 25.27003), 10f, 1_000L, "test"),
-            now + 1L,
+            now - 1_000L,
         )
     }
 
