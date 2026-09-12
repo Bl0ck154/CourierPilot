@@ -60,6 +60,76 @@ class AccessHintIntelligenceTest {
     }
 
     @Test
+    fun restoredReminderWaitsForSameLiveDeliveryIdentityBeforeActivation() {
+        val now = System.currentTimeMillis()
+        val building = "restore-building-${System.nanoTime()}"
+        val suggestion = AccessCodeSuggestion("Test g. 5", listOf("5555"), "Wolt", now)
+        CourierMetaDatabase.get(context).saveAccessCode(
+            AccessCodeObservation(building, suggestion.displayAddress, "5555"),
+            platform = "Wolt",
+            now = now,
+        )
+        PendingArrivalReminderStore.save(
+            context,
+            PendingArrivalReminder(
+                deliveryKey = "delivery-restored",
+                buildingKey = building,
+                suggestion = suggestion,
+                armedAt = now,
+                destination = RoutePoint(54.68, 25.27),
+            )
+        )
+
+        ArrivalAccessHintMonitor.restore(context)
+
+        assertTrue(ArrivalAccessHintMonitor.awaitingLiveDeliveryConfirmation())
+        assertEquals("delivery-restored", PendingArrivalReminderStore.load(context)?.deliveryKey)
+
+        ArrivalAccessHintMonitor.arm(
+            context,
+            deliveryKey = "delivery-restored",
+            buildingKey = building,
+            suggestion = suggestion.copy(updatedAt = now + 1_000L),
+        )
+
+        assertFalse(ArrivalAccessHintMonitor.awaitingLiveDeliveryConfirmation())
+        val resumed = PendingArrivalReminderStore.load(context)
+        assertNotNull(resumed)
+        assertEquals("delivery-restored", resumed!!.deliveryKey)
+        assertEquals(now, resumed.armedAt)
+        assertEquals(54.68, resumed.destination!!.latitude, 0.000001)
+    }
+
+    @Test
+    fun restoreDropsCodeRejectedAfterReminderWasPersisted() {
+        val now = System.currentTimeMillis()
+        val building = "restore-rejected-${System.nanoTime()}"
+        val suggestion = AccessCodeSuggestion("Test g. 6", listOf("6666"), "Bolt", now)
+        val database = CourierMetaDatabase.get(context)
+        database.saveAccessCode(
+            AccessCodeObservation(building, suggestion.displayAddress, "6666"),
+            platform = "Bolt",
+            now = now,
+        )
+        PendingArrivalReminderStore.save(
+            context,
+            PendingArrivalReminder(
+                deliveryKey = "delivery-rejected",
+                buildingKey = building,
+                suggestion = suggestion,
+                armedAt = now,
+                destination = RoutePoint(54.68, 25.27),
+            )
+        )
+        AccessHintFeedbackStore.markRejected(context, building, "6666", now + 1L)
+
+        ArrivalAccessHintMonitor.restore(context)
+
+        assertFalse(ArrivalAccessHintMonitor.awaitingLiveDeliveryConfirmation())
+        assertNull(PendingArrivalReminderStore.load(context))
+    }
+
+    @Test
     fun armingDifferentDeliveryReplacesPersistedReminder() {
         val now = System.currentTimeMillis()
         seedLearnedEntrance("building-a", now)

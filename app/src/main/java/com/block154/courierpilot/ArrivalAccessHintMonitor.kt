@@ -120,8 +120,11 @@ internal object ArrivalLocationPermission {
 /**
  * Arms a historical door-code hint when a delivery address is recognized, but does not notify yet.
  * Active state is mirrored to SharedPreferences, so process death no longer silently drops the
- * reminder. Once the courier has explicitly confirmed a code at the entrance at least twice, the
- * learned entrance point is preferred over the geocoder's representative parcel point.
+ * reminder. A reminder restored after process death stays dormant until the same delivery identity
+ * is seen again on a live courier screen; this prevents a stale previous delivery from starting
+ * location/geocoder work merely because the process restarted. Once the courier has explicitly
+ * confirmed a code at the entrance at least twice, the learned entrance point is preferred over the
+ * geocoder's representative parcel point.
  */
 internal object ArrivalAccessHintMonitor {
     private data class ArmedReminder(
@@ -130,6 +133,7 @@ internal object ArrivalAccessHintMonitor {
         val buildingKey: String,
         val suggestion: AccessCodeSuggestion,
         val armedAt: Long,
+        val identityConfirmed: Boolean = true,
         val destination: RoutePoint? = null,
         val lastCheckStartedAt: Long = 0L,
         val lastDistanceMeters: Double? = null,
@@ -152,7 +156,9 @@ internal object ArrivalAccessHintMonitor {
         val app = context.applicationContext
         val stored = PendingArrivalReminderStore.load(app) ?: return
         val database = CourierMetaDatabase.get(app)
-        val liveCodes = database.codesForBuilding(stored.buildingKey, limit = 50).map { it.code }
+        val liveCodes = database.codesForBuilding(stored.buildingKey, limit = 50)
+            .filter { AccessHintFeedbackStore.shouldSurface(app, it) }
+            .map { it.code }
         val stillValid = stored.suggestion.codes.filter { candidate ->
             liveCodes.any { storedCode -> equivalentCode(candidate, storedCode) }
         }
@@ -171,17 +177,18 @@ internal object ArrivalAccessHintMonitor {
                 buildingKey = stored.buildingKey,
                 suggestion = stored.suggestion.copy(codes = stillValid),
                 armedAt = stored.armedAt,
+                identityConfirmed = false,
                 destination = stored.destination,
             )
             geocodeGeneration = null
             locationGeneration = null
         }
-        if (stored.destination == null) resolveDestination(app) else scheduleCheck(0L)
+        handler.removeCallbacks(checkRunnable)
         CaptureEventLog.append(
             app,
             stage = "access_code_arrival_restored",
             platform = stored.suggestion.platform,
-            message = "Restored pending arrival reminder after process restart",
+            message = "Restored pending arrival reminder; waiting for the same live delivery identity before arrival checks",
             dedupeWindowMs = 30_000L,
         )
     }
@@ -203,23 +210,31 @@ internal object ArrivalAccessHintMonitor {
         val now = System.currentTimeMillis()
         var shouldResolve = false
         var shouldPoke = false
+        var restoredIdentityConfirmed = false
         var snapshot: ArmedReminder? = null
 
         synchronized(lock) {
             appContext = app
             val current = active
-            if (current != null && current.deliveryKey == deliveryKey) {
+            val sameUnexpiredDelivery = current != null &&
+                current.deliveryKey == deliveryKey &&
+                now - current.armedAt in 0..ArrivalAccessHintPolicy.REMINDER_TTL_MS
+            if (sameUnexpiredDelivery) {
+                current!!
                 val mergedCodes = (current.suggestion.codes + suggestion.codes)
                     .map(String::trim)
                     .filter(String::isNotEmpty)
                     .distinct()
+                restoredIdentityConfirmed = !current.identityConfirmed
                 active = current.copy(
                     buildingKey = buildingKey,
                     suggestion = suggestion.copy(codes = mergedCodes, updatedAt = now),
+                    identityConfirmed = true,
                 )
                 snapshot = active
                 shouldResolve = current.destination == null && geocodeGeneration != current.generation
-                shouldPoke = current.destination != null && now - current.lastCheckStartedAt >= SCREEN_POKE_MIN_MS
+                shouldPoke = current.destination != null &&
+                    (restoredIdentityConfirmed || now - current.lastCheckStartedAt >= SCREEN_POKE_MIN_MS)
             } else {
                 generationCounter++
                 active = ArmedReminder(
@@ -228,6 +243,7 @@ internal object ArrivalAccessHintMonitor {
                     buildingKey = buildingKey,
                     suggestion = suggestion,
                     armedAt = now,
+                    identityConfirmed = true,
                 )
                 snapshot = active
                 geocodeGeneration = null
@@ -238,6 +254,15 @@ internal object ArrivalAccessHintMonitor {
         }
         snapshot?.let { persist(app, it) }
 
+        if (restoredIdentityConfirmed) {
+            CaptureEventLog.append(
+                app,
+                stage = "access_code_arrival_identity_confirmed",
+                platform = suggestion.platform,
+                message = "Live courier screen confirmed the restored delivery identity; arrival checks resumed",
+                dedupeWindowMs = 10_000L,
+            )
+        }
         if (shouldResolve) resolveDestination(app)
         if (shouldPoke) scheduleCheck(0L)
     }
@@ -266,9 +291,15 @@ internal object ArrivalAccessHintMonitor {
         app?.let(PendingArrivalReminderStore::clear)
     }
 
+    /** Exposed for reliability/tests without leaking the mutable reminder itself. */
+    fun awaitingLiveDeliveryConfirmation(): Boolean = synchronized(lock) {
+        active?.identityConfirmed == false
+    }
+
     private fun resolveDestination(app: Context) {
         val reminder = synchronized(lock) {
             val current = active ?: return
+            if (!current.identityConfirmed) return
             if (current.destination != null || geocodeGeneration == current.generation) return
             current
         }
@@ -277,7 +308,7 @@ internal object ArrivalAccessHintMonitor {
         if (learned != null) {
             synchronized(lock) {
                 val current = active
-                if (current != null && current.generation == reminder.generation) {
+                if (current != null && current.generation == reminder.generation && current.identityConfirmed) {
                     active = current.copy(destination = learned)
                     persist(app, active!!)
                 }
@@ -295,7 +326,7 @@ internal object ArrivalAccessHintMonitor {
 
         synchronized(lock) {
             val current = active ?: return
-            if (current.generation != reminder.generation || geocodeGeneration == current.generation) return
+            if (!current.identityConfirmed || current.generation != reminder.generation || geocodeGeneration == current.generation) return
             geocodeGeneration = current.generation
         }
 
@@ -304,7 +335,7 @@ internal object ArrivalAccessHintMonitor {
             var persisted: ArmedReminder? = null
             val stillActive = synchronized(lock) {
                 val current = active
-                if (current == null || current.generation != reminder.generation) return@synchronized false
+                if (current == null || !current.identityConfirmed || current.generation != reminder.generation) return@synchronized false
                 if (geocodeGeneration == reminder.generation) geocodeGeneration = null
                 if (point != null) {
                     active = current.copy(destination = point)
@@ -341,6 +372,7 @@ internal object ArrivalAccessHintMonitor {
         val now = System.currentTimeMillis()
         val reminder = synchronized(lock) {
             val current = active ?: return
+            if (!current.identityConfirmed) return
             if (now - current.armedAt > ArrivalAccessHintPolicy.REMINDER_TTL_MS) {
                 active = null
                 geocodeGeneration = null
@@ -368,7 +400,7 @@ internal object ArrivalAccessHintMonitor {
             val current = synchronized(lock) {
                 val live = active
                 if (locationGeneration == reminder.generation) locationGeneration = null
-                if (live == null || live.generation != reminder.generation) return@requestArrivalFix
+                if (live == null || !live.identityConfirmed || live.generation != reminder.generation) return@requestArrivalFix
                 live
             }
 
@@ -388,7 +420,7 @@ internal object ArrivalAccessHintMonitor {
             val distance = ArrivalAccessHintPolicy.distanceMeters(fix.point, destination)
             synchronized(lock) {
                 val live = active
-                if (live != null && live.generation == reminder.generation) {
+                if (live != null && live.identityConfirmed && live.generation == reminder.generation) {
                     active = live.copy(lastDistanceMeters = distance)
                 }
             }
