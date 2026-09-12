@@ -271,13 +271,9 @@ internal object CourierSignals {
     fun looksLikeWoltMultipleDropoffsSheet(packageName: String, text: String): Boolean {
         if (packageName != WOLT_PACKAGE) return false
         val lower = text.lowercase(Locale.ROOT)
-        val hasHeader = lower.contains("multiple dropoffs") ||
-            lower.contains("multiple drop-offs") ||
-            lower.contains("keli pristatymo adresai")
+        val hasHeader = lower.contains("multiple dropoffs") || lower.contains("multiple drop-offs")
         if (!hasHeader) return false
-        return lower.contains("done") ||
-            lower.contains("customer drop-off") ||
-            Regex("(?i)\b\d+\s+stops?\b").containsMatchIn(text)
+        return lower.contains("done") || lower.contains("customer drop-off")
     }
 
     /**
