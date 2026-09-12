@@ -133,6 +133,52 @@ class LiveOfferResumePolicyTest {
     }
 
     @Test
+    fun identicalNumericFingerprintIgnoresComposeTextLossFromReal01582Trace() {
+        val captured = ParsedOffer(
+            priceCents = 626,
+            distanceMeters = 5_300,
+            restaurant = "Holy Donut",
+            merchantNames = listOf("Holy Donut", "Holy Donut (branch)"),
+            pickupAddresses = listOf("Vilniaus g. 18"),
+            dropoffAddresses = listOf("Customer drop-off"),
+            deliveryCount = 1,
+        )
+        val recomposed = ParsedOffer(
+            priceCents = 626,
+            distanceMeters = 5_300,
+            restaurant = "Ready for pickup",
+            merchantNames = emptyList(),
+            pickupAddresses = listOf("Temporary OCR pickup text"),
+            dropoffAddresses = listOf("Temporary OCR dropoff text"),
+            deliveryCount = 1,
+        )
+
+        assertTrue(LiveOfferResumePolicy.hasStableNumericFingerprint(captured, recomposed))
+        assertFalse(LiveOfferResumePolicy.definitelyDifferent(captured, recomposed))
+        assertTrue(LiveOfferResumePolicy.hasMatchingIdentity(captured, recomposed))
+    }
+
+    @Test
+    fun changedCoreNumberStillReplacesEvenWhenTextLooksSimilar() {
+        val captured = ParsedOffer(
+            priceCents = 626,
+            distanceMeters = 5_300,
+            restaurant = "Holy Donut",
+            deliveryCount = 1,
+        )
+        val changedPrice = captured.copy(priceCents = 783)
+        val changedDistance = captured.copy(distanceMeters = 6_800)
+        val changedDeliveries = captured.copy(deliveryCount = 2)
+
+        assertFalse(LiveOfferResumePolicy.hasStableNumericFingerprint(captured, changedPrice))
+        assertTrue(LiveOfferResumePolicy.definitelyDifferent(captured, changedPrice))
+        assertFalse(LiveOfferResumePolicy.hasStableNumericFingerprint(captured, changedDistance))
+        assertTrue(LiveOfferResumePolicy.definitelyDifferent(captured, changedDistance))
+        assertFalse(LiveOfferResumePolicy.hasStableNumericFingerprint(captured, changedDeliveries))
+        assertTrue(LiveOfferResumePolicy.definitelyDifferent(captured, changedDeliveries))
+    }
+
+    @Test
     fun routeExtensionDoesNotUseCollapsedCoreIdentityShortcut() {
         val existing = ParsedOffer(
             priceCents = 886,
