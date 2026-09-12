@@ -24,6 +24,18 @@ class OfferAccessibilityService : AccessibilityService() {
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
     private val accessibilitySurface by lazy { OfferAccessibilitySurface(this) }
     private val screenshotCapture by lazy { OfferScreenshotCapture(this, handler) }
+    private val woltPricePoller by lazy {
+        WoltPricePoller(
+            pendingProvider = { OfferState.pending(this) },
+            overlayGestureActive = { LiveAdvisorHub.isOverlayGestureActive() },
+            probePrice = ::probeWoltAccessibilityPrice,
+            nowElapsed = { SystemClock.elapsedRealtime() },
+            postNow = { runnable -> handler.post(runnable) },
+            postDelayed = { runnable, delayMs -> handler.postDelayed(runnable, delayMs) },
+            removeCallbacks = { runnable -> handler.removeCallbacks(runnable) },
+            dragDeferMs = OVERLAY_DRAG_CAPTURE_DEFER_MS,
+        )
+    }
     private var captureInFlight = false
     private val captureGuard = CaptureFlightGuard(CAPTURE_OPERATION_TIMEOUT_MS)
     private var lastHandledArmedAt = 0L
@@ -34,8 +46,6 @@ class OfferAccessibilityService : AccessibilityService() {
     private var screenshotFailureKey = ""
     private var screenshotFailureCount = 0
     private var lastFastAccessibilityPriceKey = ""
-    private var woltPricePollKey = ""
-    private var lastWoltPriceProbeAtElapsed = 0L
     private val woltSession = WoltCaptureSession()
 
     // Keep the rest of the service mechanically unchanged while the mutable Wolt transaction data
@@ -82,7 +92,6 @@ class OfferAccessibilityService : AccessibilityService() {
         set(value) { woltSession.idleHomeChecks = value }
 
     private val attemptRunnable = Runnable { attemptCapture() }
-    private val woltPricePollRunnable = Runnable { pollPendingWoltAccessibilityPrice() }
     private val captureWatchdogRunnable = Runnable {
         if (recoverTimedOutCaptureIfNeeded()) scheduleAttempt(100L)
     }
@@ -134,7 +143,7 @@ class OfferAccessibilityService : AccessibilityService() {
             val overlayDragging = LiveAdvisorHub.isOverlayGestureActive()
             if (!overlayDragging && eventPackage == CourierSignals.WOLT_PACKAGE) {
                 OfferState.pending(this)?.takeIf { it.packageName == CourierSignals.WOLT_PACKAGE }?.let { pending ->
-                    ensureWoltPricePolling(pending, expedite = true)
+                    woltPricePoller.ensure(pending, expedite = true)
                 }
             }
             if (OfferOpenState.markWindowVisible(this, eventPackage)) {
@@ -256,7 +265,7 @@ class OfferAccessibilityService : AccessibilityService() {
         }
 
         val platform = OfferState.platformLabel(pending.packageName)
-        if (pending.packageName == CourierSignals.WOLT_PACKAGE) ensureWoltPricePolling(pending)
+        if (pending.packageName == CourierSignals.WOLT_PACKAGE) woltPricePoller.ensure(pending)
         if (pending.armedAt != lastHandledArmedAt) {
             lastHandledArmedAt = pending.armedAt
             OfferState.markError(this, "")
@@ -429,50 +438,6 @@ class OfferAccessibilityService : AccessibilityService() {
             scheduleAttempt(WOLT_FAST_PRICE_POLL_MS)
         }
         return true
-    }
-
-    private fun ensureWoltPricePolling(pending: PendingOffer, expedite: Boolean = false) {
-        if (pending.packageName != CourierSignals.WOLT_PACKAGE) return
-        val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
-        if (key != woltPricePollKey) {
-            woltPricePollKey = key
-            handler.removeCallbacks(woltPricePollRunnable)
-            handler.post(woltPricePollRunnable)
-            return
-        }
-        if (expedite) {
-            handler.removeCallbacks(woltPricePollRunnable)
-            handler.post(woltPricePollRunnable)
-        }
-    }
-
-    private fun pollPendingWoltAccessibilityPrice() {
-        if (LiveAdvisorHub.isOverlayGestureActive()) {
-            handler.postDelayed(woltPricePollRunnable, OVERLAY_DRAG_CAPTURE_DEFER_MS)
-            return
-        }
-        val pending = OfferState.pending(this)
-        if (pending == null || pending.packageName != CourierSignals.WOLT_PACKAGE) {
-            woltPricePollKey = ""
-            return
-        }
-        val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
-        if (woltPricePollKey != key) {
-            woltPricePollKey = key
-        }
-
-        val now = SystemClock.elapsedRealtime()
-        val sinceLast = now - lastWoltPriceProbeAtElapsed
-        if (sinceLast >= 0L && sinceLast < WOLT_PRICE_EVENT_THROTTLE_MS) {
-            handler.postDelayed(woltPricePollRunnable, WOLT_PRICE_EVENT_THROTTLE_MS - sinceLast)
-            return
-        }
-        lastWoltPriceProbeAtElapsed = now
-        if (probeWoltAccessibilityPrice()) {
-            woltPricePollKey = ""
-            return
-        }
-        handler.postDelayed(woltPricePollRunnable, WOLT_HOT_PRICE_POLL_MS)
     }
 
     private fun accumulateOfferFrame(pending: PendingOffer, currentText: String): String =
@@ -1664,8 +1629,7 @@ class OfferAccessibilityService : AccessibilityService() {
             captureGuard.cancel()
             captureInFlight = false
             handler.removeCallbacks(captureWatchdogRunnable)
-            handler.removeCallbacks(woltPricePollRunnable)
-            woltPricePollKey = ""
+            woltPricePoller.cancel()
             lastFastAccessibilityPriceKey = ""
             OfferState.clear(this)
             lastHandledArmedAt = 0L
@@ -1725,8 +1689,6 @@ class OfferAccessibilityService : AccessibilityService() {
         private const val IDLE_WATCHDOG_MS = 8_000L
         private const val OVERLAY_DRAG_CAPTURE_DEFER_MS = 120L
         private const val WOLT_FAST_PRICE_POLL_MS = 350L
-        private const val WOLT_HOT_PRICE_POLL_MS = 220L
-        private const val WOLT_PRICE_EVENT_THROTTLE_MS = 90L
         private const val WOLT_DROPOFF_SHEET_SETTLE_MS = 180L
         private const val WOLT_DROPOFF_ACCESSIBILITY_SETTLE_MS = 40L
         private const val WOLT_DROPOFF_SEMANTIC_RETRY_MS = 70L

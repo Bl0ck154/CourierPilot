@@ -42,6 +42,7 @@ Do not remove Wolt/Bolt parser branches just because they are marked `legacy`. C
   - [x] Extract visible live-advisor tree inspection into `LiveAdvisorSurfaceInspector`.
   - [x] Extract Android screenshot acquisition/fallback/bitmap plumbing into `OfferScreenshotCapture`; OCR and persistence policy remain in `OfferAccessibilityService`.
   - [x] Extract Wolt capture-session state/frame accumulation into `WoltCaptureSession`; capture policy, route recovery and OCR timing remain in `OfferAccessibilityService`.
+  - [x] Extract Wolt hot-price poll identity/throttle/drag scheduling into `WoltPricePoller`; Accessibility parsing and persistence policy remain in `OfferAccessibilityService`.
   - [x] Extract overlay view/gesture rendering into `LiveAdvisorOverlayView`; offer lifetime, scoring and cached decision state remain in `StableLiveOfferAdvisor`.
   - [x] Extract TextToSpeech ownership, queueing and offer speech formatting into `LiveAdvisorSpeech`; voice-enable policy and offer lifetime remain in `StableLiveOfferAdvisor`.
   - [x] Extract per-offer frozen decision-threshold snapshot/prewarm ownership into `LiveAdvisorDecisionThresholds`; `OfferDecisionEngine` scoring and live-card presentation remain unchanged.
