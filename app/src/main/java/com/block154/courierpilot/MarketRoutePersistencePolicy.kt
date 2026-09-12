@@ -7,9 +7,10 @@ internal object MarketRoutePersistencePolicy {
         parsed: ParsedOffer,
         comparison: RouteComparison? = null,
     ): Boolean {
-        // Wolt add-ons expose incremental money + incremental distance while CourierPilot resolves
-        // the full remaining route through already-accepted and newly offered stops. Persisting that
-        // full chain would create a false denominator and poison personal/city market samples.
+        // Wolt add-ons are a different economic product from ordinary full offers. Exact one-stop
+        // layouts may now resolve a valid incremental dropoff-to-dropoff tail, while ambiguous
+        // layouts can still use Wolt's +distance live fallback. Keep every add-on out of canonical
+        // personal/city market samples so incremental money never trains full-offer thresholds.
         if (platform.equals("Wolt", ignoreCase = true) && parsed.isIncrementalOffer) return false
 
         // Live scoring may fall back to one successful Valhalla profile so the courier still gets a

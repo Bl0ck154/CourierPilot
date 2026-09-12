@@ -43,6 +43,8 @@ class AccessHintIntelligenceTest {
             suggestion = AccessCodeSuggestion("Test g. 1", listOf("1234"), "Wolt", now),
             armedAt = now,
             destination = RoutePoint(54.68, 25.27),
+            fallbackNotifyAt = now + 420_000L,
+            fallbackTimingSource = "delivery-screen-range",
         )
         PendingArrivalReminderStore.save(context, reminder)
         val restored = PendingArrivalReminderStore.load(context, now + 1_000L)
@@ -50,6 +52,8 @@ class AccessHintIntelligenceTest {
         assertEquals("delivery", restored!!.deliveryKey)
         assertEquals(listOf("1234"), restored.suggestion.codes)
         assertEquals(54.68, restored.destination!!.latitude, 0.000001)
+        assertEquals(now + 420_000L, restored.fallbackNotifyAt)
+        assertEquals("delivery-screen-range", restored.fallbackTimingSource)
 
         assertNull(
             PendingArrivalReminderStore.load(
@@ -127,6 +131,24 @@ class AccessHintIntelligenceTest {
 
         assertFalse(ArrivalAccessHintMonitor.awaitingLiveDeliveryConfirmation())
         assertNull(PendingArrivalReminderStore.load(context))
+    }
+
+    @Test
+    fun armingPersistsEtaFallbackWithoutMakingLocationARequirement() {
+        val now = System.currentTimeMillis()
+        ArrivalAccessHintMonitor.arm(
+            context = context,
+            deliveryKey = "delivery-eta",
+            buildingKey = "building-eta",
+            suggestion = AccessCodeSuggestion("ETA g. 1", listOf("7878"), "Wolt", now),
+            eta = ArrivalEtaWindow(6, 13, "delivery-screen-range"),
+        )
+
+        val persisted = PendingArrivalReminderStore.load(context)
+        assertNotNull(persisted)
+        assertEquals("delivery-eta", persisted!!.deliveryKey)
+        assertEquals("delivery-screen-range", persisted.fallbackTimingSource)
+        assertEquals(270_000L, persisted.fallbackNotifyAt!! - persisted.armedAt)
     }
 
     @Test

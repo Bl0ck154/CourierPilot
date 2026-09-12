@@ -87,7 +87,8 @@ internal object AutomaticWoltRouteCoordinator {
         val fingerprint = routeFingerprint(parsed) ?: return false
         if (!LiveAdvisorSettings.automaticWoltRouting(app)) return false
         val config = runCatching { RouteEndpointSettings.load(app).validated() }.getOrNull() ?: return false
-        if (!RouteResearchLocation.hasPermission(app)) return false
+        val routeScope = WoltIncrementalRoutePolicy.select(parsed)
+        if (routeScope.requiresCurrentLocation && !RouteResearchLocation.hasPermission(app)) return false
 
         var startNew: PreparationState? = null
         var ready: PreparedWoltRoute? = null
@@ -148,7 +149,8 @@ internal object AutomaticWoltRouteCoordinator {
             completeFailure(app, offerId, platform, parsed, emptyList(), null, null, null, "route endpoint disabled", onComplete)
             return
         }
-        if (!RouteResearchLocation.hasPermission(app)) {
+        val routeScope = WoltIncrementalRoutePolicy.select(parsed)
+        if (routeScope.requiresCurrentLocation && !RouteResearchLocation.hasPermission(app)) {
             completeFailure(app, offerId, platform, parsed, emptyList(), null, null, null, "location permission missing", onComplete)
             return
         }
@@ -295,10 +297,130 @@ internal object AutomaticWoltRouteCoordinator {
             }
             return
         }
-        val stopSpecs = buildStopSpecs(parsed)
+        val routeScope = WoltIncrementalRoutePolicy.select(parsed)
+        val stopSpecs = buildStopSpecs(routeScope.stops)
 
-        // GPS acquisition and address geocoding are independent. Running them serially made the
-        // live card pay both waits before the first Valhalla request (several seconds on ColorOS).
+        fun finishWithWaypoints(
+            waypoints: List<ResolvedWaypoint>,
+            strictRecoveryPrefix: List<ResolvedWaypoint>,
+            fix: CurrentLocationFix?,
+            strictRecovery: Boolean,
+        ) {
+            val chainMeters = RouteGeometryMetrics.directChainMeters(waypoints)
+            val sanityPlatformMeters = parsed.distanceMeters.takeIf { routeScope.platformDistanceComparable }
+            val mismatch = WoltRoutePlausibility.coordinateMismatchReason(sanityPlatformMeters, chainMeters)
+            if (mismatch != null && !strictRecovery) {
+                CaptureEventLog.append(
+                    app,
+                    stage = "route_geocode_sanity_retry",
+                    platform = "Wolt",
+                    message = "scope=${routeScope.kind}; primary_direct_m=${chainMeters ?: -1}; " +
+                        "platform_m=${parsed.distanceMeters ?: -1}; retrying selected stops with strict Photon",
+                    dedupeWindowMs = 500L,
+                )
+                resolveAllStrictPhoton(app, stopSpecs, strictRecoveryPrefix) { strictResult ->
+                    strictResult.onFailure { failure ->
+                        callback(
+                            PreparedWoltRoute(
+                                fingerprint, strictRecoveryPrefix, null,
+                                "geocoder sanity recovery failed: ${failure.message ?: failure.javaClass.simpleName}",
+                                fix?.accuracyMeters, fix?.ageMillis, chainMeters,
+                            )
+                        )
+                    }.onSuccess { recovered ->
+                        finishWithWaypoints(recovered, strictRecoveryPrefix, fix, strictRecovery = true)
+                    }
+                }
+                return
+            }
+            if (mismatch != null) {
+                CaptureEventLog.append(
+                    app,
+                    stage = "route_geocode_sanity_failed",
+                    platform = "Wolt",
+                    message = "scope=${routeScope.kind}; strict_direct_m=${chainMeters ?: -1}; " +
+                        "platform_m=${parsed.distanceMeters ?: -1}; route rejected",
+                    dedupeWindowMs = 500L,
+                )
+                callback(
+                    PreparedWoltRoute(
+                        fingerprint, waypoints, null,
+                        "resolved stop coordinates are inconsistent with Wolt distance",
+                        fix?.accuracyMeters, fix?.ageMillis, chainMeters, parsed.distanceMeters,
+                    )
+                )
+                return
+            }
+            if (strictRecovery) {
+                CaptureEventLog.append(
+                    app,
+                    stage = "route_geocode_sanity_recovered",
+                    platform = "Wolt",
+                    message = "scope=${routeScope.kind}; strict_direct_m=${chainMeters ?: -1}; " +
+                        "platform_m=${parsed.distanceMeters ?: -1}; recovered=true",
+                    dedupeWindowMs = 500L,
+                )
+            }
+
+            executor.execute {
+                val comparison = runCatching {
+                    RouteComparisonEngine(ValhallaRouteProvider(config)).compare(waypoints.map { it.point })
+                }.getOrElse { failure ->
+                    RouteComparison(Result.failure(failure), Result.failure(failure))
+                }
+                val anySuccess = comparison.pedestrian.isSuccess || comparison.cycleway.isSuccess
+                val reason = if (anySuccess) null
+                else comparison.pedestrian.exceptionOrNull()?.javaClass?.simpleName ?: "route failed"
+                val prepared = PreparedWoltRoute(
+                    fingerprint = fingerprint,
+                    waypoints = waypoints,
+                    comparison = comparison.takeIf { anySuccess },
+                    failureReason = reason,
+                    locationAccuracyMeters = fix?.accuracyMeters,
+                    locationAgeMillis = fix?.ageMillis,
+                    directChainMeters = chainMeters,
+                    platformDistanceMeters = parsed.distanceMeters,
+                )
+                app.mainExecutor.execute { callback(prepared) }
+            }
+        }
+
+        if (!routeScope.requiresCurrentLocation) {
+            CaptureEventLog.append(
+                app,
+                stage = "route_incremental_tail",
+                platform = "Wolt",
+                message = "Routing one-stop add-on from existing drop-off to appended drop-off; " +
+                    "points=${stopSpecs.size}; platform_m=${parsed.distanceMeters ?: -1}",
+                dedupeWindowMs = 500L,
+            )
+            resolveAll(app, stopSpecs, emptyList()) { result ->
+                result.onFailure { failure ->
+                    callback(
+                        PreparedWoltRoute(
+                            fingerprint,
+                            emptyList(),
+                            null,
+                            failure.message ?: "incremental stop geocoding failed",
+                            null,
+                            null,
+                            null,
+                            parsed.distanceMeters,
+                        )
+                    )
+                }.onSuccess { resolved ->
+                    finishWithWaypoints(
+                        waypoints = resolved,
+                        strictRecoveryPrefix = emptyList(),
+                        fix = null,
+                        strictRecovery = false,
+                    )
+                }
+            }
+            return
+        }
+
+        // GPS acquisition and address geocoding are independent for ordinary/full-route offers.
         // Start both immediately and join only when both inputs are ready.
         var locationResult: Result<CurrentLocationFix>? = null
         var stopResult: Result<List<ResolvedWaypoint>>? = null
@@ -320,87 +442,12 @@ internal object AutomaticWoltRouteCoordinator {
                 provenance = CoordinateProvenance.DEVICE_GPS,
                 confidence = locationConfidence(fix),
             )
-
-            fun finishWithWaypoints(waypoints: List<ResolvedWaypoint>, strictRecovery: Boolean) {
-                val chainMeters = RouteGeometryMetrics.directChainMeters(waypoints)
-                // Wolt add-ons expose an *incremental* distance (for example "+2.3 km extra") while
-                // the waypoint chain is the full remaining route. Comparing those values would
-                // reject correct coordinates by construction, so the full-distance sanity bound is
-                // only valid for ordinary offers.
-                val sanityPlatformMeters = parsed.distanceMeters.takeUnless { parsed.isIncrementalOffer }
-                val mismatch = WoltRoutePlausibility.coordinateMismatchReason(sanityPlatformMeters, chainMeters)
-                if (mismatch != null && !strictRecovery) {
-                    CaptureEventLog.append(
-                        app,
-                        stage = "route_geocode_sanity_retry",
-                        platform = "Wolt",
-                        message = "primary_direct_m=${chainMeters ?: -1}; platform_m=${parsed.distanceMeters ?: -1}; retrying all stops with strict Photon",
-                        dedupeWindowMs = 500L,
-                    )
-                    resolveAllStrictPhoton(app, stopSpecs, listOf(current)) { strictResult ->
-                        strictResult.onFailure { failure ->
-                            callback(
-                                PreparedWoltRoute(
-                                    fingerprint, listOf(current), null,
-                                    "geocoder sanity recovery failed: ${failure.message ?: failure.javaClass.simpleName}",
-                                    fix.accuracyMeters, fix.ageMillis, chainMeters,
-                                )
-                            )
-                        }.onSuccess { recovered -> finishWithWaypoints(recovered, strictRecovery = true) }
-                    }
-                    return
-                }
-                if (mismatch != null) {
-                    CaptureEventLog.append(
-                        app,
-                        stage = "route_geocode_sanity_failed",
-                        platform = "Wolt",
-                        message = "strict_direct_m=${chainMeters ?: -1}; platform_m=${parsed.distanceMeters ?: -1}; route rejected",
-                        dedupeWindowMs = 500L,
-                    )
-                    callback(
-                        PreparedWoltRoute(
-                            fingerprint, waypoints, null,
-                            "resolved stop coordinates are inconsistent with Wolt distance",
-                            fix.accuracyMeters, fix.ageMillis, chainMeters, parsed.distanceMeters,
-                        )
-                    )
-                    return
-                }
-                if (strictRecovery) {
-                    CaptureEventLog.append(
-                        app,
-                        stage = "route_geocode_sanity_recovered",
-                        platform = "Wolt",
-                        message = "strict_direct_m=${chainMeters ?: -1}; platform_m=${parsed.distanceMeters ?: -1}; recovered=true",
-                        dedupeWindowMs = 500L,
-                    )
-                }
-
-                executor.execute {
-                    val comparison = runCatching {
-                        RouteComparisonEngine(ValhallaRouteProvider(config)).compare(waypoints.map { it.point })
-                    }.getOrElse { failure ->
-                        RouteComparison(Result.failure(failure), Result.failure(failure))
-                    }
-                    val anySuccess = comparison.pedestrian.isSuccess || comparison.cycleway.isSuccess
-                    val reason = if (anySuccess) null
-                    else comparison.pedestrian.exceptionOrNull()?.javaClass?.simpleName ?: "route failed"
-                    val prepared = PreparedWoltRoute(
-                        fingerprint = fingerprint,
-                        waypoints = waypoints,
-                        comparison = comparison.takeIf { anySuccess },
-                        failureReason = reason,
-                        locationAccuracyMeters = fix.accuracyMeters,
-                        locationAgeMillis = fix.ageMillis,
-                        directChainMeters = chainMeters,
-                        platformDistanceMeters = parsed.distanceMeters,
-                    )
-                    app.mainExecutor.execute { callback(prepared) }
-                }
-            }
-
-            finishWithWaypoints(listOf(current) + stops, strictRecovery = false)
+            finishWithWaypoints(
+                waypoints = listOf(current) + stops,
+                strictRecoveryPrefix = listOf(current),
+                fix = fix,
+                strictRecovery = false,
+            )
         }
 
         fun joinInputsIfReady() {
@@ -457,6 +504,17 @@ internal object AutomaticWoltRouteCoordinator {
         val address: String,
         val label: String?,
     )
+
+    private fun buildStopSpecs(stops: List<ParsedRouteStop>): List<StopSpec> = stops
+        .filter { it.address.isNotBlank() }
+        .map { stop ->
+            StopSpec(
+                kind = if (stop.kind == ParsedRouteStopKind.PICKUP) WaypointKind.PICKUP else WaypointKind.DROPOFF,
+                address = stop.address,
+                label = stop.name,
+            )
+        }
+        .distinctBy { "${it.kind}|${normalizeAddress(it.address)}" }
 
     private fun buildStopSpecs(parsed: ParsedOffer): List<StopSpec> {
         val ordered = parsed.orderedRouteStops.map { stop ->

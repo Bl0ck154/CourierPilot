@@ -168,6 +168,41 @@ class OfferParserTest {
     }
 
     @Test
+    fun parsesOneStopAddonFromFieldScreenshotInDropoffOrder() {
+        val parsed = OfferParser.parse(
+            """
+            +€3.58
+            +1 stop (3.8 km) • 6–13 min extra
+            Holy Donut (Vilniaus g.)
+            Vilniaus g. 18, Vilnius, LT-01402
+            Customer drop-off
+            Olimpiečių gatvė 1, Vilnius, 09200
+            Customer drop-off
+            Laumenų gatvė 4, Vilnius, 09300
+            Accept
+            Decline
+            """.trimIndent()
+        )
+
+        assertEquals(358, parsed.priceCents)
+        assertEquals(3_800, parsed.distanceMeters)
+        assertEquals(6, parsed.estimatedMinutesMin)
+        assertEquals(13, parsed.estimatedMinutesMax)
+        assertEquals(listOf("Vilniaus g. 18, Vilnius, LT-01402"), parsed.pickupAddresses)
+        assertEquals(
+            listOf(
+                "Olimpiečių gatvė 1, Vilnius, 09200",
+                "Laumenų gatvė 4, Vilnius, 09300",
+            ),
+            parsed.dropoffAddresses,
+        )
+        assertEquals(2, parsed.deliveryCount)
+        assertTrue(parsed.isIncrementalOffer)
+        assertEquals(1, parsed.incrementalStopCount)
+        assertTrue(AutomaticWoltRouteCoordinator.routeFingerprint(parsed) != null)
+    }
+
+    @Test
     fun parsesRealWoltAddonWithNamedExistingCustomerStop() {
         val parsed = OfferParser.parse(
             """
@@ -194,6 +229,7 @@ class OfferParserTest {
         )
         assertEquals(2, parsed.deliveryCount)
         assertTrue(parsed.isIncrementalOffer)
+        assertEquals(2, parsed.incrementalStopCount)
         assertTrue(AutomaticWoltRouteCoordinator.routeFingerprint(parsed) != null)
     }
 
