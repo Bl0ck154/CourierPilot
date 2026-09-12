@@ -34,6 +34,7 @@ import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.ChevronLeft
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Euro
 import androidx.compose.material.icons.rounded.Home
@@ -45,6 +46,7 @@ import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.Storefront
 import androidx.compose.material.icons.rounded.WarningAmber
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.FilledTonalButton
@@ -67,6 +69,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -91,6 +94,7 @@ import java.util.Locale
 import kotlin.math.ceil
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class CourierPilotDashboardActivity : ComponentActivity() {
@@ -674,9 +678,13 @@ private fun DashboardAddresses(
     var total by remember { mutableIntStateOf(0) }
     var rows by remember { mutableStateOf<List<DashboardAddressRow>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
+    var addressPendingDelete by remember { mutableStateOf<AddressRecord?>(null) }
+    var deletingAddress by remember { mutableStateOf(false) }
+    var deletionRevision by remember { mutableIntStateOf(0) }
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
-    LaunchedEffect(query, page, refreshToken) {
+    LaunchedEffect(query, page, refreshToken, deletionRevision) {
         loading = true
         if (query.isNotBlank()) delay(160L)
         val requestedPage = page
@@ -696,6 +704,54 @@ private fun DashboardAddresses(
         if (page != loaded.second) page = loaded.second
         rows = loaded.third
         loading = false
+    }
+
+    addressPendingDelete?.let { address ->
+        AlertDialog(
+            onDismissRequest = { if (!deletingAddress) addressPendingDelete = null },
+            icon = { Icon(Icons.Rounded.Delete, contentDescription = null) },
+            title = { Text("Delete saved address?") },
+            text = {
+                Text(
+                    "${address.displayAddress}\n\n" +
+                        "This permanently removes this address and its saved customers, access hints, " +
+                        "delivery details and raw delivery-screen observations from this device. " +
+                        "A future delivery can learn the address again."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (deletingAddress) return@TextButton
+                        deletingAddress = true
+                        scope.launch {
+                            val deleted = withContext(Dispatchers.IO) {
+                                AddressDeletion.delete(context, meta, address)
+                            }
+                            if (deleted) {
+                                deletionRevision++
+                                addressPendingDelete = null
+                            }
+                            deletingAddress = false
+                        }
+                    },
+                    enabled = !deletingAddress,
+                ) {
+                    Text(
+                        if (deletingAddress) "Deleting…" else "Delete address",
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { addressPendingDelete = null },
+                    enabled = !deletingAddress,
+                ) {
+                    Text("Cancel")
+                }
+            },
+        )
     }
 
     val pageCount = maxOf(1, ceil(total / ADDRESS_PAGE_SIZE.toDouble()).toInt())
@@ -748,6 +804,16 @@ private fun DashboardAddresses(
                                 fontSize = 12.sp,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        IconButton(
+                            onClick = { addressPendingDelete = address },
+                            enabled = !deletingAddress,
+                        ) {
+                            Icon(
+                                Icons.Rounded.Delete,
+                                contentDescription = "Delete saved address",
+                                tint = MaterialTheme.colorScheme.error,
                             )
                         }
                         IconButton(onClick = { context.openAddressInMaps(address.displayAddress) }) {
