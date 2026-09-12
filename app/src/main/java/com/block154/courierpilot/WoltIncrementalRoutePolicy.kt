@@ -76,7 +76,7 @@ internal object WoltIncrementalRoutePolicy {
 
     private fun normalizeAddress(value: String): String = value
         .lowercase()
-        .replace(Regex("[^\p{L}\p{N}]+"), " ")
+        .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
         .trim()
 
     private fun fallbackStops(parsed: ParsedOffer): List<ParsedRouteStop> = buildList {
