@@ -334,6 +334,45 @@ internal class StableLiveOfferAdvisor(
         }
     }
 
+    fun updateWoltRoute(
+        comparison: RouteComparison,
+        waypointCount: Int,
+        scope: WoltRouteScopeKind,
+    ) {
+        val parsed = currentParsed
+        if (parsed == null || WoltIncrementalRoutePolicy.canScoreResolvedRoute(parsed, scope)) {
+            updateRoute(comparison, waypointCount)
+            return
+        }
+        if (dismissed || finalPresentationLocked || !LiveAdvisorSettings.enabled(service)) return
+        val expectedGeneration = generation
+        handler.post {
+            if (dismissed || finalPresentationLocked || generation != expectedGeneration) return@post
+            val current = currentParsed ?: return@post
+            if (WoltIncrementalRoutePolicy.canScoreResolvedRoute(current, scope)) {
+                updateRoute(comparison, waypointCount)
+                return@post
+            }
+            val walking = comparison.pedestrian.getOrNull()
+            val cycling = comparison.cycleway.getOrNull()
+            // The full remaining chain is useful route context for an ambiguous add-on, but its
+            // distance is not the denominator for incremental money. Keep the left route row while
+            // the primary €/km stays on Wolt's explicit +distance fallback.
+            cachedPedestrianRoute = null
+            cachedCyclewayRoute = null
+            renderProgressiveDecision(current)
+            setRouteContent(LiveAdvisorPresentation.routeLine(walking, cycling))
+            CaptureEventLog.append(
+                service,
+                stage = "route_ready_context_only",
+                platform = currentPlatform,
+                message = "Incremental offer kept full remaining route as context only; " +
+                    "scope=$scope; points=$waypointCount",
+                dedupeWindowMs = 500L,
+            )
+        }
+    }
+
     fun updateBoltRoute(outcome: AutomaticBoltRouteOutcome) {
         if (dismissed || finalPresentationLocked || !LiveAdvisorSettings.enabled(service)) return
         val expectedGeneration = generation

@@ -16,6 +16,7 @@ internal object LiveAdvisorHub {
         val record: OfferRecord,
         val parsed: ParsedOffer,
         val supplementalBoltPickupAddresses: List<String> = emptyList(),
+        val woltRouteScope: WoltRouteScope? = null,
     )
 
     private data class PendingAdvisorOffer(
@@ -24,6 +25,7 @@ internal object LiveAdvisorHub {
         val notificationKey: String,
         val armedAt: Long,
         val parsed: ParsedOffer,
+        val woltRouteScope: WoltRouteScope? = null,
     )
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -40,6 +42,16 @@ internal object LiveAdvisorHub {
         val dismissedAtElapsed: Long,
     )
     private var userDismissedOffer: UserDismissedOffer? = null
+    private val WOLT_BASELINE_CANDIDATE_STATES = setOf(
+        // Wolt can replace the offer with the task map before Accessibility catches an explicit
+        // acceptance cue. An incremental `+... extra` card itself proves an active route exists, so
+        // a fresh previous capture may still be used only after exact pickup + first-dropoff match.
+        DeliveryEventType.OFFER_CAPTURED,
+        DeliveryEventType.ACCEPTED,
+        DeliveryEventType.ARRIVED_PICKUP,
+        DeliveryEventType.PICKED_UP,
+        DeliveryEventType.ARRIVED_DROPOFF,
+    )
 
     fun attach(context: Context) {
         val service = context as? AccessibilityService ?: return
@@ -123,7 +135,17 @@ internal object LiveAdvisorHub {
             }
         }
         val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
-        pendingPreview = PendingAdvisorOffer(key, pending.packageName, pending.notificationKey, pending.armedAt, parsed)
+        val woltRouteScope = if (pending.packageName == CourierSignals.WOLT_PACKAGE) {
+            resolveWoltRouteScope(service, parsed)
+        } else null
+        pendingPreview = PendingAdvisorOffer(
+            key,
+            pending.packageName,
+            pending.notificationKey,
+            pending.armedAt,
+            parsed,
+            woltRouteScope,
+        )
         advisor?.showPending(platform, parsed, pending.notificationKey)
 
         // Bolt address geocoding is independent from price persistence. Start it as soon as the
@@ -134,7 +156,12 @@ internal object LiveAdvisorHub {
         }
 
         if (pending.packageName == CourierSignals.WOLT_PACKAGE) {
-            val started = AutomaticWoltRouteCoordinator.prepare(service, key, parsed) { prepared ->
+            val started = AutomaticWoltRouteCoordinator.prepare(
+                service,
+                key,
+                parsed,
+                routeScope = woltRouteScope ?: WoltIncrementalRoutePolicy.select(parsed),
+            ) { prepared ->
                 val active = pendingPreview
                 if (active?.key != key || active.packageName != pending.packageName) return@prepare
                 val comparison = prepared.comparison
@@ -167,14 +194,14 @@ internal object LiveAdvisorHub {
                         "gps_age_ms=${prepared.locationAgeMillis ?: -1}; gps_accuracy_m=${prepared.locationAccuracyMeters ?: -1f}",
                     dedupeWindowMs = 500L,
                 )
-                advisor?.updateRoute(comparison, prepared.waypoints.size)
+                advisor?.updateWoltRoute(comparison, prepared.waypoints.size, prepared.scope)
             }
             if (started) {
                 CaptureEventLog.append(
                     service,
                     stage = "route_prepare_start",
                     platform = platform,
-                    message = "Full Wolt route preparation started before price",
+                    message = "Wolt route preparation started before price; scope=${woltRouteScope?.kind ?: WoltRouteScopeKind.FULL_REMAINING}",
                     dedupeWindowMs = 10_000L,
                 )
             }
@@ -263,8 +290,14 @@ internal object LiveAdvisorHub {
         currentWoltRouteRetryCount = 0
 
         currentAdvisor.showBase(historical.platform, merged, syntheticCaptureKey)
-        val route = runCatching { RouteResearchDatabase.get(service).latestSuccessfulAdvisorRoute(historical.id) }.getOrNull()
+        // Older route snapshots do not persist whether an incremental offer was routed as the
+        // paid dropoff tail or as the full remaining chain. Reusing one as €/km would be unsafe.
+        // Recompute incremental offers under the current scope policy instead.
+        val route = if (merged.isIncrementalOffer) null else {
+            runCatching { RouteResearchDatabase.get(service).latestSuccessfulAdvisorRoute(historical.id) }.getOrNull()
+        }
         val historicalRouteMeters = historical.trustedMarketRouteDistanceMeters
+            .takeUnless { merged.isIncrementalOffer }
         when {
             route != null -> {
                 currentOfferHasResolvedRoute = true
@@ -488,8 +521,20 @@ internal object LiveAdvisorHub {
             emptyList()
         }
 
-        val preparedKey = pendingPreview?.key ?: captureOfferKey
-        val current = CurrentAdvisorOffer(offerId, record, parsed, supplementalBoltPickups)
+        val matchingPending = pendingPreview?.takeIf {
+            it.packageName == record.packageName && previewIdentityMatches
+        }
+        val preparedKey = matchingPending?.key ?: captureOfferKey
+        val woltRouteScope = if (record.packageName == CourierSignals.WOLT_PACKAGE) {
+            matchingPending?.woltRouteScope ?: resolveWoltRouteScope(service, parsed)
+        } else null
+        val current = CurrentAdvisorOffer(
+            offerId,
+            record,
+            parsed,
+            supplementalBoltPickups,
+            woltRouteScope,
+        )
         currentOffer = current
         pendingPreview = null
         captureOfferKey = null
@@ -558,6 +603,7 @@ internal object LiveAdvisorHub {
                 current.offerId,
                 record.platform,
                 parsed,
+                routeScope = current.woltRouteScope ?: WoltIncrementalRoutePolicy.select(parsed),
                 preparedKey = preparedKey,
             ) { outcome ->
                 val comparison = outcome.comparison
@@ -565,7 +611,7 @@ internal object LiveAdvisorHub {
                     if (comparison != null) {
                         currentOfferHasResolvedRoute = true
                         currentWoltRouteRetryCount = 0
-                        advisor?.updateRoute(comparison, outcome.waypoints.size)
+                        advisor?.updateWoltRoute(comparison, outcome.waypoints.size, outcome.scope)
                     } else {
                         val reason = outcome.failureReason ?: "unknown failure"
                         when (LiveAdvisorRouteFailurePolicy.decideWoltFinalFailure(
@@ -637,7 +683,7 @@ internal object LiveAdvisorHub {
                         service,
                         stage = "market_route_skipped_incremental",
                         platform = record.platform,
-                        message = "Skipped full Valhalla chain for incremental add-on economics",
+                        message = "Skipped incremental add-on route from canonical full-offer market samples",
                         dedupeWindowMs = 1_000L,
                     )
                 } else if (comparison != null && record.platform.equals("Wolt", ignoreCase = true) &&
@@ -653,6 +699,37 @@ internal object LiveAdvisorHub {
                 }
             }
         }
+    }
+
+    private fun resolveWoltRouteScope(context: Context, parsed: ParsedOffer): WoltRouteScope {
+        val conservative = WoltIncrementalRoutePolicy.select(parsed)
+        if (!parsed.isIncrementalOffer || parsed.incrementalStopCount != 2) return conservative
+
+        val task = DeliveryLifecycleTracking.currentTask(context, CourierSignals.WOLT_PACKAGE) ?: return conservative
+        if (task.state !in WOLT_BASELINE_CANDIDATE_STATES) return conservative
+        val record = OfferDatabase.get(context).findById(task.offerId) ?: return conservative
+        val baselineAgeMs = (System.currentTimeMillis() - record.capturedAt).coerceAtLeast(0L)
+        if (baselineAgeMs > WOLT_BASELINE_MAX_AGE_MS) return conservative
+        val raw = OfferParser.parse(record.rawText)
+        val baseline = raw.copy(
+            restaurant = record.restaurant ?: raw.restaurant,
+            merchantNames = record.merchantNames.ifEmpty { raw.merchantNames },
+            pickupAddresses = record.pickupAddresses.ifEmpty { raw.pickupAddresses },
+            customerNames = record.customerNames.ifEmpty { raw.customerNames },
+            dropoffAddresses = record.dropoffAddresses.ifEmpty { raw.dropoffAddresses },
+            deliveryCount = record.deliveryCount ?: raw.deliveryCount,
+        )
+        val resolved = WoltIncrementalRoutePolicy.select(parsed, acceptedBaseline = baseline)
+        if (resolved.kind == WoltRouteScopeKind.INCREMENTAL_DROPOFF_TAIL) {
+            CaptureEventLog.append(
+                context,
+                stage = "route_incremental_baseline_match",
+                platform = "Wolt",
+                message = "Fresh baseline confirms same pickup + existing first drop-off; routing appended drop-off tail only",
+                dedupeWindowMs = 2_000L,
+            )
+        }
+        return resolved
     }
 
     private fun isCurrentOffer(expected: CurrentAdvisorOffer): Boolean =
@@ -704,4 +781,5 @@ internal object LiveAdvisorHub {
         DeliveryLifecycleTracking.observeScreen(context, packageName, text)
     }
     private const val USER_DISMISS_TTL_MS = 3L * 60L * 1000L
+    private const val WOLT_BASELINE_MAX_AGE_MS = 3L * 60L * 60L * 1000L
 }
