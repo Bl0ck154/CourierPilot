@@ -9,11 +9,6 @@ import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.math.asin
-import kotlin.math.cos
-import kotlin.math.roundToInt
-import kotlin.math.sin
-import kotlin.math.sqrt
 
 internal data class AutomaticRouteOutcome(
     val offerId: Long,
@@ -34,6 +29,7 @@ internal data class PreparedWoltRoute(
     val locationAccuracyMeters: Float?,
     val locationAgeMillis: Long?,
     val directChainMeters: Int?,
+    val platformDistanceMeters: Int? = null,
 )
 
 internal object WoltRoutePlausibility {
@@ -325,7 +321,7 @@ internal object AutomaticWoltRouteCoordinator {
             )
 
             fun finishWithWaypoints(waypoints: List<ResolvedWaypoint>, strictRecovery: Boolean) {
-                val chainMeters = directChainMeters(waypoints)
+                val chainMeters = RouteGeometryMetrics.directChainMeters(waypoints)
                 // Wolt add-ons expose an *incremental* distance (for example "+2.3 km extra") while
                 // the waypoint chain is the full remaining route. Comparing those values would
                 // reject correct coordinates by construction, so the full-distance sanity bound is
@@ -365,7 +361,7 @@ internal object AutomaticWoltRouteCoordinator {
                         PreparedWoltRoute(
                             fingerprint, waypoints, null,
                             "resolved stop coordinates are inconsistent with Wolt distance",
-                            fix.accuracyMeters, fix.ageMillis, chainMeters,
+                            fix.accuracyMeters, fix.ageMillis, chainMeters, parsed.distanceMeters,
                         )
                     )
                     return
@@ -397,6 +393,7 @@ internal object AutomaticWoltRouteCoordinator {
                         locationAccuracyMeters = fix.accuracyMeters,
                         locationAgeMillis = fix.ageMillis,
                         directChainMeters = chainMeters,
+                        platformDistanceMeters = parsed.distanceMeters,
                     )
                     app.mainExecutor.execute { callback(prepared) }
                 }
@@ -651,25 +648,11 @@ internal object AutomaticWoltRouteCoordinator {
             platform = platform,
             message = "points=${prepared.waypoints.size}; pickups=${prepared.waypoints.count { it.kind == WaypointKind.PICKUP }}; " +
                 "dropoffs=${prepared.waypoints.count { it.kind == WaypointKind.DROPOFF }}; walk_m=${walking ?: -1}; " +
-                "cycle_m=${cycling ?: -1}; avg_m=${average ?: -1}; direct_chain_m=${prepared.directChainMeters ?: -1}; " +
+                "cycle_m=${cycling ?: -1}; avg_m=${average ?: -1}; platform_m=${prepared.platformDistanceMeters ?: -1}; " +
+                "direct_chain_m=${prepared.directChainMeters ?: -1}; direct_legs_m=${RouteGeometryMetrics.directLegSummary(prepared.waypoints)}; " +
                 "gps_age_ms=${prepared.locationAgeMillis ?: -1}; gps_accuracy_m=${prepared.locationAccuracyMeters ?: -1f}; prepared=$early",
             dedupeWindowMs = 500L,
         )
-    }
-
-    private fun directChainMeters(waypoints: List<ResolvedWaypoint>): Int? {
-        if (waypoints.size < 2) return null
-        return waypoints.zipWithNext().sumOf { (a, b) -> haversineMeters(a.point, b.point).toLong() }.toInt()
-    }
-
-    private fun haversineMeters(a: RoutePoint, b: RoutePoint): Int {
-        val earth = 6_371_000.0
-        val lat1 = Math.toRadians(a.latitude)
-        val lat2 = Math.toRadians(b.latitude)
-        val dLat = lat2 - lat1
-        val dLon = Math.toRadians(b.longitude - a.longitude)
-        val h = sin(dLat / 2) * sin(dLat / 2) + cos(lat1) * cos(lat2) * sin(dLon / 2) * sin(dLon / 2)
-        return (2 * earth * asin(sqrt(h.coerceIn(0.0, 1.0)))).roundToInt()
     }
 
     private fun prunePreparationsLocked(now: Long = System.currentTimeMillis()) {

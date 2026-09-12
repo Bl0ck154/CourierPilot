@@ -162,7 +162,8 @@ internal object LiveAdvisorHub {
                     stage = "route_prepared",
                     platform = platform,
                     message = "points=${prepared.waypoints.size}; walk_m=${walking ?: -1}; cycle_m=${cycling ?: -1}; " +
-                        "avg_m=${average ?: -1}; direct_chain_m=${prepared.directChainMeters ?: -1}; " +
+                        "avg_m=${average ?: -1}; platform_m=${prepared.platformDistanceMeters ?: -1}; " +
+                        "direct_chain_m=${prepared.directChainMeters ?: -1}; direct_legs_m=${RouteGeometryMetrics.directLegSummary(prepared.waypoints)}; " +
                         "gps_age_ms=${prepared.locationAgeMillis ?: -1}; gps_accuracy_m=${prepared.locationAccuracyMeters ?: -1f}",
                     dedupeWindowMs = 500L,
                 )

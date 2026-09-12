@@ -98,7 +98,7 @@ internal object ValhallaContract {
                 "bicycle",
                 JSONObject()
                     .put("bicycle_type", "hybrid")
-                    .put("use_roads", 0.2)
+                    .put("use_roads", 0.5)
                     .put("use_hills", 0.5)
                     .put("avoid_bad_surfaces", 0.2)
                     .put("cycling_speed", 25)
