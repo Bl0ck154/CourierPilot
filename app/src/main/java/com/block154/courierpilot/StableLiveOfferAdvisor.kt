@@ -901,6 +901,17 @@ internal class StableLiveOfferAdvisor(
             return
         }
 
+        // CourierPilot deliberately opens Wolt's Multiple dropoffs sheet to recover hidden customer
+        // destinations. The sheet replaces the offer-card Compose tree, but it is still the same
+        // transaction. Never let the generic structural-change fallback tear down/re-arm the card.
+        if (CourierSignals.looksLikeWoltMultipleDropoffsSheet(expected, visibleText)) {
+            differentOfferConfirmation.reset()
+            woltHomeEndConfirmation.reset()
+            resetMissingEvidence()
+            if (temporarilyHidden) restoreFromCache("Wolt multiple-dropoff sheet still belongs to current offer")
+            return
+        }
+
         // Known Wolt navigation pages are decisive end-of-offer evidence. Real 0.15.47 telemetry
         // showed the advisor staying over the Stats page because an incoming-task notification was
         // still considered a lifetime anchor even though the visible Wolt surface was unrelated.

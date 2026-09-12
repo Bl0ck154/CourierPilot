@@ -41,7 +41,7 @@ class ValhallaContractTest {
         assertEquals("bicycle", payload.getString("costing"))
         val bicycle = payload.getJSONObject("costing_options").getJSONObject("bicycle")
         assertEquals("hybrid", bicycle.getString("bicycle_type"))
-        assertEquals(0.2, bicycle.getDouble("use_roads"), 0.0001)
+        assertEquals(0.5, bicycle.getDouble("use_roads"), 0.0001)
         assertEquals(25, bicycle.getInt("cycling_speed"))
     }
 
