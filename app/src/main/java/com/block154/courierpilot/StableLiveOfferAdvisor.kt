@@ -813,6 +813,19 @@ internal class StableLiveOfferAdvisor(
             !currentNotificationKey.startsWith("screen:") &&
             LiveOfferNotificationLifetime.isActive(expectedPackageName, currentNotificationKey)
 
+    private fun replacementIdentitySummary(
+        expected: ParsedOffer,
+        visible: ParsedOffer,
+        activeNotificationAnchor: Boolean,
+    ): String =
+        "anchor=$activeNotificationAnchor; " +
+            "price=${expected.priceCents ?: -1}->${visible.priceCents ?: -1}; " +
+            "distance_m=${expected.distanceMeters ?: -1}->${visible.distanceMeters ?: -1}; " +
+            "deliveries=${expected.deliveryCount ?: -1}->${visible.deliveryCount ?: -1}; " +
+            "pickups=${expected.pickupAddresses.size}->${visible.pickupAddresses.size}; " +
+            "dropoffs=${expected.dropoffAddresses.size}->${visible.dropoffAddresses.size}; " +
+            "merchants=${expected.merchantNames.size}->${visible.merchantNames.size}"
+
     private fun notificationIsAlreadyRemoved(packageName: String, notificationKey: String): Boolean =
         notificationKey.isNotBlank() &&
             !notificationKey.startsWith("screen:") &&
@@ -918,10 +931,45 @@ internal class StableLiveOfferAdvisor(
         if (hasOfferUi) {
             val differentNow = LiveOfferResumePolicy.definitelyDifferent(expectedOffer, parsed)
             if (differentNow) {
+                val activeNotificationAnchor = hasActiveNotificationAnchor()
+                if (LiveOfferReplacementPolicy.shouldDeferScreenReplacement(
+                        platform = currentPlatform,
+                        hasActiveNotificationAnchor = activeNotificationAnchor,
+                        expected = expectedOffer,
+                        visible = parsed,
+                    )
+                ) {
+                    // Today's 0.15.79 traces showed the same Wolt card being suppressed after its
+                    // route was already computed because Compose briefly reconstructed the route as
+                    // a different merchant/stop set. Keep the notification-owned transaction alive
+                    // unless the visible card proves a different price or a new notification arms
+                    // the replacement through the normal capture path.
+                    differentOfferConfirmation.reset()
+                    woltHomeEndConfirmation.reset()
+                    resetMissingEvidence()
+                    CaptureEventLog.append(
+                        service,
+                        stage = "overlay_difference_deferred",
+                        platform = currentPlatform,
+                        message = replacementIdentitySummary(expectedOffer, parsed, activeNotificationAnchor),
+                        dedupeWindowMs = 2_000L,
+                    )
+                    if (temporarilyHidden) {
+                        restoreFromCache("active Wolt notification still owns the current offer")
+                    }
+                    return
+                }
                 if (isConfirmedDifferentOffer(expected, parsed)) {
+                    CaptureEventLog.append(
+                        service,
+                        stage = "overlay_replacement_confirmed",
+                        platform = currentPlatform,
+                        message = replacementIdentitySummary(expectedOffer, parsed, activeNotificationAnchor),
+                        dedupeWindowMs = 1_000L,
+                    )
                     suppressCurrentOffer("different offer is now stably visible")
-                } else if (hasActiveNotificationAnchor()) {
-                    // The exact incoming-task notification is stronger than one contradictory Compose frame.
+                } else if (activeNotificationAnchor) {
+                    // An explicit conflicting price still needs stability confirmation before replacement.
                     resetMissingEvidence()
                 } else {
                     temporarilyHide("possible different offer detected; awaiting confirmation")

@@ -5,6 +5,26 @@ internal object LiveAdvisorCapturePolicy {
     fun shouldSuppressOverlay(platform: String): Boolean = !platform.equals("Wolt", ignoreCase = true)
 }
 
+/**
+ * Wolt's Compose tree can stably expose a contradictory merchant/route snapshot for several
+ * watchdog passes while the exact incoming-task notification is still alive. The notification is
+ * a stronger transaction anchor than those screen-only fields. Only an explicit price conflict is
+ * strong enough to override that anchor without waiting for a new notification instance.
+ */
+internal object LiveOfferReplacementPolicy {
+    fun shouldDeferScreenReplacement(
+        platform: String,
+        hasActiveNotificationAnchor: Boolean,
+        expected: ParsedOffer,
+        visible: ParsedOffer,
+    ): Boolean {
+        if (!platform.equals("Wolt", ignoreCase = true) || !hasActiveNotificationAnchor) return false
+        val expectedPrice = expected.priceCents
+        val visiblePrice = visible.priceCents
+        return expectedPrice == null || visiblePrice == null || expectedPrice == visiblePrice
+    }
+}
+
 internal class OfferDifferenceConfirmation(
     private val graceMs: Long = DEFAULT_GRACE_MS,
     private val minChecks: Int = DEFAULT_MIN_CHECKS,
