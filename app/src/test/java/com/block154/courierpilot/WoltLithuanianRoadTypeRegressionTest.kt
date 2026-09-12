@@ -46,4 +46,26 @@ class WoltLithuanianRoadTypeRegressionTest {
         assertEquals(listOf("Laisvės pr. 77B, Vilnius, 06122"), parsed.dropoffAddresses)
         assertNotNull(AutomaticWoltRouteCoordinator.routeFingerprint(parsed))
     }
+
+    @Test
+    fun twoStopOfferRecoversDropoffWhenOcrMovesAddressBeforeCustomerMarker() {
+        val parsed = OfferParser.parse(
+            """
+            €7.83
+            2 stops (6.8 km) • 15–28 min
+            Holy Donut (Vilniaus g.)
+            Vilniaus g. 18, Vilnius, LT-01402
+            Šatrijos gatvė 14, Vilnius, 09300
+            Customer drop-off
+            Accept
+            """.trimIndent()
+        )
+
+        assertEquals(783, parsed.priceCents)
+        assertEquals(6800, parsed.distanceMeters)
+        assertEquals(listOf("Vilniaus g. 18, Vilnius, LT-01402"), parsed.pickupAddresses)
+        assertEquals(listOf("Šatrijos gatvė 14, Vilnius, 09300"), parsed.dropoffAddresses)
+        assertEquals(1, parsed.deliveryCount)
+        assertNotNull(AutomaticWoltRouteCoordinator.routeFingerprint(parsed))
+    }
 }

@@ -30,6 +30,71 @@ class LiveAdvisorStabilityPolicyTest {
     }
 
     @Test
+    fun activeWoltNotificationDefersScreenOnlyRouteConflictAtSamePrice() {
+        val expected = ParsedOffer(
+            priceCents = 783,
+            distanceMeters = 6_800,
+            restaurant = "Holy Donut",
+            pickupAddresses = listOf("Vilniaus g. 18"),
+            dropoffAddresses = listOf("Šatrijos gatvė 14"),
+            deliveryCount = 1,
+        )
+        val noisyVisible = expected.copy(
+            restaurant = "Ready in 10 min",
+            pickupAddresses = listOf("Vilniaus g. 18", "Šatrijos gatvė 14"),
+            dropoffAddresses = emptyList(),
+            deliveryCount = 2,
+        )
+
+        assertTrue(
+            LiveOfferReplacementPolicy.shouldDeferScreenReplacement(
+                platform = "Wolt",
+                hasActiveNotificationAnchor = true,
+                expected = expected,
+                visible = noisyVisible,
+            )
+        )
+    }
+
+    @Test
+    fun explicitDifferentWoltPriceCanReplaceEvenWithActiveNotificationAnchor() {
+        val expected = ParsedOffer(priceCents = 448, distanceMeters = 3_300)
+        val visible = ParsedOffer(priceCents = 783, distanceMeters = 6_800)
+
+        assertFalse(
+            LiveOfferReplacementPolicy.shouldDeferScreenReplacement(
+                platform = "Wolt",
+                hasActiveNotificationAnchor = true,
+                expected = expected,
+                visible = visible,
+            )
+        )
+    }
+
+    @Test
+    fun screenReplacementIsNotDeferredWithoutNotificationAnchorOrForBolt() {
+        val expected = ParsedOffer(priceCents = 448)
+        val visible = ParsedOffer(priceCents = 448, restaurant = "Different")
+
+        assertFalse(
+            LiveOfferReplacementPolicy.shouldDeferScreenReplacement(
+                platform = "Wolt",
+                hasActiveNotificationAnchor = false,
+                expected = expected,
+                visible = visible,
+            )
+        )
+        assertFalse(
+            LiveOfferReplacementPolicy.shouldDeferScreenReplacement(
+                platform = "Bolt",
+                hasActiveNotificationAnchor = true,
+                expected = expected,
+                visible = visible,
+            )
+        )
+    }
+
+    @Test
     fun staleWoltUnconfirmedSurfaceGetsShortRecoveryWindow() {
         assertTrue(
             LiveAdvisorRestorePolicy.recoveryWindowMs(

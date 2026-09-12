@@ -338,12 +338,17 @@ internal object OfferParser {
             expectedTotalStops >= 2 &&
             merchants.size == 1 &&
             pickups.size == expectedTotalStops
-        if ((explicitSingleRoute || splitSummarySingleRoute || sameVenueBatchRoute) &&
-            dropoffs.isEmpty() &&
-            customerDropoffIndexes.isEmpty() &&
+        val noUsableDropoffMarkers = customerDropoffIndexes.isEmpty() &&
             collapsedDropoffIndexes.isEmpty() &&
             expandedDropoffIndexes.isEmpty()
+        if (dropoffs.isEmpty() &&
+            (explicitSingleRoute ||
+                ((splitSummarySingleRoute || sameVenueBatchRoute) && noUsableDropoffMarkers))
         ) {
+            // For an explicit ordinary `2 stops` card, two recovered street addresses are
+            // structurally one pickup + one customer even when ML Kit emitted the customer address
+            // before the literal `Customer drop-off` marker. Previously the mere presence of that
+            // orphan marker disabled this fallback and produced pickups=2/dropoffs=0.
             val inferredDropoffs = pickups.drop(1)
             while (pickups.size > 1) pickups.removeAt(1)
             inferredDropoffs.forEach { inferredDropoff ->
