@@ -6,6 +6,11 @@ CourierPilot does **not** currently declare a minimum directly-upgradable histor
 
 Do not remove an old repair merely because every current development install has already executed it.
 
+Current regression coverage also force-runs the latest address and offer repairs a second time over
+their own repaired output. That proves current repair idempotency under revision-marker replay, but it
+**does not** define a minimum supported upgrade version or prove that an arbitrarily old schema can
+upgrade directly to current. Those remain separate product-support and baseline-fixture decisions.
+
 ## When an old repair may be retired
 
 A repair can be deleted only when all of the following are true:
