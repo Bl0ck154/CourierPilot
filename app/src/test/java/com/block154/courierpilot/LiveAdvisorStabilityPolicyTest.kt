@@ -58,8 +58,8 @@ class LiveAdvisorStabilityPolicyTest {
 
     @Test
     fun explicitDifferentWoltPriceCanReplaceEvenWithActiveNotificationAnchor() {
-        val expected = ParsedOffer(priceCents = 448, distanceMeters = 3_300)
-        val visible = ParsedOffer(priceCents = 783, distanceMeters = 6_800)
+        val expected = ParsedOffer(priceCents = 448, distanceMeters = 3_300, restaurant = "Holy Donut")
+        val visible = ParsedOffer(priceCents = 783, distanceMeters = 6_800, restaurant = "Holy Donut")
 
         assertFalse(
             LiveOfferReplacementPolicy.shouldDeferScreenReplacement(
@@ -73,8 +73,8 @@ class LiveAdvisorStabilityPolicyTest {
 
     @Test
     fun screenReplacementIsNotDeferredWithoutNotificationAnchorOrForBolt() {
-        val expected = ParsedOffer(priceCents = 448)
-        val visible = ParsedOffer(priceCents = 448, restaurant = "Different")
+        val expected = ParsedOffer(priceCents = 448, distanceMeters = 3_300, restaurant = "Holy Donut")
+        val visible = ParsedOffer(priceCents = 448, distanceMeters = 3_300, restaurant = "Different")
 
         assertFalse(
             LiveOfferReplacementPolicy.shouldDeferScreenReplacement(
