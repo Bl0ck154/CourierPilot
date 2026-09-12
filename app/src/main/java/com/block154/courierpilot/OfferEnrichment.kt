@@ -17,14 +17,26 @@ import java.util.Locale
  * gate; raw Accessibility/OCR text is noisier and may contain extra or malformed money tokens. Using
  * a newer parser to overwrite the saved amount while merely opening History can therefore corrupt a
  * previously correct record.
+ *
+ * Historical rows are untrusted UI input. One malformed capture must never strand Home/History/
+ * OfferDetails in a permanent loading state, so structural enrichment is fail-open: the original
+ * persisted record is still usable when a future parser repair encounters unexpected text.
  */
-internal fun OfferRecord.withCurrentParsedStructure(): OfferRecord {
+internal fun OfferRecord.withCurrentParsedStructure(): OfferRecord =
+    runCatching { withCurrentParsedStructureUnchecked() }.getOrElse { this }
+
+private fun OfferRecord.withCurrentParsedStructureUnchecked(): OfferRecord {
     val parseText = when {
         rawText.isBlank() -> ""
         packageName == CourierSignals.BOLT_PACKAGE -> BoltOfferTextSanitizer.sanitizeStoredRawText(rawText)
         else -> rawText
     }
-    val parsed = parseText.takeIf(String::isNotBlank)?.let(OfferParser::parse)
+    val parsedBase = parseText.takeIf(String::isNotBlank)?.let(OfferParser::parse)
+    val parsed = if (packageName == CourierSignals.WOLT_PACKAGE && parsedBase != null) {
+        parsedBase.withRecoveredTrailingWoltMerchants(parseText)
+    } else {
+        parsedBase
+    }
 
     val parsedMerchants = parsed?.merchantNames.orEmpty().filterNot { value ->
         packageName == CourierSignals.WOLT_PACKAGE && WoltOfferUiText.isMerchantUiNoise(value)
@@ -90,6 +102,55 @@ internal fun OfferRecord.withCurrentParsedStructure(): OfferRecord {
         estimatedMinutesMax = parsed?.estimatedMinutesMax ?: estimatedMinutesMax,
     )
 }
+
+/**
+ * ML Kit does not guarantee text-block order. Real Wolt frames can contain the pickup address near
+ * the route summary while the venue title is emitted at the very end of OCR, after Accept/Map Marker.
+ * A branch suffix such as `Sushi Express (Vokiečių g.)` is strong evidence because its street token
+ * can be matched directly to the already parsed pickup address. Prefer that evidence over malformed
+ * stored merchant fragments from older captures.
+ */
+private fun ParsedOffer.withRecoveredTrailingWoltMerchants(rawText: String): ParsedOffer {
+    if (pickupAddresses.isEmpty() || rawText.isBlank()) return this
+
+    val recovered = rawText.lineSequence()
+        .map { it.replace(Regex("\\s+"), " ").trim() }
+        .filter { it.isNotBlank() }
+        .mapNotNull { line ->
+            val match = trailingWoltBranchMerchantRegex.matchEntire(line) ?: return@mapNotNull null
+            if (WoltOfferUiText.isMerchantUiNoise(line)) return@mapNotNull null
+            val branch = match.groupValues.getOrNull(1).orEmpty()
+            val pickup = pickupAddresses.firstOrNull { address -> branchMatchesPickup(branch, address) }
+                ?: return@mapNotNull null
+            pickup to line
+        }
+        .distinctBy { (pickup, merchant) -> identityToken(pickup) + "|" + identityToken(merchant) }
+        .sortedBy { (pickup, _) -> pickupAddresses.indexOfFirst { address -> addressesSemanticallyEqual(address, pickup) } }
+        .map { it.second }
+        .distinctBy(::identityToken)
+
+    if (recovered.isEmpty()) return this
+    return copy(
+        restaurant = recovered.joinToString(", "),
+        merchantNames = recovered,
+    )
+}
+
+private val trailingWoltBranchMerchantRegex = Regex(
+    """(?iu)^.{2,120}\(([^()]*(?:\bg\.|\bgatv(?:ė|e)|\bstr\.?|\bstreet|\bpr\.?|\bprospektas|\bave\.?|\bavenue|\brd\.?|\broad|\bal\.?|\bpl\.?|\bplentas|\bskg\.?|\bkel\.?|\bkelias)[^()]*)\)\s*$"""
+)
+
+private fun branchMatchesPickup(branch: String, address: String): Boolean {
+    val branchKey = identityToken(branch)
+    val addressKey = identityToken(address)
+    if (branchKey.length < 3 || addressKey.isBlank()) return false
+    return addressKey == branchKey ||
+        addressKey.startsWith("$branchKey ") ||
+        addressKey.contains(" $branchKey ")
+}
+
+private fun addressesSemanticallyEqual(a: String, b: String): Boolean =
+    identityToken(a) == identityToken(b)
 
 private fun chooseBetterAddressList(parsed: List<String>, stored: List<String>): List<String> {
     if (parsed.isEmpty()) return stored
