@@ -26,6 +26,11 @@ internal object OfferDataRepair {
         if (prefs.getInt(KEY_REVISION, 0) >= CURRENT_REVISION) return
 
         val database = OfferDatabase.get(appContext)
+        // Historical repair can legitimately touch thousands of rows. In the default rollback-journal
+        // mode that one long writer transaction blocks OfferDetails/History reads and made the UI sit
+        // on `Loading offer…` until repair finished. WAL keeps the repair atomic while readers use the
+        // previous committed snapshot. Best-effort keeps old/OEM SQLite implementations compatible.
+        runCatching { database.setWriteAheadLoggingEnabled(true) }
         val sqlite = database.writableDatabase
         val records = database.recordsSince(0L, 5000).sortedBy { it.capturedAt }
         val visualBackfillIds = suspiciousBoltVisualCandidates(records)
