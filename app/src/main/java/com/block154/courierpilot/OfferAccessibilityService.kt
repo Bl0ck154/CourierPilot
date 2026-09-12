@@ -36,22 +36,50 @@ class OfferAccessibilityService : AccessibilityService() {
     private var lastFastAccessibilityPriceKey = ""
     private var woltPricePollKey = ""
     private var lastWoltPriceProbeAtElapsed = 0L
-    private var woltFrameKey = ""
-    private var woltCardFrameText = ""
-    private var woltDropoffFrameText = ""
-    private var woltVisibleBasePickupAddresses: List<String> = emptyList()
-    private var woltDropoffProbeKey = ""
-    private var woltDropoffProbeAttempts = 0
-    private var woltDropoffSemanticProbeAttempts = 0
-    private var woltDropoffResolvedKey = ""
-    private var woltDropoffResolvedCount = 0
-    private var woltDropoffSheetSettleAttempts = 0
-    private var woltRouteOcrRecoveryAttempts = 0
-    private var woltIdleHomeKey = ""
-    private var woltIdleHomeFirstSeenAtElapsed = 0L
-    private var woltIdleHomeChecks = 0
-    private var woltProofBitmap: Bitmap? = null
-    private var woltProofOfferKey = ""
+    private val woltSession = WoltCaptureSession()
+
+    // Keep the rest of the service mechanically unchanged while the mutable Wolt transaction data
+    // itself lives in WoltCaptureSession. These adapters are intentionally boring: capture policy,
+    // click timing and OCR decisions remain here, but reset/lifetime ownership no longer does.
+    private var woltCardFrameText: String
+        get() = woltSession.cardFrameText
+        set(value) { woltSession.cardFrameText = value }
+    private var woltDropoffFrameText: String
+        get() = woltSession.dropoffFrameText
+        set(value) { woltSession.dropoffFrameText = value }
+    private var woltVisibleBasePickupAddresses: List<String>
+        get() = woltSession.visibleBasePickupAddresses
+        set(value) { woltSession.visibleBasePickupAddresses = value }
+    private var woltDropoffProbeKey: String
+        get() = woltSession.dropoffProbeKey
+        set(value) { woltSession.dropoffProbeKey = value }
+    private var woltDropoffProbeAttempts: Int
+        get() = woltSession.dropoffProbeAttempts
+        set(value) { woltSession.dropoffProbeAttempts = value }
+    private var woltDropoffSemanticProbeAttempts: Int
+        get() = woltSession.dropoffSemanticProbeAttempts
+        set(value) { woltSession.dropoffSemanticProbeAttempts = value }
+    private var woltDropoffResolvedKey: String
+        get() = woltSession.dropoffResolvedKey
+        set(value) { woltSession.dropoffResolvedKey = value }
+    private var woltDropoffResolvedCount: Int
+        get() = woltSession.dropoffResolvedCount
+        set(value) { woltSession.dropoffResolvedCount = value }
+    private var woltDropoffSheetSettleAttempts: Int
+        get() = woltSession.dropoffSheetSettleAttempts
+        set(value) { woltSession.dropoffSheetSettleAttempts = value }
+    private var woltRouteOcrRecoveryAttempts: Int
+        get() = woltSession.routeOcrRecoveryAttempts
+        set(value) { woltSession.routeOcrRecoveryAttempts = value }
+    private var woltIdleHomeKey: String
+        get() = woltSession.idleHomeKey
+        set(value) { woltSession.idleHomeKey = value }
+    private var woltIdleHomeFirstSeenAtElapsed: Long
+        get() = woltSession.idleHomeFirstSeenAtElapsed
+        set(value) { woltSession.idleHomeFirstSeenAtElapsed = value }
+    private var woltIdleHomeChecks: Int
+        get() = woltSession.idleHomeChecks
+        set(value) { woltSession.idleHomeChecks = value }
 
     private val attemptRunnable = Runnable { attemptCapture() }
     private val woltPricePollRunnable = Runnable { pollPendingWoltAccessibilityPrice() }
@@ -447,39 +475,8 @@ class OfferAccessibilityService : AccessibilityService() {
         handler.postDelayed(woltPricePollRunnable, WOLT_HOT_PRICE_POLL_MS)
     }
 
-    private fun accumulateOfferFrame(pending: PendingOffer, currentText: String): String {
-        if (pending.packageName != CourierSignals.WOLT_PACKAGE) return currentText
-        val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
-        if (key != woltFrameKey) {
-            if (woltProofOfferKey.isNotBlank() && woltProofOfferKey != key) clearWoltProofBitmap()
-            woltFrameKey = key
-            woltCardFrameText = ""
-            woltDropoffFrameText = ""
-            woltVisibleBasePickupAddresses = emptyList()
-            woltDropoffProbeKey = key
-            woltDropoffProbeAttempts = 0
-            woltDropoffSemanticProbeAttempts = 0
-            woltDropoffResolvedKey = ""
-            woltDropoffResolvedCount = 0
-            woltDropoffSheetSettleAttempts = 0
-            woltRouteOcrRecoveryAttempts = 0
-            woltIdleHomeKey = ""
-            woltIdleHomeFirstSeenAtElapsed = 0L
-            woltIdleHomeChecks = 0
-        }
-
-        val clean = currentText.trim()
-        if (clean.isNotBlank()) {
-            when {
-                WoltOfferUiText.hasExpandedMultipleDropoffSheet(clean) -> woltDropoffFrameText = clean
-                WoltOfferUiText.hasModernOfferStructure(clean) -> woltCardFrameText = clean
-            }
-        }
-        val frames = listOf(woltCardFrameText, woltDropoffFrameText)
-            .filter { it.isNotBlank() }
-            .distinct()
-        return if (frames.isEmpty()) currentText else frames.joinToString(separator = 10.toChar().toString())
-    }
+    private fun accumulateOfferFrame(pending: PendingOffer, currentText: String): String =
+        woltSession.accumulateFrame(pending, currentText)
 
     /**
      * The redesigned Wolt card hides batched customer addresses behind a separate row. Prefer
@@ -1606,47 +1603,29 @@ class OfferAccessibilityService : AccessibilityService() {
         screenshotFailureCount = 0
     }
 
-    private fun proofKeyFor(pending: PendingOffer): String =
-        "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
-
     private fun stashWoltProofBitmap(pending: PendingOffer, bitmap: Bitmap): Boolean {
-        if (pending.packageName != CourierSignals.WOLT_PACKAGE) return false
-        val key = proofKeyFor(pending)
-        if (woltProofOfferKey.isNotBlank() && woltProofOfferKey != key) clearWoltProofBitmap()
-        if (woltProofBitmap != null) return false
-        woltProofOfferKey = key
-        woltProofBitmap = bitmap
-        CaptureEventLog.append(
-            this,
-            stage = "wolt_frozen_proof_saved",
-            platform = "Wolt",
-            message = "Frozen the first priced Wolt card before multiple-dropoff recovery",
-            dedupeWindowMs = 2_000L,
-        )
-        return true
+        val stashed = woltSession.stashProof(pending, bitmap)
+        if (stashed) {
+            CaptureEventLog.append(
+                this,
+                stage = "wolt_frozen_proof_saved",
+                platform = "Wolt",
+                message = "Frozen the first priced Wolt card before multiple-dropoff recovery",
+                dedupeWindowMs = 2_000L,
+            )
+        }
+        return stashed
     }
 
-    private fun takeWoltProofBitmap(pending: PendingOffer): Bitmap? {
-        if (pending.packageName != CourierSignals.WOLT_PACKAGE) return null
-        val key = proofKeyFor(pending)
-        if (woltProofOfferKey != key) {
-            if (woltProofOfferKey.isNotBlank()) clearWoltProofBitmap()
-            return null
-        }
-        val bitmap = woltProofBitmap
-        woltProofBitmap = null
-        woltProofOfferKey = ""
-        return bitmap
-    }
+    private fun takeWoltProofBitmap(pending: PendingOffer): Bitmap? =
+        woltSession.takeProof(pending)
 
     private fun discardWoltProofBitmap(pending: PendingOffer) {
-        if (woltProofOfferKey == proofKeyFor(pending)) clearWoltProofBitmap()
+        woltSession.discardProof(pending)
     }
 
     private fun clearWoltProofBitmap() {
-        woltProofBitmap?.let { if (!it.isRecycled) it.recycle() }
-        woltProofBitmap = null
-        woltProofOfferKey = ""
+        woltSession.clearProof()
     }
 
     private fun adaptiveOcrDelay(pending: PendingOffer): Long {

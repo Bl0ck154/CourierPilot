@@ -40,8 +40,8 @@ Do not remove Wolt/Bolt parser branches just because they are marked `legacy`. C
 - [ ] Split large accessibility and live-advisor classes into capture/state/routing/presentation pieces.
   - [x] Extract low-level courier Accessibility window/tree traversal into `OfferAccessibilitySurface`.
   - [x] Extract visible live-advisor tree inspection into `LiveAdvisorSurfaceInspector`.
-  - [x] Extract Android screenshot acquisition/fallback/bitmap plumbing into `OfferScreenshotCapture`; OCR, Wolt state and persistence policy remain in `OfferAccessibilityService`.
-  - [ ] Extract Wolt capture-session state/frame accumulation from `OfferAccessibilityService` now that the screenshot boundary is stable.
+  - [x] Extract Android screenshot acquisition/fallback/bitmap plumbing into `OfferScreenshotCapture`; OCR and persistence policy remain in `OfferAccessibilityService`.
+  - [x] Extract Wolt capture-session state/frame accumulation into `WoltCaptureSession`; capture policy, route recovery and OCR timing remain in `OfferAccessibilityService`.
   - [x] Extract overlay view/gesture rendering into `LiveAdvisorOverlayView`; offer lifetime, scoring and cached decision state remain in `StableLiveOfferAdvisor`.
   - [ ] Reassess whether the remaining route coordination needs another owner after those mechanical splits. Do not move route/scoring rules merely to satisfy a class-count target.
 - [ ] Define the minimum supported upgrade baseline before deleting one-shot database repair revisions.
