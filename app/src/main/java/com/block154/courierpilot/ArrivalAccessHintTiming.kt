@@ -85,6 +85,11 @@ internal object ArrivalAccessHintEtaResolver {
         ArrivalAccessHintTimingPolicy.fromScreen(screenText)?.let { return it }
         val task = DeliveryLifecycleTracking.currentTask(context, packageName) ?: return null
         val record = OfferDatabase.get(context).findById(task.offerId) ?: return null
+        // Add-on ETA is explicitly "extra", not an absolute arrival time. Likewise a multi-dropoff
+        // offer ETA describes the whole route rather than the currently visible customer. Neither is
+        // safe as a timer for one building when the delivery screen itself omitted ETA.
+        if ((record.deliveryCount ?: 1) > 1) return null
+        if (OfferParser.parse(record.rawText).isIncrementalOffer) return null
         return ArrivalAccessHintTimingPolicy.fromOffer(record, now)
     }
 }

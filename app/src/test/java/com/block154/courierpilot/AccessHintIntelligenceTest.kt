@@ -134,6 +134,24 @@ class AccessHintIntelligenceTest {
     }
 
     @Test
+    fun armingPersistsEtaFallbackWithoutMakingLocationARequirement() {
+        val now = System.currentTimeMillis()
+        ArrivalAccessHintMonitor.arm(
+            context = context,
+            deliveryKey = "delivery-eta",
+            buildingKey = "building-eta",
+            suggestion = AccessCodeSuggestion("ETA g. 1", listOf("7878"), "Wolt", now),
+            eta = ArrivalEtaWindow(6, 13, "delivery-screen-range"),
+        )
+
+        val persisted = PendingArrivalReminderStore.load(context)
+        assertNotNull(persisted)
+        assertEquals("delivery-eta", persisted!!.deliveryKey)
+        assertEquals("delivery-screen-range", persisted.fallbackTimingSource)
+        assertEquals(270_000L, persisted.fallbackNotifyAt!! - persisted.armedAt)
+    }
+
+    @Test
     fun armingDifferentDeliveryReplacesPersistedReminder() {
         val now = System.currentTimeMillis()
         seedLearnedEntrance("building-a", now)
