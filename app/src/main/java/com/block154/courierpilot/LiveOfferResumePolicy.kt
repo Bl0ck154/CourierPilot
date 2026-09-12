@@ -54,6 +54,21 @@ internal object LiveOfferResumePolicy {
         val visiblePrice = visible.priceCents
         if (expectedPrice != null && visiblePrice != null && expectedPrice != visiblePrice) return true
 
+        val expectedDistance = expected.distanceMeters
+        val visibleDistance = visible.distanceMeters
+        if (expectedDistance != null && visibleDistance != null && expectedDistance != visibleDistance) return true
+
+        val expectedDeliveries = expected.deliveryCount
+        val visibleDeliveries = visible.deliveryCount
+        if (expectedDeliveries != null && visibleDeliveries != null && expectedDeliveries != visibleDeliveries) return true
+
+        // Price + advertised distance + delivery count are the stable numeric identity of a visible
+        // Wolt offer. Compose/ML Kit can temporarily drop or mutate merchant/address text while the
+        // card itself has not changed. Never let those text-only differences replace an offer whose
+        // complete numeric fingerprint is unchanged. A real notification transaction or changed core
+        // number still establishes a new offer through the normal capture path.
+        if (hasStableNumericFingerprint(expected, visible)) return false
+
         // Accessibility/OCR can briefly produce a bogus merchant title while Wolt recomposes the
         // same card. A matching pickup/drop-off is stronger identity evidence than that noisy text.
         if (setOverlaps(expected.pickupAddresses, visible.pickupAddresses)) return false
@@ -66,6 +81,19 @@ internal object LiveOfferResumePolicy {
         if (strongSetConflict(expected.pickupAddresses, visible.pickupAddresses)) return true
         if (strongSetConflict(expected.merchantNames, visible.merchantNames)) return true
         return false
+    }
+
+    internal fun hasStableNumericFingerprint(expected: ParsedOffer, visible: ParsedOffer): Boolean {
+        val expectedPrice = expected.priceCents ?: return false
+        val visiblePrice = visible.priceCents ?: return false
+        val expectedDistance = expected.distanceMeters ?: return false
+        val visibleDistance = visible.distanceMeters ?: return false
+        val expectedDeliveries = expected.deliveryCount ?: return false
+        val visibleDeliveries = visible.deliveryCount ?: return false
+
+        return expectedPrice == visiblePrice &&
+            expectedDistance == visibleDistance &&
+            expectedDeliveries == visibleDeliveries
     }
 
     /**

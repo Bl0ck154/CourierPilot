@@ -972,7 +972,17 @@ internal class StableLiveOfferAdvisor(
                     // An explicit conflicting price still needs stability confirmation before replacement.
                     resetMissingEvidence()
                 } else {
-                    temporarilyHide("possible different offer detected; awaiting confirmation")
+                    // Do not blink the current card merely because a screen-only parse looks
+                    // different. Keep the known offer visible while the conflict confirmation
+                    // accumulates; hide only after replacement is actually confirmed.
+                    resetMissingEvidence()
+                    CaptureEventLog.append(
+                        service,
+                        stage = "overlay_difference_observed",
+                        platform = currentPlatform,
+                        message = replacementIdentitySummary(expectedOffer, parsed, activeNotificationAnchor),
+                        dedupeWindowMs = 1_000L,
+                    )
                 }
                 return
             }
