@@ -36,15 +36,12 @@ class OfferAccessibilityService : AccessibilityService() {
             dragDeferMs = OVERLAY_DRAG_CAPTURE_DEFER_MS,
         )
     }
-    private var captureInFlight = false
-    private val captureGuard = CaptureFlightGuard(CAPTURE_OPERATION_TIMEOUT_MS)
+    private val captureRuntime = OfferCaptureRuntime(CAPTURE_OPERATION_TIMEOUT_MS)
     private var lastHandledArmedAt = 0L
     private var unlockReceiverRegistered = false
     private var lastCourierEventAtElapsed = 0L
     private var lastCourierEventPackage = ""
     private var lastDiscoveryOcrAtElapsed = 0L
-    private var screenshotFailureKey = ""
-    private var screenshotFailureCount = 0
     private var lastFastAccessibilityPriceKey = ""
     private val woltSession = WoltCaptureSession()
 
@@ -126,7 +123,7 @@ class OfferAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
-        captureInFlight = false
+        captureRuntime.releaseBusy()
         handler.removeCallbacksAndMessages(null)
         if (unlockReceiverRegistered) {
             runCatching { unregisterReceiver(unlockReceiver) }
@@ -158,7 +155,7 @@ class OfferAccessibilityService : AccessibilityService() {
             scheduleAttempt(OVERLAY_DRAG_CAPTURE_DEFER_MS)
             return
         }
-        if (captureInFlight && !recoverTimedOutCaptureIfNeeded()) {
+        if (captureRuntime.isBusy && !recoverTimedOutCaptureIfNeeded()) {
             val priceReady = probeWoltAccessibilityPrice()
             val pending = OfferState.pending(this)
             if (!priceReady && pending?.packageName == CourierSignals.WOLT_PACKAGE) {
@@ -1288,27 +1285,24 @@ class OfferAccessibilityService : AccessibilityService() {
     }
 
     private fun beginCapture(operation: String, platform: String): Long {
-        captureInFlight = true
-        val token = captureGuard.begin(SystemClock.elapsedRealtime(), operation, platform)
+        val token = captureRuntime.begin(SystemClock.elapsedRealtime(), operation, platform)
         handler.removeCallbacks(captureWatchdogRunnable)
         handler.postDelayed(captureWatchdogRunnable, CAPTURE_OPERATION_TIMEOUT_MS)
         return token
     }
 
-    private fun isCaptureCurrent(token: Long): Boolean = captureInFlight && captureGuard.isCurrent(token)
+    private fun isCaptureCurrent(token: Long): Boolean = captureRuntime.isCurrent(token)
 
     private fun finishCapture(token: Long): Boolean {
-        val finished = captureGuard.finish(token)
+        val finished = captureRuntime.finish(token)
         if (finished) {
-            captureInFlight = false
             handler.removeCallbacks(captureWatchdogRunnable)
         }
         return finished
     }
 
     private fun recoverTimedOutCaptureIfNeeded(): Boolean {
-        val timedOut = captureGuard.recoverIfTimedOut(SystemClock.elapsedRealtime()) ?: return false
-        captureInFlight = false
+        val timedOut = captureRuntime.recoverIfTimedOut(SystemClock.elapsedRealtime()) ?: return false
         handler.removeCallbacks(captureWatchdogRunnable)
         CaptureEventLog.append(
             this,
@@ -1364,7 +1358,7 @@ class OfferAccessibilityService : AccessibilityService() {
             (pending.notificationKey.isBlank() || current.notificationKey == pending.notificationKey)
         if (!stillCurrent) {
             bitmap?.recycle()
-            captureInFlight = false
+            captureRuntime.releaseBusy()
             CaptureEventLog.append(this, "stale_callback", "Discarded capture from superseded offer", platform)
             scheduleAttempt(100L)
             return
@@ -1374,7 +1368,7 @@ class OfferAccessibilityService : AccessibilityService() {
         val priceCents = parsed.priceCents
         if (money == null || priceCents == null) {
             bitmap?.recycle()
-            captureInFlight = false
+            captureRuntime.releaseBusy()
             scheduleAttempt(adaptiveOcrDelay(pending))
             return
         }
@@ -1420,7 +1414,7 @@ class OfferAccessibilityService : AccessibilityService() {
             // capture transaction. This is the durable second line of defence behind screen recovery.
             LiveAdvisorHub.restoreDuplicateOffer(this, duplicate, parsed)
             bitmap?.recycle()
-            captureInFlight = false
+            captureRuntime.releaseBusy()
             CaptureEventLog.append(
                 this,
                 "duplicate_suppressed",
@@ -1504,7 +1498,7 @@ class OfferAccessibilityService : AccessibilityService() {
             CaptureEventLog.append(this, "save_failed", t.javaClass.simpleName, platform)
         } finally {
             bitmap?.recycle()
-            captureInFlight = false
+            captureRuntime.releaseBusy()
             scheduleAttempt(IDLE_WATCHDOG_MS)
         }
     }
@@ -1544,18 +1538,12 @@ class OfferAccessibilityService : AccessibilityService() {
 
     private fun recordScreenshotFailure(pending: PendingOffer): Int {
         val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
-        if (screenshotFailureKey != key) {
-            screenshotFailureKey = key
-            screenshotFailureCount = 0
-        }
-        screenshotFailureCount += 1
-        return screenshotFailureCount
+        return captureRuntime.recordScreenshotFailure(key)
     }
 
     private fun resetScreenshotFailures(pending: PendingOffer) {
         val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
-        screenshotFailureKey = key
-        screenshotFailureCount = 0
+        captureRuntime.resetScreenshotFailures(key)
     }
 
     private fun stashWoltProofBitmap(pending: PendingOffer, bitmap: Bitmap): Boolean {
@@ -1616,8 +1604,7 @@ class OfferAccessibilityService : AccessibilityService() {
         if (!isAcceptedTaskWithoutOfferControls(text)) return false
         val pending = OfferState.pending(this)
         if (pending != null && pending.packageName == packageName) {
-            captureGuard.cancel()
-            captureInFlight = false
+            captureRuntime.cancel()
             handler.removeCallbacks(captureWatchdogRunnable)
             woltPricePoller.cancel()
             lastFastAccessibilityPriceKey = ""
