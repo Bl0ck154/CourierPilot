@@ -44,13 +44,41 @@ private fun OfferRecord.withCurrentParsedStructureUnchecked(): OfferRecord {
     val storedMerchants = merchantNames.filterNot { value ->
         packageName == CourierSignals.WOLT_PACKAGE && WoltOfferUiText.isMerchantUiNoise(value)
     }
+
+    // A complete current parse of the redesigned Wolt card is stronger than old persisted arrays.
+    // Previous versions rewarded list length, so three stale/misclassified pickup rows could beat a
+    // correct one-pickup/one-drop-off reparse and keep History permanently wrong even though rawText
+    // already contained the truth. Only make the current parser authoritative when it reconstructed
+    // both sides of the route; incomplete captures still retain the richer stored fallback.
+    val authoritativeModernWoltStructure = packageName == CourierSignals.WOLT_PACKAGE &&
+        parsed != null &&
+        WoltOfferUiText.hasModernOfferStructure(parseText) &&
+        parsed.pickupAddresses.isNotEmpty() &&
+        parsed.dropoffAddresses.isNotEmpty()
+
     // Filter Wolt card metadata before quality selection. Otherwise an old promo/status line can
     // outscore the newly parsed venue, win chooseBetterNameList(), and only then be discarded by the
     // final noise filter, leaving History without any merchant at all.
-    val sourceMerchants = chooseBetterNameList(parsedMerchants, storedMerchants)
-    val sourcePickups = chooseBetterAddressList(parsed?.pickupAddresses.orEmpty(), pickupAddresses)
-    val sourceCustomers = chooseBetterNameList(parsed?.customerNames.orEmpty(), customerNames, customerNames = true)
-    val sourceDropoffs = chooseBetterAddressList(parsed?.dropoffAddresses.orEmpty(), dropoffAddresses)
+    val sourceMerchants = if (authoritativeModernWoltStructure && parsedMerchants.isNotEmpty()) {
+        parsedMerchants
+    } else {
+        chooseBetterNameList(parsedMerchants, storedMerchants)
+    }
+    val sourcePickups = if (authoritativeModernWoltStructure) {
+        parsed.pickupAddresses
+    } else {
+        chooseBetterAddressList(parsed?.pickupAddresses.orEmpty(), pickupAddresses)
+    }
+    val sourceCustomers = if (authoritativeModernWoltStructure && parsed.customerNames.isNotEmpty()) {
+        parsed.customerNames
+    } else {
+        chooseBetterNameList(parsed?.customerNames.orEmpty(), customerNames, customerNames = true)
+    }
+    val sourceDropoffs = if (authoritativeModernWoltStructure) {
+        parsed.dropoffAddresses
+    } else {
+        chooseBetterAddressList(parsed?.dropoffAddresses.orEmpty(), dropoffAddresses)
+    }
 
     val normalizedPickups = canonicalDistinctAddresses(sourcePickups, bolt = packageName == CourierSignals.BOLT_PACKAGE)
     val normalizedDropoffs = canonicalDistinctAddresses(sourceDropoffs, bolt = packageName == CourierSignals.BOLT_PACKAGE)
