@@ -72,10 +72,20 @@ class AddressDetailsActivity : ComponentActivity() {
                 var deleting by remember { mutableStateOf(false) }
                 var codePendingDelete by remember { mutableStateOf<AddressCodeSummary?>(null) }
                 var deletingCode by remember { mutableStateOf(false) }
+                var customerPendingDelete by remember { mutableStateOf<AddressCustomerSummary?>(null) }
+                var deletingCustomer by remember { mutableStateOf(false) }
+                var showLatestDetailsDeleteConfirmation by remember { mutableStateOf(false) }
+                var deletingLatestDetails by remember { mutableStateOf(false) }
                 val scope = rememberCoroutineScope()
 
+                suspend fun reload() {
+                    data = withContext(Dispatchers.IO) {
+                        loadAddressDetails(this@AddressDetailsActivity, addressId)
+                    }
+                }
+
                 LaunchedEffect(addressId) {
-                    data = withContext(Dispatchers.IO) { loadAddressDetails(this@AddressDetailsActivity, addressId) }
+                    reload()
                     loaded = true
                 }
 
@@ -97,6 +107,8 @@ class AddressDetailsActivity : ComponentActivity() {
                             onMap = { openAddressInMaps(current.address.displayAddress) },
                             onDelete = { showDeleteConfirmation = true },
                             onDeleteCode = { codePendingDelete = it },
+                            onDeleteCustomer = { customerPendingDelete = it },
+                            onDeleteLatestDetails = { showLatestDetailsDeleteConfirmation = true },
                         )
 
                         if (showDeleteConfirmation) {
@@ -174,9 +186,7 @@ class AddressDetailsActivity : ComponentActivity() {
                                                     notificationCodes = notificationCodes.filterNot { notificationCode ->
                                                         AccessCodeDeletion.equivalent(notificationCode, code.code)
                                                     }
-                                                    data = withContext(Dispatchers.IO) {
-                                                        loadAddressDetails(this@AddressDetailsActivity, addressId)
-                                                    }
+                                                    reload()
                                                 }
                                                 deletingCode = false
                                                 codePendingDelete = null
@@ -194,6 +204,104 @@ class AddressDetailsActivity : ComponentActivity() {
                                     TextButton(
                                         onClick = { codePendingDelete = null },
                                         enabled = !deletingCode,
+                                    ) {
+                                        Text("Cancel")
+                                    }
+                                },
+                            )
+                        }
+
+                        customerPendingDelete?.let { customer ->
+                            AlertDialog(
+                                onDismissRequest = { if (!deletingCustomer) customerPendingDelete = null },
+                                icon = { Icon(Icons.Rounded.Delete, contentDescription = null) },
+                                title = { Text("Delete saved customer?") },
+                                text = {
+                                    Text(
+                                        "${customer.displayName} · ${current.address.displayAddress}\n\n" +
+                                            "This removes the remembered customer name from this address. " +
+                                            "Raw delivery-screen history is kept. If the name appears again on a future delivery, it can be learned again."
+                                    )
+                                },
+                                confirmButton = {
+                                    TextButton(
+                                        onClick = {
+                                            if (deletingCustomer) return@TextButton
+                                            deletingCustomer = true
+                                            scope.launch {
+                                                val deleted = withContext(Dispatchers.IO) {
+                                                    AddressMemoryEntryDeletion.deleteCustomer(
+                                                        database = current.meta,
+                                                        addressId = current.address.id,
+                                                        customerKey = customer.key,
+                                                    )
+                                                }
+                                                if (deleted > 0) reload()
+                                                deletingCustomer = false
+                                                customerPendingDelete = null
+                                            }
+                                        },
+                                        enabled = !deletingCustomer,
+                                    ) {
+                                        Text(
+                                            if (deletingCustomer) "Deleting…" else "Delete customer",
+                                            color = MaterialTheme.colorScheme.error,
+                                        )
+                                    }
+                                },
+                                dismissButton = {
+                                    TextButton(
+                                        onClick = { customerPendingDelete = null },
+                                        enabled = !deletingCustomer,
+                                    ) {
+                                        Text("Cancel")
+                                    }
+                                },
+                            )
+                        }
+
+                        if (showLatestDetailsDeleteConfirmation) {
+                            AlertDialog(
+                                onDismissRequest = {
+                                    if (!deletingLatestDetails) showLatestDetailsDeleteConfirmation = false
+                                },
+                                icon = { Icon(Icons.Rounded.Delete, contentDescription = null) },
+                                title = { Text("Clear latest delivery info?") },
+                                text = {
+                                    Text(
+                                        "This removes the current parsed delivery-info summary for ${current.address.displayAddress}. " +
+                                            "Raw delivery-screen history stays saved, and a future delivery can populate this field again."
+                                    )
+                                },
+                                confirmButton = {
+                                    TextButton(
+                                        onClick = {
+                                            if (deletingLatestDetails) return@TextButton
+                                            deletingLatestDetails = true
+                                            scope.launch {
+                                                val deleted = withContext(Dispatchers.IO) {
+                                                    AddressMemoryEntryDeletion.clearLatestDeliveryInfo(
+                                                        database = current.meta,
+                                                        addressId = current.address.id,
+                                                    )
+                                                }
+                                                if (deleted) reload()
+                                                deletingLatestDetails = false
+                                                showLatestDetailsDeleteConfirmation = false
+                                            }
+                                        },
+                                        enabled = !deletingLatestDetails,
+                                    ) {
+                                        Text(
+                                            if (deletingLatestDetails) "Clearing…" else "Clear info",
+                                            color = MaterialTheme.colorScheme.error,
+                                        )
+                                    }
+                                },
+                                dismissButton = {
+                                    TextButton(
+                                        onClick = { showLatestDetailsDeleteConfirmation = false },
+                                        enabled = !deletingLatestDetails,
                                     ) {
                                         Text("Cancel")
                                     }
@@ -277,6 +385,8 @@ private fun AddressDetailsScreen(
     onMap: () -> Unit,
     onDelete: () -> Unit,
     onDeleteCode: (AddressCodeSummary) -> Unit,
+    onDeleteCustomer: (AddressCustomerSummary) -> Unit,
+    onDeleteLatestDetails: () -> Unit,
 ) {
     var customersExpanded by remember(address.id) { mutableStateOf(false) }
     val visibleCustomers = if (customersExpanded) customers else customers.take(COLLAPSED_CUSTOMER_COUNT)
@@ -364,8 +474,19 @@ private fun AddressDetailsScreen(
         }
 
         address.latestDetails?.takeIf(String::isNotBlank)?.let { details ->
-            item { AddressSection("Latest delivery info", "Newest parsed delivery details") }
-            item { AddressInfoCard(details) }
+            item {
+                AddressSection(
+                    "Latest delivery info",
+                    "Newest parsed delivery details. Clear this summary without deleting raw history.",
+                )
+            }
+            item {
+                AddressInfoCard(
+                    body = details,
+                    onDelete = onDeleteLatestDetails,
+                    deleteDescription = "Clear latest delivery info",
+                )
+            }
         }
 
         if (codes.isNotEmpty()) {
@@ -381,6 +502,7 @@ private fun AddressDetailsScreen(
                     subtitle = "${code.platforms.joinToString(" + ")} · seen ${code.seenCount}× · ${addressDate(code.lastSeenAt)}",
                     titleSize = 18,
                     onDelete = { onDeleteCode(code) },
+                    deleteDescription = "Delete saved access hint",
                 )
             }
         }
@@ -388,7 +510,7 @@ private fun AddressDetailsScreen(
         item {
             AddressSection(
                 "Customers · ${customers.size}",
-                "Equivalent names from Wolt/Bolt are grouped for display without deleting source rows",
+                "Equivalent Wolt/Bolt names are grouped. Remove one remembered customer with the trash button.",
             )
         }
         if (customers.isEmpty()) {
@@ -398,6 +520,8 @@ private fun AddressDetailsScreen(
                 CompactMemoryRow(
                     title = customer.displayName,
                     subtitle = "${customer.platforms.joinToString(" + ")} · captured ${customer.seenCount}× · last ${addressDate(customer.lastSeenAt)}",
+                    onDelete = { onDeleteCustomer(customer) },
+                    deleteDescription = "Delete saved customer",
                 )
             }
             if (customers.size > COLLAPSED_CUSTOMER_COUNT) {
@@ -498,6 +622,7 @@ private fun CompactMemoryRow(
     subtitle: String,
     titleSize: Int = 15,
     onDelete: (() -> Unit)? = null,
+    deleteDescription: String = "Delete saved item",
 ) {
     Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
         Row(
@@ -519,7 +644,7 @@ private fun CompactMemoryRow(
                 IconButton(onClick = onDelete) {
                     Icon(
                         Icons.Rounded.Delete,
-                        contentDescription = "Delete saved access hint",
+                        contentDescription = deleteDescription,
                         tint = MaterialTheme.colorScheme.error,
                     )
                 }
@@ -540,10 +665,31 @@ private fun ExpandCollapseButton(
 }
 
 @Composable
-private fun AddressInfoCard(body: String) {
+private fun AddressInfoCard(
+    body: String,
+    onDelete: (() -> Unit)? = null,
+    deleteDescription: String = "Delete saved item",
+) {
     Card(shape = RoundedCornerShape(16.dp)) {
-        Column(Modifier.padding(14.dp)) {
-            Text(body, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+        Row(
+            Modifier.fillMaxWidth().padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                body,
+                Modifier.weight(1f).padding(vertical = 6.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp,
+            )
+            if (onDelete != null) {
+                IconButton(onClick = onDelete) {
+                    Icon(
+                        Icons.Rounded.Delete,
+                        contentDescription = deleteDescription,
+                        tint = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
         }
     }
 }
