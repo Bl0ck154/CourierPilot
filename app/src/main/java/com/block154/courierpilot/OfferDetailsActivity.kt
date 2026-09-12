@@ -69,22 +69,50 @@ class OfferDetailsActivity : ComponentActivity() {
 
                 LaunchedEffect(offerId) {
                     data = withContext(Dispatchers.IO) {
-                        val offer = OfferDatabase.get(this@OfferDetailsActivity)
-                            .findById(offerId)
-                            ?.withCurrentParsedStructure()
-                            ?: return@withContext null
-                        val meta = CourierMetaDatabase.get(this@OfferDetailsActivity)
-                        val savedAddresses = (offer.pickupAddresses + offer.dropoffAddresses)
-                            .asSequence()
-                            .map(String::trim)
-                            .filter(String::isNotEmpty)
-                            .distinct()
-                            .mapNotNull { address ->
-                                meta.findAddressForDisplayAddress(address)?.let { address to it }
-                            }
-                            .toMap()
-                        OfferDetailsData(offer, savedAddresses)
+                        runCatching {
+                            val offer = OfferDatabase.get(this@OfferDetailsActivity)
+                                .findById(offerId)
+                                ?.withCurrentParsedStructure()
+                                ?: return@runCatching null
+
+                            // Address memory is useful decoration, not a prerequisite for opening the
+                            // offer. One malformed historical address must never turn the whole details
+                            // screen into an endless spinner.
+                            val savedAddresses = runCatching {
+                                val meta = CourierMetaDatabase.get(this@OfferDetailsActivity)
+                                (offer.pickupAddresses + offer.dropoffAddresses)
+                                    .asSequence()
+                                    .map(String::trim)
+                                    .filter(String::isNotEmpty)
+                                    .distinct()
+                                    .mapNotNull { address ->
+                                        runCatching { meta.findAddressForDisplayAddress(address) }
+                                            .getOrNull()
+                                            ?.let { address to it }
+                                    }
+                                    .toMap()
+                            }.onFailure { error ->
+                                CaptureEventLog.append(
+                                    this@OfferDetailsActivity,
+                                    stage = "offer_details_address_lookup_failed",
+                                    platform = offer.platform,
+                                    message = "Saved-address lookup failed: ${error.javaClass.simpleName}",
+                                    dedupeWindowMs = 5_000L,
+                                )
+                            }.getOrDefault(emptyMap())
+
+                            OfferDetailsData(offer, savedAddresses)
+                        }.onFailure { error ->
+                            CaptureEventLog.append(
+                                this@OfferDetailsActivity,
+                                stage = "offer_details_load_failed",
+                                message = "Offer #$offerId failed to load: ${error.javaClass.simpleName}",
+                                dedupeWindowMs = 5_000L,
+                            )
+                        }.getOrNull()
                     }
+                    // Always leave the loading state. Previously any parser/SQLite/address-memory
+                    // exception skipped this assignment and left `Loading offer…` on screen forever.
                     loaded = true
                 }
 
