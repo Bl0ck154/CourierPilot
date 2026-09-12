@@ -46,10 +46,10 @@ private fun OfferRecord.withCurrentParsedStructureUnchecked(): OfferRecord {
     }
 
     // A complete current parse of the redesigned Wolt card is stronger than old persisted route
-    // arrays. Previous versions rewarded list length, so three stale/misclassified pickup rows could
-    // beat a correct one-pickup/one-drop-off reparse and keep History permanently wrong even though
-    // rawText already contained the truth. Merchant spelling is handled separately below because a
-    // clean persisted venue can still be better than a fresh OCR rendering of the same restaurant.
+    // structure. Previous versions rewarded list length, so three stale/misclassified pickup rows
+    // could beat a correct one-pickup/one-drop-off reparse and keep History permanently wrong even
+    // though rawText already contained the truth. When the old and current stop counts agree, keep
+    // normal quality selection so a clean stored address can beat a freshly truncated OCR string.
     val authoritativeModernWoltStructure = packageName == CourierSignals.WOLT_PACKAGE &&
         parsed != null &&
         WoltOfferUiText.hasModernOfferStructure(parseText) &&
@@ -69,7 +69,9 @@ private fun OfferRecord.withCurrentParsedStructureUnchecked(): OfferRecord {
     } else {
         chooseBetterNameList(parsedMerchants, storedMerchants)
     }
-    val sourcePickups = if (authoritativeModernWoltStructure) {
+    val sourcePickups = if (
+        authoritativeModernWoltStructure && pickupAddresses.size != parsed.pickupAddresses.size
+    ) {
         parsed.pickupAddresses
     } else {
         chooseBetterAddressList(parsed?.pickupAddresses.orEmpty(), pickupAddresses)
@@ -79,7 +81,9 @@ private fun OfferRecord.withCurrentParsedStructureUnchecked(): OfferRecord {
     } else {
         chooseBetterNameList(parsed?.customerNames.orEmpty(), customerNames, customerNames = true)
     }
-    val sourceDropoffs = if (authoritativeModernWoltStructure) {
+    val sourceDropoffs = if (
+        authoritativeModernWoltStructure && dropoffAddresses.size != parsed.dropoffAddresses.size
+    ) {
         parsed.dropoffAddresses
     } else {
         chooseBetterAddressList(parsed?.dropoffAddresses.orEmpty(), dropoffAddresses)
