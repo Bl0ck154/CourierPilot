@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
+import java.util.Locale
 import java.util.concurrent.Executors
 
 /**
