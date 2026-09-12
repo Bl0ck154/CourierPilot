@@ -4,9 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.speech.tts.TextToSpeech
 import android.view.accessibility.AccessibilityNodeInfo
-import java.util.Locale
 import java.util.concurrent.Executors
 
 /**
@@ -18,6 +16,7 @@ internal class StableLiveOfferAdvisor(
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private val surfaceInspector = LiveAdvisorSurfaceInspector(service)
+    private val speech = LiveAdvisorSpeech(service.applicationContext)
     private val overlayView by lazy {
         LiveAdvisorOverlayView(
             service = service,
@@ -76,10 +75,6 @@ internal class StableLiveOfferAdvisor(
         }
         if (!dismissed && currentParsed != null) checkOfferStillVisible()
     }
-
-    private var tts: TextToSpeech? = null
-    private var ttsReady = false
-    private var pendingSpeech: String? = null
 
     private val visibilityWatchdog = object : Runnable {
         override fun run() {
@@ -213,7 +208,7 @@ internal class StableLiveOfferAdvisor(
                 message = "Pending advisor promoted in place after price capture",
                 dedupeWindowMs = 1_000L,
             )
-            if (LiveAdvisorSettings.voiceEnabled(service)) speak(baseSpeech(platform, parsed))
+            if (LiveAdvisorSettings.voiceEnabled(service)) speech.announceOffer(platform, parsed)
             startVisibilityWatchdog()
             return
         }
@@ -263,7 +258,7 @@ internal class StableLiveOfferAdvisor(
                         platform = platform,
                         message = "Stable advisor shell shown before route result",
                     )
-                    if (LiveAdvisorSettings.voiceEnabled(service)) speak(baseSpeech(platform, parsed))
+                    if (LiveAdvisorSettings.voiceEnabled(service)) speech.announceOffer(platform, parsed)
                 }
             }
             startVisibilityWatchdog()
@@ -511,11 +506,7 @@ internal class StableLiveOfferAdvisor(
 
     fun destroy() {
         suppressCurrentOffer("advisor destroyed", animate = false)
-        tts?.stop()
-        tts?.shutdown()
-        tts = null
-        ttsReady = false
-        pendingSpeech = null
+        speech.destroy()
     }
 
     /**
@@ -1147,33 +1138,6 @@ internal class StableLiveOfferAdvisor(
         if (!courierEventCheckDeferred) return
         courierEventCheckDeferred = false
         scheduleCourierWindowCheck(0L)
-    }
-
-    private fun baseSpeech(platform: String, parsed: ParsedOffer): String {
-        val price = parsed.money?.let { "${it.major().toPlainString()} ${it.currencyCode}" }
-        return listOfNotNull(platform, price).joinToString(". ") + "."
-    }
-
-    private fun speak(text: String) {
-        pendingSpeech = text
-        val engine = tts
-        if (engine != null && ttsReady) {
-            engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "courierpilot-offer")
-            pendingSpeech = null
-            return
-        }
-        if (engine == null) {
-            tts = TextToSpeech(service.applicationContext) { status ->
-                ttsReady = status == TextToSpeech.SUCCESS
-                if (ttsReady) {
-                    tts?.language = Locale.ENGLISH
-                    pendingSpeech?.let { pending ->
-                        tts?.speak(pending, TextToSpeech.QUEUE_FLUSH, null, "courierpilot-offer")
-                        pendingSpeech = null
-                    }
-                }
-            }
-        }
     }
 
     private fun packageForPlatform(platform: String): String = when {
