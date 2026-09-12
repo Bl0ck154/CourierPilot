@@ -323,6 +323,7 @@ internal object ArrivalAccessHintMonitor {
         RouteResearchGeocoder.resolve(app, reminder.suggestion.displayAddress) { result ->
             val point = result.getOrNull()
             var persisted: ArmedReminder? = null
+            var liveSnapshot: ArmedReminder? = null
             val stillActive = synchronized(lock) {
                 val current = active
                 if (current == null || !current.identityConfirmed || current.generation != reminder.generation) return@synchronized false
@@ -331,6 +332,7 @@ internal object ArrivalAccessHintMonitor {
                     active = current.copy(destination = point)
                     persisted = active
                 }
+                liveSnapshot = active ?: current
                 true
             }
             persisted?.let { persist(app, it) }
@@ -344,7 +346,14 @@ internal object ArrivalAccessHintMonitor {
                     message = result.exceptionOrNull()?.javaClass?.simpleName ?: "Address lookup failed",
                     dedupeWindowMs = 60_000L,
                 )
-                scheduleCheck(GEOCODE_RETRY_MS)
+                val live = liveSnapshot ?: reminder
+                val due = live.fallbackNotifyAt
+                if (due != null && System.currentTimeMillis() >= due) {
+                    notifyFromEtaFallback(app, live)
+                } else {
+                    val untilFallback = due?.let { (it - System.currentTimeMillis()).coerceAtLeast(0L) }
+                    scheduleCheck(untilFallback?.let { minOf(GEOCODE_RETRY_MS, it) } ?: GEOCODE_RETRY_MS)
+                }
             } else {
                 CaptureEventLog.append(
                     app,
@@ -436,7 +445,14 @@ internal object ArrivalAccessHintMonitor {
                     message = result.exceptionOrNull()?.javaClass?.simpleName ?: "Location unavailable",
                     dedupeWindowMs = 60_000L,
                 )
-                scheduleCheck(ArrivalAccessHintPolicy.nextCheckDelayMs(current.lastDistanceMeters))
+                val due = current.fallbackNotifyAt
+                if (due != null && System.currentTimeMillis() >= due) {
+                    notifyFromEtaFallback(app, current)
+                } else {
+                    val locationRetry = ArrivalAccessHintPolicy.nextCheckDelayMs(current.lastDistanceMeters)
+                    val untilFallback = due?.let { (it - System.currentTimeMillis()).coerceAtLeast(0L) }
+                    scheduleCheck(untilFallback?.let { minOf(locationRetry, it) } ?: locationRetry)
+                }
                 return@requestArrivalFix
             }
 
