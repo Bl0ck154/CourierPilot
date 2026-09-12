@@ -264,6 +264,23 @@ internal object CourierSignals {
     }
 
     /**
+     * The batch-destination sheet is opened by CourierPilot itself to recover customer stops.
+     * Wolt replaces most offer-card semantics while this sheet is visible, so geometry/surface
+     * changes here must never be interpreted as a different offer.
+     */
+    fun looksLikeWoltMultipleDropoffsSheet(packageName: String, text: String): Boolean {
+        if (packageName != WOLT_PACKAGE) return false
+        val lower = text.lowercase(Locale.ROOT)
+        val hasHeader = lower.contains("multiple dropoffs") ||
+            lower.contains("multiple drop-offs") ||
+            lower.contains("keli pristatymo adresai")
+        if (!hasHeader) return false
+        return lower.contains("done") ||
+            lower.contains("customer drop-off") ||
+            Regex("(?i)\b\d+\s+stops?\b").containsMatchIn(text)
+    }
+
+    /**
      * Strong markers for Wolt pages that are unquestionably not an incoming offer. These markers
      * intentionally win over stale Compose offer nodes that can remain exposed to Accessibility
      * after the courier navigates to another Wolt page.

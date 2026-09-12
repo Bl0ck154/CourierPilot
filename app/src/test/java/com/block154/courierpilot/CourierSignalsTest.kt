@@ -218,4 +218,27 @@ class CourierSignalsTest {
         assertTrue(CourierSignals.isTrustedWoltOcrOffer(strong, strongParsed))
     }
 
+
+    @Test
+    fun woltMultipleDropoffsSheetBelongsToCurrentOffer() {
+        val sheet = """
+            Multiple dropoffs
+            2 stops
+            Totorių g. 24-butas 3
+            Vilnius, 01121
+            Trinapolio gatvė 25
+            Vilnius
+            Done
+        """.trimIndent()
+
+        assertTrue(CourierSignals.looksLikeWoltMultipleDropoffsSheet(CourierSignals.WOLT_PACKAGE, sheet))
+        assertFalse(CourierSignals.looksLikeWoltMultipleDropoffsSheet(CourierSignals.BOLT_PACKAGE, sheet))
+        assertFalse(
+            CourierSignals.looksLikeWoltMultipleDropoffsSheet(
+                CourierSignals.WOLT_PACKAGE,
+                "Your stats Deliveries completed Earnings without tips",
+            )
+        )
+    }
+
 }
