@@ -45,21 +45,26 @@ private fun OfferRecord.withCurrentParsedStructureUnchecked(): OfferRecord {
         packageName == CourierSignals.WOLT_PACKAGE && WoltOfferUiText.isMerchantUiNoise(value)
     }
 
-    // A complete current parse of the redesigned Wolt card is stronger than old persisted arrays.
-    // Previous versions rewarded list length, so three stale/misclassified pickup rows could beat a
-    // correct one-pickup/one-drop-off reparse and keep History permanently wrong even though rawText
-    // already contained the truth. Only make the current parser authoritative when it reconstructed
-    // both sides of the route; incomplete captures still retain the richer stored fallback.
+    // A complete current parse of the redesigned Wolt card is stronger than old persisted route
+    // arrays. Previous versions rewarded list length, so three stale/misclassified pickup rows could
+    // beat a correct one-pickup/one-drop-off reparse and keep History permanently wrong even though
+    // rawText already contained the truth. Merchant spelling is handled separately below because a
+    // clean persisted venue can still be better than a fresh OCR rendering of the same restaurant.
     val authoritativeModernWoltStructure = packageName == CourierSignals.WOLT_PACKAGE &&
         parsed != null &&
         WoltOfferUiText.hasModernOfferStructure(parseText) &&
         parsed.pickupAddresses.isNotEmpty() &&
         parsed.dropoffAddresses.isNotEmpty()
 
-    // Filter Wolt card metadata before quality selection. Otherwise an old promo/status line can
-    // outscore the newly parsed venue, win chooseBetterNameList(), and only then be discarded by the
-    // final noise filter, leaving History without any merchant at all.
-    val sourceMerchants = if (authoritativeModernWoltStructure && parsedMerchants.isNotEmpty()) {
+    // A venue list cannot legitimately contain more independent merchants than a fully reconstructed
+    // pickup list for this historical card. That shape is the signature of the 0.15.77 corruption
+    // (`g.)`, `8 Customer drop-off`, `Pickup` for one real pickup), so prefer the recovered parser
+    // merchant there. Otherwise retain normal quality selection so clean stored names such as
+    // `Holy Donut (Vokiečių g.)` beat a fresh but noisier `B Holy Donut (Vokiečiųg.)` OCR string.
+    val staleStoredMerchantOverflow = authoritativeModernWoltStructure &&
+        parsedMerchants.isNotEmpty() &&
+        storedMerchants.size > parsed.pickupAddresses.size.coerceAtLeast(1)
+    val sourceMerchants = if (staleStoredMerchantOverflow) {
         parsedMerchants
     } else {
         chooseBetterNameList(parsedMerchants, storedMerchants)
