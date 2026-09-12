@@ -306,7 +306,12 @@ class OfferAccessibilityService : AccessibilityService() {
         }
         val uiText = accumulateOfferFrame(pending, currentUiText)
         if (uiText.isNotBlank()) OfferState.saveUiText(this, uiText)
-        val parsed = OfferParser.parse(uiText)
+        val visibleParsed = OfferParser.parse(uiText)
+        val parsed = if (target.packageName == CourierSignals.WOLT_PACKAGE) {
+            recoverSingleWoltRouteFromFullTree(target.root, visibleParsed)
+        } else {
+            visibleParsed
+        }
 
         // Batched Wolt destinations are an Accessibility problem first, not an OCR problem. The
         // live 0.15.42 traces showed the price available immediately while CourierPilot spent
@@ -681,6 +686,26 @@ class OfferAccessibilityService : AccessibilityService() {
             return true
         }
         return false
+    }
+
+    private fun recoverSingleWoltRouteFromFullTree(
+        root: android.view.accessibility.AccessibilityNodeInfo,
+        visibleParsed: ParsedOffer,
+    ): ParsedOffer {
+        if (AutomaticWoltRouteCoordinator.routeFingerprint(visibleParsed) != null) return visibleParsed
+        if (visibleParsed.priceCents == null || visibleParsed.distanceMeters == null) return visibleParsed
+        val recovered = WoltSingleRouteAccessibilityRecovery.recover(
+            visible = visibleParsed,
+            fullTreeText = collectVisibleText(root),
+        ) ?: return visibleParsed
+        CaptureEventLog.append(
+            this,
+            stage = "wolt_single_route_full_tree_recovered",
+            platform = "Wolt",
+            message = "Recovered one pickup + one drop-off from full Accessibility tree after exact price + distance match",
+            dedupeWindowMs = 2_000L,
+        )
+        return recovered
     }
 
     /**
@@ -1106,7 +1131,7 @@ class OfferAccessibilityService : AccessibilityService() {
                             val spatialWoltMoney = if (pending.packageName == CourierSignals.WOLT_PACKAGE) {
                                 OfferOcrText.woltEarningsMoney(result, bitmap.height)
                             } else null
-                            val parsed = if (spatialWoltMoney != null) {
+                            val pricedParsed = if (spatialWoltMoney != null) {
                                 parsedText.copy(
                                     priceCents = spatialWoltMoney.amountMinor
                                         .takeIf { it in Int.MIN_VALUE..Int.MAX_VALUE }
@@ -1114,6 +1139,14 @@ class OfferAccessibilityService : AccessibilityService() {
                                     money = spatialWoltMoney,
                                 )
                             } else parsedText
+                            val latestRootForRoute = if (pending.packageName == CourierSignals.WOLT_PACKAGE) {
+                                findCourierWindow(pending)?.root
+                            } else null
+                            val parsed = if (latestRootForRoute != null) {
+                                recoverSingleWoltRouteFromFullTree(latestRootForRoute, pricedParsed)
+                            } else {
+                                pricedParsed
+                            }
                             val trustedPrice = parsed.priceCents != null && (
                                 pending.packageName != CourierSignals.WOLT_PACKAGE ||
                                     CourierSignals.isTrustedWoltOcrOffer(combined, parsed)
@@ -1128,7 +1161,7 @@ class OfferAccessibilityService : AccessibilityService() {
                                 LiveAdvisorHub.showPendingOffer(this@OfferAccessibilityService, pending, parsed)
                             }
 
-                            val latestRoot = findCourierWindow(pending)?.root
+                            val latestRoot = latestRootForRoute ?: findCourierWindow(pending)?.root
                             if (latestRoot != null &&
                                 maybeResolveWoltHiddenDropoffs(latestRoot, pending, parsed)
                             ) {

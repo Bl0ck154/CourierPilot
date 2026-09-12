@@ -622,6 +622,7 @@ internal object OfferParser {
             lower.contains(" takas") ||
             lower.contains(" aikšt") ||
             Regex("(?i)\\b(?:g|pr|pl|al|skg)\\.\\s*\\d").containsMatchIn(line) ||
+            Regex("(?i)\\b(?:g|pr|pl|al|skg)\\s+\\d").containsMatchIn(line) ||
             Regex("(?i)\\bstr\\.?\\s*\\d").containsMatchIn(line) ||
             lower.contains(" street ") ||
             lower.contains(" avenue ") ||

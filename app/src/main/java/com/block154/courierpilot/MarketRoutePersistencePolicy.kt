@@ -12,9 +12,10 @@ internal object MarketRoutePersistencePolicy {
         // full chain would create a false denominator and poison personal/city market samples.
         if (platform.equals("Wolt", ignoreCase = true) && parsed.isIncrementalOffer) return false
 
-        // Ordinary Wolt economics are defined from the walking+cycling pair. If one profile remains
-        // unavailable even after the comparison retry, do not persist the surviving leg as trusted
-        // history/market truth; a later restore must not resurrect a different denominator.
+        // Live scoring may fall back to one successful Valhalla profile so the courier still gets a
+        // useful verdict. Long-lived history/market truth is stricter: persist ordinary Wolt route
+        // economics only when the walking+cycling pair is complete, so a later restore or adaptive
+        // threshold sample does not turn a temporary fallback denominator into canonical history.
         if (platform.equals("Wolt", ignoreCase = true) && comparison != null &&
             (comparison.pedestrian.isFailure || comparison.cycleway.isFailure)
         ) return false

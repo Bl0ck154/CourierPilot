@@ -508,16 +508,15 @@ internal class StableLiveOfferAdvisor(
     private fun renderProgressiveDecision(parsed: ParsedOffer) {
         val hasPrice = parsed.priceCents != null && parsed.money != null
         val hasRoute = cachedPedestrianRoute != null || cachedCyclewayRoute != null
-        val hasCompleteWoltRoutePair = cachedPedestrianRoute != null && cachedCyclewayRoute != null
         when {
             !hasPrice -> setDecisionLoading()
             // Wolt add-on money and distance are explicitly incremental. A full Valhalla route
             // cannot be used as the denominator without subtracting the already-accepted baseline,
             // so keep the primary rate truthful and immediate using Wolt's incremental distance.
             parsed.isIncrementalOffer && renderProvisionalProfitability(parsed, marker = "Wolt") -> Unit
-            currentPlatform.equals("Wolt", ignoreCase = true) &&
-                LiveAdvisorSettings.routeEnabled(service, currentPlatform) && hasRoute && !hasCompleteWoltRoutePair ->
-                setDecisionUnavailable()
+            // A single successful Valhalla profile is still verified route evidence. The scoring
+            // engine averages walking + cycling when both exist, but falls back to the surviving
+            // profile when one fails. Never turn that valid partial comparison into `—/km`.
             hasRoute -> renderProfitability(parsed, cachedPedestrianRoute, cachedCyclewayRoute)
             // When real routing is enabled, do not flash a platform-distance €/km that will be
             // replaced moments later by a materially different real-route value. Live 0.15.46

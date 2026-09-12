@@ -35,6 +35,28 @@ class OfferParserTest {
     }
 
     @Test
+    fun parsesHongKongPulkoSingleOfferFromFieldScreenshot() {
+        val parsed = OfferParser.parse(
+            """
+            €4.82
+            2 stops (6.9 km) • 14–21 min
+            Hong Kong (Basanavičiaus g.)
+            Basanavičiaus g 19, Vilnius, LT-03108
+            Customer drop-off
+            Pulko 3, Vilnius, 08221
+            Accept
+            """.trimIndent()
+        )
+
+        assertEquals(482, parsed.priceCents)
+        assertEquals(6_900, parsed.distanceMeters)
+        assertEquals(listOf("Basanavičiaus g 19, Vilnius, LT-03108"), parsed.pickupAddresses)
+        assertEquals(listOf("Pulko 3, Vilnius, 08221"), parsed.dropoffAddresses)
+        assertEquals(1, parsed.deliveryCount)
+        assertTrue(AutomaticWoltRouteCoordinator.routeFingerprint(parsed) != null)
+    }
+
+    @Test
     fun prefersCompleteOcrCopyWhenAccessibilityCopyOmitsModernWoltAddresses() {
         val parsed = OfferParser.parse(
             """

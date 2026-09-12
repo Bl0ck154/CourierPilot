@@ -133,6 +133,18 @@ class OfferDecisionV0153Test {
     }
 
     @Test
+    fun oneSuccessfulCyclewayProfileIsUsedAsFallback() {
+        val parsed = ParsedOffer(priceCents = 500, money = MoneyAmount(500, "EUR", 2), distanceMeters = 100, restaurant = null)
+        val decision = OfferDecisionEngine.evaluate(
+            parsed,
+            pedestrianRoute = null,
+            cyclewayRoute = route(RouteProfile.CYCLEWAY_BIASED, 6_000),
+        )
+        assertEquals(6_000, decision.routeDistanceMeters)
+        assertEquals(5.0 / 6.0, decision.moneyPerKilometer!!, 0.0001)
+    }
+
+    @Test
     fun eurColdStartUsesTheEstablishedCourierScale() {
         val thresholds = LiveOfferColdStartThresholds.forCurrency("EUR")!!
         assertEquals(OfferDecisionBand.GOOD, OfferDecisionEngine.bandFor(1.10, thresholds))

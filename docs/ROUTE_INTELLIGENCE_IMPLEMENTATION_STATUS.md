@@ -107,3 +107,14 @@ Reliable pickup-wait statistics need better real lifecycle cue coverage and repe
 - platform and calculated metrics keep provenance;
 - no fabricated Bolt coordinate;
 - raw addresses/GPS stay out of privacy-safe diagnostics.
+
+## Live courier distance policy
+
+For live offer profitability, pedestrian and bicycle Valhalla routes are complementary estimates rather than a winner/loser pair:
+
+- when both profiles succeed, CourierPilot uses their arithmetic mean as the verified route distance;
+- when only one profile succeeds, CourierPilot uses that surviving verified route as a fallback instead of showing `—/km`;
+- when neither profile succeeds, profitability remains unavailable rather than falling back to the platform-advertised distance.
+
+The mean is deliberate. Pedestrian routing may use stairs, passages or shortcuts that are not realistically rideable, while bicycle routing can make unnecessary road/cycleway detours through places where a courier can legally and practically continue with the bike. Averaging the pair when both exist reduces the impact of either profile's systematic edge cases. Do not replace this policy with a bicycle-only or pedestrian-only default without new field evidence.
+
