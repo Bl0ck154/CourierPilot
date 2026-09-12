@@ -48,49 +48,6 @@ class OfferAccessibilityService : AccessibilityService() {
     private var lastFastAccessibilityPriceKey = ""
     private val woltSession = WoltCaptureSession()
 
-    // Keep the rest of the service mechanically unchanged while the mutable Wolt transaction data
-    // itself lives in WoltCaptureSession. These adapters are intentionally boring: capture policy,
-    // click timing and OCR decisions remain here, but reset/lifetime ownership no longer does.
-    private var woltCardFrameText: String
-        get() = woltSession.cardFrameText
-        set(value) { woltSession.cardFrameText = value }
-    private var woltDropoffFrameText: String
-        get() = woltSession.dropoffFrameText
-        set(value) { woltSession.dropoffFrameText = value }
-    private var woltVisibleBasePickupAddresses: List<String>
-        get() = woltSession.visibleBasePickupAddresses
-        set(value) { woltSession.visibleBasePickupAddresses = value }
-    private var woltDropoffProbeKey: String
-        get() = woltSession.dropoffProbeKey
-        set(value) { woltSession.dropoffProbeKey = value }
-    private var woltDropoffProbeAttempts: Int
-        get() = woltSession.dropoffProbeAttempts
-        set(value) { woltSession.dropoffProbeAttempts = value }
-    private var woltDropoffSemanticProbeAttempts: Int
-        get() = woltSession.dropoffSemanticProbeAttempts
-        set(value) { woltSession.dropoffSemanticProbeAttempts = value }
-    private var woltDropoffResolvedKey: String
-        get() = woltSession.dropoffResolvedKey
-        set(value) { woltSession.dropoffResolvedKey = value }
-    private var woltDropoffResolvedCount: Int
-        get() = woltSession.dropoffResolvedCount
-        set(value) { woltSession.dropoffResolvedCount = value }
-    private var woltDropoffSheetSettleAttempts: Int
-        get() = woltSession.dropoffSheetSettleAttempts
-        set(value) { woltSession.dropoffSheetSettleAttempts = value }
-    private var woltRouteOcrRecoveryAttempts: Int
-        get() = woltSession.routeOcrRecoveryAttempts
-        set(value) { woltSession.routeOcrRecoveryAttempts = value }
-    private var woltIdleHomeKey: String
-        get() = woltSession.idleHomeKey
-        set(value) { woltSession.idleHomeKey = value }
-    private var woltIdleHomeFirstSeenAtElapsed: Long
-        get() = woltSession.idleHomeFirstSeenAtElapsed
-        set(value) { woltSession.idleHomeFirstSeenAtElapsed = value }
-    private var woltIdleHomeChecks: Int
-        get() = woltSession.idleHomeChecks
-        set(value) { woltSession.idleHomeChecks = value }
-
     private val attemptRunnable = Runnable { attemptCapture() }
     private val captureWatchdogRunnable = Runnable {
         if (recoverTimedOutCaptureIfNeeded()) scheduleAttempt(100L)
@@ -469,7 +426,7 @@ class OfferAccessibilityService : AccessibilityService() {
         // Once this exact capture has recovered a complete route, never touch Wolt's disclosure
         // again merely because the collapsed card hides those destinations on a later frame. A
         // genuinely larger route (for example an add-on increasing N) may recover again.
-        if (woltDropoffResolvedKey == key && woltDropoffResolvedCount >= expectedDropoffs) return false
+        if (woltSession.dropoffResolvedKey == key && woltSession.dropoffResolvedCount >= expectedDropoffs) return false
         val strictlyVisiblePieces = collectStrictlyVisibleAccessibilityPieces(root)
         val strictlyVisibleText = strictlyVisiblePieces.joinToString("\n")
         val collapsedDisclosureVisible = hasVisibleClickableAccessibilityText(root) { value ->
@@ -483,18 +440,18 @@ class OfferAccessibilityService : AccessibilityService() {
             // intentionally includes hidden Compose semantics, and those hidden customer addresses
             // can be misclassified as pickups; excluding them later is exactly what made 0.15.42
             // unable to recover the opened sheet despite the destinations being plainly visible.
-            woltVisibleBasePickupAddresses = visibleParsed.pickupAddresses
+            woltSession.visibleBasePickupAddresses = visibleParsed.pickupAddresses
         }
 
         // On current Wolt Compose builds the opened sheet can be a separate semantics surface whose
         // header is not exposed consistently, even though the destination rows themselves are. Once
         // we have clicked the multiple-dropoff row, exact visible street candidates are sufficient
         // proof that we are looking at that sheet; do not wait for OCR merely to rediscover its title.
-        val baseParsed = OfferParser.parse(woltCardFrameText)
+        val baseParsed = OfferParser.parse(woltSession.cardFrameText)
         val knownDropoffs = (baseParsed.dropoffAddresses + visibleParsed.dropoffAddresses).distinct()
         val expandedRecovery = WoltAccessibilityDropoffRecovery.recover(
             hiddenTextPieces = strictlyVisiblePieces,
-            excludedAddresses = woltVisibleBasePickupAddresses.ifEmpty {
+            excludedAddresses = woltSession.visibleBasePickupAddresses.ifEmpty {
                 // Compatibility fallback for an older flow that reaches the opened sheet before a
                 // collapsed strict-visible snapshot was recorded. Never exclude parsed drop-offs:
                 // the opened sheet legitimately contains those customer addresses again.
@@ -506,18 +463,18 @@ class OfferAccessibilityService : AccessibilityService() {
         val doneVisible = hasVisibleAccessibilityText(root) { value -> value.equals("done", ignoreCase = true) }
         val currentIsExpanded = WoltOfferUiText.hasExpandedMultipleDropoffSheet(strictlyVisibleText) ||
             doneVisible ||
-            (woltDropoffProbeAttempts > 0 && !collapsedDisclosureVisible && expandedRecovery.candidateCount > 0)
+            (woltSession.dropoffProbeAttempts > 0 && !collapsedDisclosureVisible && expandedRecovery.candidateCount > 0)
         if (currentIsExpanded) {
             // Do not depend on Wolt keeping the popup labels in a parser-friendly order. Recover the
             // visible popup destinations directly, excluding pickup addresses remembered from the
             // collapsed base card.
             if (expandedRecovery.resolvedAddresses.size == expectedDropoffs) {
-                woltDropoffFrameText = WoltAccessibilityDropoffRecovery.expandedFrame(
+                woltSession.dropoffFrameText = WoltAccessibilityDropoffRecovery.expandedFrame(
                     expandedRecovery.resolvedAddresses,
                     expectedDropoffs,
                 )
                 publishRecoveredWoltBatchRoute(pending, expectedDropoffs)
-                woltDropoffSheetSettleAttempts = 0
+                woltSession.dropoffSheetSettleAttempts = 0
                 val closedRecovered = clickAccessibilityText(root) { value -> value.equals("done", ignoreCase = true) } ||
                     performGlobalAction(GLOBAL_ACTION_BACK)
                 CaptureEventLog.append(
@@ -534,15 +491,15 @@ class OfferAccessibilityService : AccessibilityService() {
             }
 
             if (parsed.dropoffAddresses.size < expectedDropoffs) {
-                woltDropoffSheetSettleAttempts += 1
-                if (woltDropoffSheetSettleAttempts < WOLT_DROPOFF_SHEET_MAX_SETTLE_ATTEMPTS) {
+                woltSession.dropoffSheetSettleAttempts += 1
+                if (woltSession.dropoffSheetSettleAttempts < WOLT_DROPOFF_SHEET_MAX_SETTLE_ATTEMPTS) {
                     scheduleAttempt(WOLT_DROPOFF_SHEET_SETTLE_MS)
                     return true
                 }
                 // One visible expansion is enough. Reopening the sheet a second time proved noisy
                 // on the live 0.15.37 trace, so mark the click fallback exhausted before returning
                 // to the non-invasive OCR/Accessibility capture path.
-                woltDropoffProbeAttempts = WOLT_DROPOFF_PROBE_MAX_ATTEMPTS
+                woltSession.dropoffProbeAttempts = WOLT_DROPOFF_PROBE_MAX_ATTEMPTS
                 val closedIncomplete = clickAccessibilityText(root) { value -> value.equals("done", ignoreCase = true) } ||
                     performGlobalAction(GLOBAL_ACTION_BACK)
                 CaptureEventLog.append(
@@ -558,7 +515,7 @@ class OfferAccessibilityService : AccessibilityService() {
                 }
                 return false
             }
-            woltDropoffSheetSettleAttempts = 0
+            woltSession.dropoffSheetSettleAttempts = 0
             val closed = clickAccessibilityText(root) { value -> value.equals("done", ignoreCase = true) } ||
                 performGlobalAction(GLOBAL_ACTION_BACK)
             if (closed) {
@@ -605,12 +562,12 @@ class OfferAccessibilityService : AccessibilityService() {
             )
         } else hiddenRecovery
         if (treeRecovery.resolvedAddresses.size == expectedDropoffs) {
-            woltDropoffFrameText = WoltAccessibilityDropoffRecovery.expandedFrame(
+            woltSession.dropoffFrameText = WoltAccessibilityDropoffRecovery.expandedFrame(
                 treeRecovery.resolvedAddresses,
                 expectedDropoffs,
             )
             publishRecoveredWoltBatchRoute(pending, expectedDropoffs)
-            woltDropoffSheetSettleAttempts = 0
+            woltSession.dropoffSheetSettleAttempts = 0
             CaptureEventLog.append(
                 this,
                 stage = "wolt_dropoffs_accessibility",
@@ -632,23 +589,23 @@ class OfferAccessibilityService : AccessibilityService() {
             )
         }
 
-        if (woltDropoffProbeKey != key) {
-            woltDropoffProbeKey = key
-            woltDropoffProbeAttempts = 0
-            woltDropoffSemanticProbeAttempts = 0
+        if (woltSession.dropoffProbeKey != key) {
+            woltSession.dropoffProbeKey = key
+            woltSession.dropoffProbeAttempts = 0
+            woltSession.dropoffSemanticProbeAttempts = 0
         }
 
         // Compose can publish hidden destination semantics a few frames after the collapsed card.
         // Give Accessibility a very short, non-invasive settle window before touching Wolt UI.
         // This costs at most ~210 ms and often avoids opening the disclosure at all.
-        if (woltDropoffSemanticProbeAttempts < WOLT_DROPOFF_SEMANTIC_PROBE_MAX_ATTEMPTS) {
-            woltDropoffSemanticProbeAttempts += 1
+        if (woltSession.dropoffSemanticProbeAttempts < WOLT_DROPOFF_SEMANTIC_PROBE_MAX_ATTEMPTS) {
+            woltSession.dropoffSemanticProbeAttempts += 1
             CaptureEventLog.append(
                 this,
                 stage = "wolt_dropoffs_semantic_wait",
                 platform = "Wolt",
                 message = "Waiting briefly for hidden Accessibility destinations before click fallback; " +
-                    "probe=$woltDropoffSemanticProbeAttempts/$WOLT_DROPOFF_SEMANTIC_PROBE_MAX_ATTEMPTS; " +
+                    "probe=${woltSession.dropoffSemanticProbeAttempts}/$WOLT_DROPOFF_SEMANTIC_PROBE_MAX_ATTEMPTS; " +
                     "candidates=$candidateCount; expected=$expectedDropoffs",
                 dedupeWindowMs = 500L,
             )
@@ -656,13 +613,13 @@ class OfferAccessibilityService : AccessibilityService() {
             return true
         }
 
-        if (woltDropoffProbeAttempts >= WOLT_DROPOFF_PROBE_MAX_ATTEMPTS) return false
-        woltDropoffProbeAttempts += 1
+        if (woltSession.dropoffProbeAttempts >= WOLT_DROPOFF_PROBE_MAX_ATTEMPTS) return false
+        woltSession.dropoffProbeAttempts += 1
         val opened = clickAccessibilityText(root) { value ->
             value.lowercase().contains("multiple drop-off")
         }
         if (opened) {
-            woltDropoffSheetSettleAttempts = 0
+            woltSession.dropoffSheetSettleAttempts = 0
             CaptureEventLog.append(
                 this,
                 stage = "wolt_dropoffs_expand",
@@ -681,7 +638,7 @@ class OfferAccessibilityService : AccessibilityService() {
             message = "Multiple-drop-off row was visible but not clickable through Accessibility",
             dedupeWindowMs = 2_000L,
         )
-        if (woltDropoffProbeAttempts < WOLT_DROPOFF_PROBE_MAX_ATTEMPTS) {
+        if (woltSession.dropoffProbeAttempts < WOLT_DROPOFF_PROBE_MAX_ATTEMPTS) {
             scheduleAttempt(WOLT_DROPOFF_SHEET_SETTLE_MS)
             return true
         }
@@ -714,7 +671,7 @@ class OfferAccessibilityService : AccessibilityService() {
      * capture pass, or OCR.
      */
     private fun publishRecoveredWoltBatchRoute(pending: PendingOffer, expectedDropoffs: Int): Boolean {
-        val mergedText = listOf(woltCardFrameText, woltDropoffFrameText)
+        val mergedText = listOf(woltSession.cardFrameText, woltSession.dropoffFrameText)
             .map(String::trim)
             .filter(String::isNotBlank)
             .distinct()
@@ -726,10 +683,10 @@ class OfferAccessibilityService : AccessibilityService() {
         if (AutomaticWoltRouteCoordinator.routeFingerprint(recovered) == null) return false
 
         val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
-        woltDropoffResolvedKey = key
-        woltDropoffResolvedCount = maxOf(woltDropoffResolvedCount, expectedDropoffs)
-        woltDropoffProbeKey = key
-        woltDropoffProbeAttempts = WOLT_DROPOFF_PROBE_MAX_ATTEMPTS
+        woltSession.dropoffResolvedKey = key
+        woltSession.dropoffResolvedCount = maxOf(woltSession.dropoffResolvedCount, expectedDropoffs)
+        woltSession.dropoffProbeKey = key
+        woltSession.dropoffProbeAttempts = WOLT_DROPOFF_PROBE_MAX_ATTEMPTS
         OfferState.saveUiText(this, mergedText)
         enrichPersistedWoltRouteIfPresent(pending, recovered, mergedText)
         LiveAdvisorHub.showPendingOffer(this, pending, recovered)
@@ -800,9 +757,9 @@ class OfferAccessibilityService : AccessibilityService() {
         if (CourierSignals.looksLikeWoltDeclineConfirmation(packageName, currentText)) {
             // The confirmation sheet belongs to the current offer. Wolt leaves the map/home
             // semantics behind it, so never interpret this surface as an ended transaction.
-            woltIdleHomeKey = ""
-            woltIdleHomeFirstSeenAtElapsed = 0L
-            woltIdleHomeChecks = 0
+            woltSession.idleHomeKey = ""
+            woltSession.idleHomeFirstSeenAtElapsed = 0L
+            woltSession.idleHomeChecks = 0
             CaptureEventLog.append(
                 this,
                 stage = "wolt_decline_modal",
@@ -817,25 +774,25 @@ class OfferAccessibilityService : AccessibilityService() {
         val isIdleHome = CourierSignals.looksLikeIdleHomeScreen(packageName, currentText) &&
             !CourierSignals.looksLikeOfferScreen(currentText, currentParsed)
         if (!isIdleHome) {
-            if (woltIdleHomeKey == key) {
-                woltIdleHomeKey = ""
-                woltIdleHomeFirstSeenAtElapsed = 0L
-                woltIdleHomeChecks = 0
+            if (woltSession.idleHomeKey == key) {
+                woltSession.idleHomeKey = ""
+                woltSession.idleHomeFirstSeenAtElapsed = 0L
+                woltSession.idleHomeChecks = 0
             }
             return false
         }
 
         val now = SystemClock.elapsedRealtime()
-        if (woltIdleHomeKey != key) {
-            woltIdleHomeKey = key
-            woltIdleHomeFirstSeenAtElapsed = now
-            woltIdleHomeChecks = 1
+        if (woltSession.idleHomeKey != key) {
+            woltSession.idleHomeKey = key
+            woltSession.idleHomeFirstSeenAtElapsed = now
+            woltSession.idleHomeChecks = 1
         } else {
-            woltIdleHomeChecks += 1
+            woltSession.idleHomeChecks += 1
         }
 
-        val stable = woltIdleHomeChecks >= WOLT_IDLE_HOME_END_MIN_CHECKS &&
-            now - woltIdleHomeFirstSeenAtElapsed >= WOLT_IDLE_HOME_END_GRACE_MS
+        val stable = woltSession.idleHomeChecks >= WOLT_IDLE_HOME_END_MIN_CHECKS &&
+            now - woltSession.idleHomeFirstSeenAtElapsed >= WOLT_IDLE_HOME_END_GRACE_MS
         if (!stable) {
             scheduleAttempt(WOLT_IDLE_HOME_RECHECK_MS)
             return true
@@ -854,9 +811,9 @@ class OfferAccessibilityService : AccessibilityService() {
             "Confirmed Wolt home screen ended the manually dismissed offer",
         )
         OfferState.clear(this)
-        woltIdleHomeKey = ""
-        woltIdleHomeFirstSeenAtElapsed = 0L
-        woltIdleHomeChecks = 0
+        woltSession.idleHomeKey = ""
+        woltSession.idleHomeFirstSeenAtElapsed = 0L
+        woltSession.idleHomeChecks = 0
         scheduleAttempt(IDLE_WATCHDOG_MS)
         return true
     }
@@ -1192,14 +1149,14 @@ class OfferAccessibilityService : AccessibilityService() {
                                 LiveAdvisorSettings.automaticWoltRouting(this@OfferAccessibilityService) &&
                                 AutomaticWoltRouteCoordinator.routeFingerprint(parsed) == null
                             if (routeStillIncomplete &&
-                                woltRouteOcrRecoveryAttempts < WOLT_ROUTE_OCR_RECOVERY_RETRIES
+                                woltSession.routeOcrRecoveryAttempts < WOLT_ROUTE_OCR_RECOVERY_RETRIES
                             ) {
-                                woltRouteOcrRecoveryAttempts += 1
+                                woltSession.routeOcrRecoveryAttempts += 1
                                 CaptureEventLog.append(
                                     this@OfferAccessibilityService,
                                     stage = "route_text_ocr_retry",
                                     platform = platform,
-                                    message = "OCR still lacks a complete Wolt route; retry=${woltRouteOcrRecoveryAttempts}; " +
+                                    message = "OCR still lacks a complete Wolt route; retry=${woltSession.routeOcrRecoveryAttempts}; " +
                                         "pickups=${parsed.pickupAddresses.size}; dropoffs=${parsed.dropoffAddresses.size}; " +
                                         "deliveries=${parsed.deliveryCount ?: 0}",
                                     dedupeWindowMs = 500L,
@@ -1209,7 +1166,7 @@ class OfferAccessibilityService : AccessibilityService() {
                                 scheduleAttempt(WOLT_ROUTE_OCR_RECOVERY_DELAY_MS)
                                 return@addOnSuccessListener
                             }
-                            if (!routeStillIncomplete) woltRouteOcrRecoveryAttempts = 0
+                            if (!routeStillIncomplete) woltSession.routeOcrRecoveryAttempts = 0
                             finishCapture(captureToken)
                             if (parsed.priceCents != null && trustedPrice) {
                                 CaptureEventLog.append(this@OfferAccessibilityService, "price_ocr", "Price detected by OCR fallback", platform)
