@@ -1,7 +1,6 @@
 package com.block154.courierpilot
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RouteGeometryMetricsTest {
@@ -24,8 +23,10 @@ class RouteGeometryMetricsTest {
         val legs = RouteGeometryMetrics.directLegMeters(waypoints)
         assertEquals(4, legs.size)
         assertEquals(legs.sum(), RouteGeometryMetrics.directChainMeters(waypoints))
-        assertTrue(RouteGeometryMetrics.directLegSummary(waypoints).matches(
-            Regex("C-P:\d+,P-P:\d+,P-D:\d+,D-D:\d+")
-        ))
+        val summary = RouteGeometryMetrics.directLegSummary(waypoints)
+        val entries = summary.split(",")
+        assertEquals(4, entries.size)
+        assertEquals(listOf("C-P", "P-P", "P-D", "D-D"), entries.map { it.substringBefore(":") })
+        assertEquals(legs, entries.map { it.substringAfter(":").toInt() })
     }
 }
