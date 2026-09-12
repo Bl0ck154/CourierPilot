@@ -19,7 +19,7 @@ internal object LiveAdvisorPresentation {
      * Fast pre-route value. No verdict emoji is attached because this is deliberately an estimate;
      * the normal route-verified value replaces it when Valhalla completes.
      */
-    fun provisionalRateLine(money: MoneyAmount, estimatedRouteMeters: Int, marker: String = "⏳"): String? {
+    fun provisionalRateLine(money: MoneyAmount, estimatedRouteMeters: Int): String? {
         if (estimatedRouteMeters <= 0) return null
         val major = money.major().toDouble().takeIf { it > 0.0 } ?: return null
         val rate = major / (estimatedRouteMeters / 1000.0)
@@ -30,7 +30,7 @@ internal object LiveAdvisorPresentation {
         } else {
             "${formatMoneyRate(rate, code)}/km"
         }
-        return "≈ $formatted  $marker"
+        return "≈ $formatted  ⏳"
     }
 
     fun platformDistanceLine(meters: Int): String = "📍 ${formatKm(meters)}"

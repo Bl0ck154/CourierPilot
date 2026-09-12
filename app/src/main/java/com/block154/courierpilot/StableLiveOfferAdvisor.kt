@@ -416,7 +416,7 @@ internal class StableLiveOfferAdvisor(
             // incremental Valhalla geometry is unavailable or the add-on layout is not yet safe to
             // isolate. Exact one-stop tail add-ons use their verified dropoff-to-dropoff route above.
             val keptIncrementalRate = currentParsed?.takeIf { it.isIncrementalOffer }
-                ?.let { renderProvisionalProfitability(it, marker = "Wolt") } == true
+                ?.let { renderProvisionalProfitability(it) } == true
             if (!keptIncrementalRate) setDecisionUnavailable()
             val platformMeters = currentParsed?.distanceMeters?.takeIf { it > 0 }
             if (platformMeters != null) {
@@ -516,7 +516,7 @@ internal class StableLiveOfferAdvisor(
                 renderProfitability(parsed, cachedPedestrianRoute, cachedCyclewayRoute)
             // Until the incremental tail is ready, or for add-on layouts whose insertion point is
             // ambiguous, Wolt's own +distance is still the truthful zero-latency fallback.
-            parsed.isIncrementalOffer && renderProvisionalProfitability(parsed, marker = "Wolt") -> Unit
+            parsed.isIncrementalOffer && renderProvisionalProfitability(parsed) -> Unit
             // A single successful Valhalla profile is still verified route evidence. The scoring
             // engine averages walking + cycling when both exist, but falls back to the surviving
             // profile when one fails. Never turn that valid partial comparison into `—/km`.
@@ -536,13 +536,13 @@ internal class StableLiveOfferAdvisor(
      * zero-latency and deliberately never rewrites that distance from historical route samples. No
      * rating emoji is shown until the full Valhalla route is verified.
      */
-    private fun renderProvisionalProfitability(parsed: ParsedOffer, marker: String = "⏳"): Boolean {
+    private fun renderProvisionalProfitability(parsed: ParsedOffer): Boolean {
         val money = parsed.money ?: return false
         val estimate = LiveRouteDistanceEstimator.estimate(
             currentPlatform,
             parsed.distanceMeters,
         ) ?: return false
-        val line = LiveAdvisorPresentation.provisionalRateLine(money, estimate.distanceMeters, marker) ?: return false
+        val line = LiveAdvisorPresentation.provisionalRateLine(money, estimate.distanceMeters) ?: return false
         cachedDecisionLine = line
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
         cachedDecisionLoading = false
