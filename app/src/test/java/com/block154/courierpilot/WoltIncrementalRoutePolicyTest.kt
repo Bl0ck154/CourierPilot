@@ -110,10 +110,16 @@ class WoltIncrementalRoutePolicyTest {
     @Test
     fun twoStopAddonWithDifferentAcceptedPickupStaysConservative() {
         val baseline = ParsedOffer(
+            priceCents = null,
+            distanceMeters = null,
+            restaurant = null,
             pickupAddresses = listOf("Mindaugo g. 11, Vilnius"),
             dropoffAddresses = listOf("Aguonų gatvė 14, Vilnius"),
         )
         val addon = ParsedOffer(
+            priceCents = null,
+            distanceMeters = null,
+            restaurant = null,
             pickupAddresses = listOf("Palangos g. 2, Vilnius"),
             dropoffAddresses = listOf(
                 "Aguonų gatvė 14, Vilnius",
@@ -137,7 +143,12 @@ class WoltIncrementalRoutePolicyTest {
 
     @Test
     fun ambiguousIncrementalFullRouteIsContextOnlyForEconomics() {
-        val parsed = ParsedOffer(isIncrementalOffer = true)
+        val parsed = ParsedOffer(
+            priceCents = null,
+            distanceMeters = null,
+            restaurant = null,
+            isIncrementalOffer = true,
+        )
 
         assertFalse(
             WoltIncrementalRoutePolicy.canScoreResolvedRoute(
@@ -153,7 +164,12 @@ class WoltIncrementalRoutePolicyTest {
         )
         assertTrue(
             WoltIncrementalRoutePolicy.canScoreResolvedRoute(
-                ParsedOffer(isIncrementalOffer = false),
+                ParsedOffer(
+                    priceCents = null,
+                    distanceMeters = null,
+                    restaurant = null,
+                    isIncrementalOffer = false,
+                ),
                 WoltRouteScopeKind.FULL_REMAINING,
             )
         )
