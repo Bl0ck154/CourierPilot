@@ -8,30 +8,30 @@ Do not remove Wolt/Bolt parser branches just because they are marked `legacy`. C
 
 ## Phase 1 — dead code and CI truth
 
-- Remove unreachable retired dashboard activities.
-- Remove the v0.10 `LiveOfferAdvisor` implementation after confirming `LiveAdvisorHub` only instantiates `StableLiveOfferAdvisor`.
-- Make startup smoke follow the real launcher path.
-- Remove stale hard-coded version names from CI artifacts.
+- [x] Remove unreachable retired dashboard activities. The production launcher path is now `AppUpdateLauncherActivity` -> `CourierPilotDashboardActivity`; see `docs/LEGACY_CLEANUP_01573.md`.
+- [x] Remove the v0.10 `LiveOfferAdvisor` implementation; `LiveAdvisorHub` uses `StableLiveOfferAdvisor`.
+- [x] Make startup smoke follow the real launcher path. `.github/workflows/startup-smoke.yml` launches `AppUpdateLauncherActivity` and requires `CourierPilotDashboardActivity` to become active.
+- [x] Remove stale hard-coded version names from CI artifacts. Release naming is resolved from `app/build.gradle.kts`.
 
 ## Phase 2 — arrival reminder reliability
 
-- Persist an armed reminder with TTL so process death does not lose it.
-- Restore only if the delivery identity still matches and TTL has not expired.
-- Add tests for process restart, superseded deliveries, and cancellation.
+- [x] Persist an armed reminder with TTL so process death does not lose it (`PendingArrivalReminderStore`).
+- [x] Restore only while the reminder is still inside TTL and its saved access code still exists for the building.
+- [ ] Complete direct regression coverage for superseded-delivery and explicit-cancellation paths. Process restart/store round-trip and TTL expiry are already covered by `AccessHintIntelligenceTest`.
 
 ## Phase 3 — entrance learning
 
-- Store successful real arrival points separately from geocoder results.
-- Require repeated evidence before preferring a learned entrance point.
-- Use a robust center/median and bounded outlier rejection.
-- Fall back to geocoder when confidence is insufficient.
+- [x] Store successful real arrival points separately from geocoder results; only explicit positive arrival feedback records a learned sample.
+- [x] Require repeated evidence before preferring a learned entrance point (`MIN_SAMPLES = 2`).
+- [x] Use a robust median center with bounded outlier rejection before returning a learned entrance.
+- [x] Fall back to normal destination geocoding whenever learned-entrance confidence is insufficient.
 
 ## Phase 4 — access-code quality
 
-- Add explicit Works / Wrong-or-old feedback.
-- Track confirmation, rejection, last seen, and confidence separately from raw observations.
-- Suppress very stale low-confidence hints while preserving raw evidence.
-- Never turn one rejection into a permanent blacklist; future live evidence may relearn a code.
+- [x] Add explicit `Works` / `Wrong / old` feedback actions to arrival notifications.
+- [x] Track confirmation, rejection, last seen and confidence separately from raw observations.
+- [x] Suppress stale low-confidence hints while preserving raw delivery evidence.
+- [x] Never turn one rejection into a permanent blacklist; fresh live evidence can revive the code.
 
 ## Phase 5 — storage and naming cleanup
 
