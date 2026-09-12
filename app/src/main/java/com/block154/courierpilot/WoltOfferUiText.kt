@@ -69,6 +69,23 @@ internal object WoltOfferUiText {
     }
 
     private val MERCHANT_UI_NOISE = setOf(
+        // Platform/map/action labels can be persisted by older Accessibility/OCR builds. They are
+        // never venue identity and must stay rejected consistently by parser enrichment + history UI.
+        "wolt",
+        "google map",
+        "map marker",
+        "close drawer",
+        "timeline",
+        "pickup",
+        "dropoff",
+        "customer drop-off",
+        "multiple drop-offs",
+        "accept",
+        "decline",
+        "reject",
+        "done",
+        "ready",
+        "show map",
         "id check",
         "id verification",
         "verify id",

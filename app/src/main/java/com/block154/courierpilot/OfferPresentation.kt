@@ -22,10 +22,9 @@ internal object OfferPresentation {
         // trust. This is presentation-only: the saved raw text and captured amount stay untouched.
         recoverWoltMerchantNearPickup(record)?.let { return it }
 
-        // Never put an address into the merchant-title slot. It looked useful at first, but in
-        // History it is visually indistinguishable from a restaurant name and produced rows such as
-        // `Pickup · Vokiečių g. 7`. An honest platform label is better than invented venue identity.
-        return record.platform.ifBlank { "Venue unknown" }
+        // Never put an address or the courier platform into the merchant-title slot. `Wolt` is
+        // metadata, not a venue name, and older fallback behaviour made broken captures look valid.
+        return "Venue unknown"
     }
 
     fun cleanMerchant(value: String): String = value
