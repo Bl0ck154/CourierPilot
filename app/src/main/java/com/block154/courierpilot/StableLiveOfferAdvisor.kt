@@ -6,7 +6,6 @@ import android.os.Looper
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
 import java.util.Locale
-import java.util.concurrent.Executors
 
 /**
  * Stable live card: the shell appears first with profitability data, then routing updates the same
@@ -18,6 +17,7 @@ internal class StableLiveOfferAdvisor(
     private val handler = Handler(Looper.getMainLooper())
     private val surfaceInspector = LiveAdvisorSurfaceInspector(service)
     private val speech = LiveAdvisorSpeech(service.applicationContext)
+    private val decisionThresholds = LiveAdvisorDecisionThresholds.production(service.applicationContext, handler)
     private val overlayView by lazy {
         LiveAdvisorOverlayView(
             service = service,
@@ -43,18 +43,10 @@ internal class StableLiveOfferAdvisor(
     private var previewMode = false
     private var offerVisualStartedAtElapsed = 0L
 
-    private data class DecisionThresholdSnapshot(
-        val currencyCode: String,
-        val thresholds: OfferDecisionThresholds?,
-        val source: String,
-    )
-
     private var cachedDecisionLine = ""
     private var cachedDecisionBand = OfferDecisionBand.UNKNOWN
     private var cachedDecisionLoading = true
     private var finalPresentationLocked = false
-    private var decisionThresholdSnapshot: DecisionThresholdSnapshot? = null
-    private var decisionThresholdPrewarmGeneration = -1L
     private var cachedRouteLine = ""
     private var cachedRouteVisible = true
     private var cachedPedestrianRoute: RouteResult? = null
@@ -125,8 +117,7 @@ internal class StableLiveOfferAdvisor(
             cachedDecisionBand = OfferDecisionBand.UNKNOWN
             cachedDecisionLoading = true
             finalPresentationLocked = false
-            decisionThresholdSnapshot = null
-            decisionThresholdPrewarmGeneration = -1L
+            decisionThresholds.beginOffer(platform, generation)
             cachedRouteLine = ""
             cachedRouteVisible = true
             cachedPedestrianRoute = null
@@ -143,7 +134,7 @@ internal class StableLiveOfferAdvisor(
             currentNotificationRemoved = notificationIsAlreadyRemoved(packageName, notificationKey)
         }
         currentParsed = parsed
-        prewarmDecisionThresholds()
+        decisionThresholds.prewarm()
         differentOfferConfirmation.reset()
         if (!finalPresentationLocked) renderProgressiveDecision(parsed)
         if (cachedRouteLine.isBlank()) renderRouteLoadingState()
@@ -192,7 +183,7 @@ internal class StableLiveOfferAdvisor(
                 currentNotificationRemoved = notificationIsAlreadyRemoved(packageName, notificationKey)
             }
             previewMode = false
-            prewarmDecisionThresholds()
+            decisionThresholds.prewarm()
             differentOfferConfirmation.reset()
             if (!finalPresentationLocked && (cachedDecisionLoading || previousPrice != parsed.priceCents)) {
                 renderProgressiveDecision(parsed)
@@ -230,8 +221,7 @@ internal class StableLiveOfferAdvisor(
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
         cachedDecisionLoading = true
         finalPresentationLocked = false
-        decisionThresholdSnapshot = null
-        decisionThresholdPrewarmGeneration = -1L
+        decisionThresholds.beginOffer(platform, generation)
         cachedRouteLine = ""
         cachedRouteVisible = true
         cachedPedestrianRoute = null
@@ -241,7 +231,7 @@ internal class StableLiveOfferAdvisor(
         val initialSurface = findVisiblePackageRoot(expectedPackageName)?.let { inspectVisibleSurface(it).snapshot }
         boltBaselineSurface = if (platform.equals("Bolt", ignoreCase = true)) initialSurface else null
         woltBaselineSurface = if (platform.equals("Wolt", ignoreCase = true)) initialSurface else null
-        prewarmDecisionThresholds()
+        decisionThresholds.prewarm()
 
         handler.post {
             if (dismissed || expectedGeneration != generation) return@post
@@ -588,7 +578,7 @@ internal class StableLiveOfferAdvisor(
         cyclewayRoute: RouteResult?,
     ) {
         val currencyCode = parsed.money?.currencyCode
-        val thresholdSnapshot = currencyCode?.let(::decisionThresholdSnapshotFor)
+        val thresholdSnapshot = currencyCode?.let(decisionThresholds::snapshotFor)
         val decision = OfferDecisionEngine.evaluate(
             parsed,
             pedestrianRoute,
@@ -730,8 +720,7 @@ internal class StableLiveOfferAdvisor(
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
         cachedDecisionLoading = true
         finalPresentationLocked = false
-        decisionThresholdSnapshot = null
-        decisionThresholdPrewarmGeneration = -1L
+        decisionThresholds.clearOffer()
         cachedRouteLine = ""
         cachedRouteVisible = true
         cachedPedestrianRoute = null
@@ -746,57 +735,6 @@ internal class StableLiveOfferAdvisor(
         previous == null && current == null -> true
         previous == null || current == null -> false
         else -> previous.distanceMeters == current.distanceMeters && previous.durationSeconds == current.durationSeconds
-    }
-
-    private fun decisionThresholdSnapshotFor(currencyCode: String): DecisionThresholdSnapshot {
-        decisionThresholdSnapshot?.takeIf { it.currencyCode.equals(currencyCode, ignoreCase = true) }?.let { return it }
-
-        // Never scan the local market database on the UI thread just to show €/km. The numeric rate
-        // depends only on price + Valhalla distance, so use the cheap currency fallback immediately
-        // while the adaptive thresholds continue warming in the background.
-        prewarmDecisionThresholds()
-        val coldStart = LiveOfferColdStartThresholds.forCurrency(currencyCode)
-        val snapshot = DecisionThresholdSnapshot(
-            currencyCode = currencyCode,
-            thresholds = coldStart,
-            source = if (coldStart != null) "currency_cold_start_frozen" else "none_frozen",
-        )
-        // The first threshold snapshot used to score this offer is immutable for its lifetime. A
-        // later adaptive DB warm-up may improve the next offer, but must never change this card's
-        // emoji while the courier is deciding.
-        decisionThresholdSnapshot = snapshot
-        return snapshot
-    }
-
-    private fun prewarmDecisionThresholds() {
-        if (currentPlatform.isBlank() || decisionThresholdSnapshot != null) return
-        val expectedGeneration = generation
-        if (decisionThresholdPrewarmGeneration == expectedGeneration) return
-        decisionThresholdPrewarmGeneration = expectedGeneration
-        val platform = currentPlatform
-        val app = service.applicationContext
-        SCORE_PREWARM_EXECUTOR.execute {
-            val currencyCode = runCatching { MarketIntelligence.currencyFor(app, platform) }.getOrNull().orEmpty()
-            if (currencyCode.isBlank()) return@execute
-            val adaptive = runCatching { MarketIntelligence.thresholdsFor(app, platform, currencyCode) }.getOrNull()
-            val coldStart = LiveOfferColdStartThresholds.forCurrency(currencyCode)
-            val snapshot = DecisionThresholdSnapshot(
-                currencyCode = currencyCode,
-                thresholds = adaptive ?: coldStart,
-                source = when {
-                    adaptive != null -> "adaptive"
-                    coldStart != null -> "currency_cold_start"
-                    else -> "none"
-                },
-            )
-            handler.post {
-                if (!dismissed && generation == expectedGeneration && decisionThresholdSnapshot == null) {
-                    // Adaptive thresholds may win only before this offer has been scored. Once the
-                    // first verdict picks a snapshot, leave it frozen for the rest of the offer.
-                    decisionThresholdSnapshot = snapshot
-                }
-            }
-        }
     }
 
     private fun hasActiveNotificationAnchor(): Boolean =
@@ -1159,9 +1097,6 @@ internal class StableLiveOfferAdvisor(
     }
 
     private companion object {
-        val SCORE_PREWARM_EXECUTOR = Executors.newSingleThreadExecutor { runnable ->
-            Thread(runnable, "CourierPilot-ScorePrewarm").apply { isDaemon = true }
-        }
         const val SYSTEM_UI_PACKAGE = "com.android.systemui"
         const val VISIBILITY_CHECK_MS = 750L
         const val HIDDEN_VISIBILITY_CHECK_MS = 1_500L
