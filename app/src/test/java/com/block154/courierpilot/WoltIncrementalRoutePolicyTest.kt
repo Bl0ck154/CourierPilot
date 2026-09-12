@@ -62,4 +62,101 @@ class WoltIncrementalRoutePolicyTest {
         assertTrue(scope.requiresCurrentLocation)
         assertFalse(scope.platformDistanceComparable)
     }
+    @Test
+    fun twoStopAddonWithTrustedSamePickupBaselineRoutesExistingToNewDropoff() {
+        val baseline = OfferParser.parse(
+            """
+            €5.00
+            2 stops (5.0 km) • 12–18 min
+            Eat More Chinese & Shimai Sushi (Palangos g.)
+            Palangos g. 2, Vilnius, LT01117
+            Customer drop-off
+            Aguonų gatvė 14, Vilnius
+            Estimated earnings for the full delivery
+            Accept
+            Decline
+            """.trimIndent()
+        )
+        val addon = OfferParser.parse(
+            """
+            +€4.87
+            +2 stops (3.5 km) • 7–14 min extra
+            Eat More Chinese & Shimai Sushi (Palangos g.)
+            Palangos g. 2, Vilnius, LT01117
+            Customer drop-off
+            Aguonų gatvė 14, Vilnius
+            Customer drop-off
+            Burbiškių g. 6b, Vilnius, 03153
+            Accept
+            Decline
+            """.trimIndent()
+        )
+
+        val scope = WoltIncrementalRoutePolicy.select(addon, acceptedBaseline = baseline)
+
+        assertEquals(WoltRouteScopeKind.INCREMENTAL_DROPOFF_TAIL, scope.kind)
+        assertFalse(scope.requiresCurrentLocation)
+        assertTrue(scope.platformDistanceComparable)
+        assertEquals(
+            listOf(
+                "Aguonų gatvė 14, Vilnius",
+                "Burbiškių g. 6b, Vilnius, 03153",
+            ),
+            scope.stops.map { it.address },
+        )
+        assertTrue(scope.stops.all { it.kind == ParsedRouteStopKind.DROPOFF })
+    }
+
+    @Test
+    fun twoStopAddonWithDifferentAcceptedPickupStaysConservative() {
+        val baseline = ParsedOffer(
+            pickupAddresses = listOf("Mindaugo g. 11, Vilnius"),
+            dropoffAddresses = listOf("Aguonų gatvė 14, Vilnius"),
+        )
+        val addon = ParsedOffer(
+            pickupAddresses = listOf("Palangos g. 2, Vilnius"),
+            dropoffAddresses = listOf(
+                "Aguonų gatvė 14, Vilnius",
+                "Burbiškių g. 6b, Vilnius",
+            ),
+            orderedRouteStops = listOf(
+                ParsedRouteStop(ParsedRouteStopKind.PICKUP, "New pickup", "Palangos g. 2, Vilnius"),
+                ParsedRouteStop(ParsedRouteStopKind.DROPOFF, "Customer", "Aguonų gatvė 14, Vilnius"),
+                ParsedRouteStop(ParsedRouteStopKind.DROPOFF, "Customer", "Burbiškių g. 6b, Vilnius"),
+            ),
+            isIncrementalOffer = true,
+            incrementalStopCount = 2,
+        )
+
+        val scope = WoltIncrementalRoutePolicy.select(addon, acceptedBaseline = baseline)
+
+        assertEquals(WoltRouteScopeKind.FULL_REMAINING, scope.kind)
+        assertTrue(scope.requiresCurrentLocation)
+        assertFalse(scope.platformDistanceComparable)
+    }
+
+    @Test
+    fun ambiguousIncrementalFullRouteIsContextOnlyForEconomics() {
+        val parsed = ParsedOffer(isIncrementalOffer = true)
+
+        assertFalse(
+            WoltIncrementalRoutePolicy.canScoreResolvedRoute(
+                parsed,
+                WoltRouteScopeKind.FULL_REMAINING,
+            )
+        )
+        assertTrue(
+            WoltIncrementalRoutePolicy.canScoreResolvedRoute(
+                parsed,
+                WoltRouteScopeKind.INCREMENTAL_DROPOFF_TAIL,
+            )
+        )
+        assertTrue(
+            WoltIncrementalRoutePolicy.canScoreResolvedRoute(
+                ParsedOffer(isIncrementalOffer = false),
+                WoltRouteScopeKind.FULL_REMAINING,
+            )
+        )
+    }
+
 }

@@ -20,6 +20,7 @@ internal data class AutomaticRouteOutcome(
     val locationAgeMillis: Long? = null,
     val directChainMeters: Int? = null,
     val preparedBeforePrice: Boolean = false,
+    val scope: WoltRouteScopeKind = WoltRouteScopeKind.FULL_REMAINING,
 )
 
 internal data class PreparedWoltRoute(
@@ -31,6 +32,7 @@ internal data class PreparedWoltRoute(
     val locationAgeMillis: Long?,
     val directChainMeters: Int?,
     val platformDistanceMeters: Int? = null,
+    val scope: WoltRouteScopeKind = WoltRouteScopeKind.FULL_REMAINING,
 )
 
 internal object WoltRoutePlausibility {
@@ -81,13 +83,13 @@ internal object AutomaticWoltRouteCoordinator {
         context: Context,
         key: String,
         parsed: ParsedOffer,
+        routeScope: WoltRouteScope = WoltIncrementalRoutePolicy.select(parsed),
         onReady: (PreparedWoltRoute) -> Unit,
     ): Boolean {
         val app = context.applicationContext
-        val fingerprint = routeFingerprint(parsed) ?: return false
+        val fingerprint = preparationFingerprint(parsed, routeScope) ?: return false
         if (!LiveAdvisorSettings.automaticWoltRouting(app)) return false
         val config = runCatching { RouteEndpointSettings.load(app).validated() }.getOrNull() ?: return false
-        val routeScope = WoltIncrementalRoutePolicy.select(parsed)
         if (routeScope.requiresCurrentLocation && !RouteResearchLocation.hasPermission(app)) return false
 
         var startNew: PreparationState? = null
@@ -119,7 +121,7 @@ internal object AutomaticWoltRouteCoordinator {
         // Existing in-flight/prepared work is reuse, not a new route start. Returning false keeps
         // diagnostics truthful and avoids repeated "route_prepare_start" churn on every UI refresh.
         val state = startNew ?: return false
-        computeRoute(app, parsed, config) { prepared ->
+        computeRoute(app, parsed, config, routeScope) { prepared ->
             val callbacks = synchronized(preparationLock) {
                 val current = preparations[key]
                 if (current !== state) return@computeRoute
@@ -137,6 +139,7 @@ internal object AutomaticWoltRouteCoordinator {
         offerId: Long,
         platform: String,
         parsed: ParsedOffer,
+        routeScope: WoltRouteScope = WoltIncrementalRoutePolicy.select(parsed),
         preparedKey: String? = null,
         onComplete: (AutomaticRouteOutcome) -> Unit,
     ) {
@@ -149,14 +152,13 @@ internal object AutomaticWoltRouteCoordinator {
             completeFailure(app, offerId, platform, parsed, emptyList(), null, null, null, "route endpoint disabled", onComplete)
             return
         }
-        val routeScope = WoltIncrementalRoutePolicy.select(parsed)
         if (routeScope.requiresCurrentLocation && !RouteResearchLocation.hasPermission(app)) {
             completeFailure(app, offerId, platform, parsed, emptyList(), null, null, null, "location permission missing", onComplete)
             return
         }
 
-        val fingerprint = routeFingerprint(parsed)
-        if (fingerprint == null) {
+        val routeIdentity = routeFingerprint(parsed)
+        if (routeIdentity == null) {
             completeFailure(
                 app,
                 offerId,
@@ -176,12 +178,12 @@ internal object AutomaticWoltRouteCoordinator {
         if (preparedKey != null && attachPreparedResult(
                 app = app,
                 key = preparedKey,
-                fingerprint = fingerprint,
+                fingerprint = preparationFingerprint(parsed, routeScope) ?: routeIdentity,
                 onReady = { prepared ->
                     if (prepared.comparison != null) {
-                        finalizePrepared(app, offerId, platform, parsed, prepared, onComplete)
+                        finalizePrepared(app, offerId, platform, parsed, prepared, routeScope, onComplete)
                     } else {
-                        computeFresh(app, offerId, platform, parsed, config, onComplete)
+                        computeFresh(app, offerId, platform, parsed, config, routeScope, onComplete)
                     }
                 },
             )
@@ -189,7 +191,7 @@ internal object AutomaticWoltRouteCoordinator {
             return
         }
 
-        computeFresh(app, offerId, platform, parsed, config, onComplete)
+        computeFresh(app, offerId, platform, parsed, config, routeScope, onComplete)
     }
 
     private fun attachPreparedResult(
@@ -227,9 +229,10 @@ internal object AutomaticWoltRouteCoordinator {
         platform: String,
         parsed: ParsedOffer,
         config: RouteEndpointConfig,
+        routeScope: WoltRouteScope,
         onComplete: (AutomaticRouteOutcome) -> Unit,
     ) {
-        computeRoute(app, parsed, config) { prepared ->
+        computeRoute(app, parsed, config, routeScope) { prepared ->
             if (prepared.comparison == null) {
                 completeFailure(
                     app, offerId, platform, parsed, prepared.waypoints,
@@ -237,7 +240,7 @@ internal object AutomaticWoltRouteCoordinator {
                     prepared.failureReason ?: "route failed", onComplete,
                 )
             } else {
-                finalizePrepared(app, offerId, platform, parsed, prepared, onComplete, preparedBeforePrice = false)
+                finalizePrepared(app, offerId, platform, parsed, prepared, routeScope, onComplete, preparedBeforePrice = false)
             }
         }
     }
@@ -248,6 +251,7 @@ internal object AutomaticWoltRouteCoordinator {
         platform: String,
         parsed: ParsedOffer,
         prepared: PreparedWoltRoute,
+        routeScope: WoltRouteScope,
         onComplete: (AutomaticRouteOutcome) -> Unit,
         preparedBeforePrice: Boolean = true,
     ) {
@@ -259,6 +263,7 @@ internal object AutomaticWoltRouteCoordinator {
                         prepared.locationAgeMillis, prepared.directChainMeters, "route endpoint disabled", onComplete)
                     return
                 },
+                routeScope,
                 onComplete,
             )
             return
@@ -280,6 +285,7 @@ internal object AutomaticWoltRouteCoordinator {
                     locationAgeMillis = prepared.locationAgeMillis,
                     directChainMeters = prepared.directChainMeters,
                     preparedBeforePrice = preparedBeforePrice,
+                    scope = prepared.scope,
                 )
             )
         }
@@ -289,6 +295,7 @@ internal object AutomaticWoltRouteCoordinator {
         app: Context,
         parsed: ParsedOffer,
         config: RouteEndpointConfig,
+        routeScope: WoltRouteScope,
         callback: (PreparedWoltRoute) -> Unit,
     ) {
         val fingerprint = routeFingerprint(parsed) ?: run {
@@ -297,7 +304,6 @@ internal object AutomaticWoltRouteCoordinator {
             }
             return
         }
-        val routeScope = WoltIncrementalRoutePolicy.select(parsed)
         val stopSpecs = buildStopSpecs(routeScope.stops)
 
         fun finishWithWaypoints(
@@ -380,6 +386,7 @@ internal object AutomaticWoltRouteCoordinator {
                     locationAgeMillis = fix?.ageMillis,
                     directChainMeters = chainMeters,
                     platformDistanceMeters = parsed.distanceMeters,
+                    scope = routeScope.kind,
                 )
                 app.mainExecutor.execute { callback(prepared) }
             }
@@ -390,7 +397,7 @@ internal object AutomaticWoltRouteCoordinator {
                 app,
                 stage = "route_incremental_tail",
                 platform = "Wolt",
-                message = "Routing one-stop add-on from existing drop-off to appended drop-off; " +
+                message = "Routing verified add-on tail from existing drop-off to appended drop-off; " +
                     "points=${stopSpecs.size}; platform_m=${parsed.distanceMeters ?: -1}",
                 dedupeWindowMs = 500L,
             )
@@ -485,6 +492,9 @@ internal object AutomaticWoltRouteCoordinator {
             joinInputsIfReady()
         }
     }
+
+    private fun preparationFingerprint(parsed: ParsedOffer, scope: WoltRouteScope): String? =
+        routeFingerprint(parsed)?.let { "$it|${scope.kind}" }
 
     internal fun routeFingerprint(parsed: ParsedOffer): String? {
         val specs = buildStopSpecs(parsed)
@@ -705,7 +715,7 @@ internal object AutomaticWoltRouteCoordinator {
             context,
             stage = "route_plan_ready",
             platform = platform,
-            message = "points=${prepared.waypoints.size}; pickups=${prepared.waypoints.count { it.kind == WaypointKind.PICKUP }}; " +
+            message = "scope=${prepared.scope}; points=${prepared.waypoints.size}; pickups=${prepared.waypoints.count { it.kind == WaypointKind.PICKUP }}; " +
                 "dropoffs=${prepared.waypoints.count { it.kind == WaypointKind.DROPOFF }}; walk_m=${walking ?: -1}; " +
                 "cycle_m=${cycling ?: -1}; avg_m=${average ?: -1}; platform_m=${prepared.platformDistanceMeters ?: -1}; " +
                 "direct_chain_m=${prepared.directChainMeters ?: -1}; direct_legs_m=${RouteGeometryMetrics.directLegSummary(prepared.waypoints)}; " +

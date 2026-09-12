@@ -129,6 +129,15 @@ walking/cycling policy on that tail (`both = mean`, one surviving profile = fall
 and the pickup are deliberately excluded from this denominator, and this exact tail can be routed
 without location permission.
 
+A field-confirmed `+2 stops` layout can represent the same economic shape even though Wolt counts
+both the reused pickup and appended customer as added stops. CourierPilot promotes that card to the
+same **existing drop-off → appended drop-off** tail only when the fresh previously tracked order
+proves both the same pickup and the same first customer. This remains valid even if Accessibility
+missed the brief acceptance cue; the incremental card itself plus an exact fresh baseline match is
+the evidence.
+
 Other incremental layouts remain conservative until their insertion point can be identified without
-guessing. They may continue to show Wolt's explicit `+distance` as the live fallback rather than
-pretending a full remaining-route Valhalla distance is incremental.
+guessing. A full remaining-route Valhalla result may be shown as route context, but it is never used
+as the denominator for incremental money. The primary rate stays on Wolt's explicit `+distance`
+fallback until a verified incremental tail exists. Historical incremental route snapshots created
+before route scope was persisted are recomputed instead of being blindly restored as economics.
