@@ -231,6 +231,8 @@ internal object LiveAdvisorHub {
             deliveryCount = visible.deliveryCount ?: historical.deliveryCount ?: parsedFromHistory.deliveryCount,
             estimatedMinutesMin = visible.estimatedMinutesMin ?: historical.estimatedMinutesMin ?: parsedFromHistory.estimatedMinutesMin,
             estimatedMinutesMax = visible.estimatedMinutesMax ?: historical.estimatedMinutesMax ?: parsedFromHistory.estimatedMinutesMax,
+            isIncrementalOffer = visible.isIncrementalOffer || parsedFromHistory.isIncrementalOffer,
+            incrementalStopCount = visible.incrementalStopCount ?: parsedFromHistory.incrementalStopCount,
         )
         if (isUserDismissedOffer(historical.packageName, merged)) {
             CaptureEventLog.append(

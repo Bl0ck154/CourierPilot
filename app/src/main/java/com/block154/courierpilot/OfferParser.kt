@@ -30,6 +30,7 @@ internal data class ParsedOffer(
     val estimatedMinutesMax: Int? = null,
     val orderedRouteStops: List<ParsedRouteStop> = emptyList(),
     val isIncrementalOffer: Boolean = false,
+    val incrementalStopCount: Int? = null,
 )
 
 internal object OfferParser {
@@ -108,6 +109,7 @@ internal object OfferParser {
             estimatedMinutesMax = estimate?.second,
             orderedRouteStops = orderedStops,
             isIncrementalOffer = modernWolt?.isIncrementalOffer == true,
+            incrementalStopCount = modernWolt?.incrementalStopCount,
         )
     }
 
@@ -158,6 +160,7 @@ internal object OfferParser {
         val deliveryCount: Int?,
         val orderedRouteStops: List<ParsedRouteStop>,
         val isIncrementalOffer: Boolean,
+        val incrementalStopCount: Int?,
     )
 
     /**
@@ -180,6 +183,11 @@ internal object OfferParser {
             val line = lines[index].trim()
             line.startsWith("+") || line.endsWith("extra", ignoreCase = true)
         }
+        val incrementalStopCount = summaryIndexes.mapNotNull { index ->
+            val line = lines[index].trim()
+            if (!line.startsWith("+") && !line.endsWith("extra", ignoreCase = true)) return@mapNotNull null
+            WoltOfferUiText.routeStopCount(line)
+        }.lastOrNull()
         val contentStart = (summaryIndex + 1).coerceAtLeast(0)
         val customerDropoffIndexes = lines.indices.filter { index ->
             index >= contentStart && WoltOfferUiText.singleCustomerDropoffRegex.matches(lines[index])
@@ -385,6 +393,7 @@ internal object OfferParser {
             deliveryCount = deliveryCount,
             orderedRouteStops = ordered,
             isIncrementalOffer = isIncrementalOffer,
+            incrementalStopCount = incrementalStopCount,
         )
     }
 

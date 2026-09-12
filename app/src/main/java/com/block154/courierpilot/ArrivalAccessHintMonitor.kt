@@ -1,19 +1,12 @@
 package com.block154.courierpilot
 
 import android.Manifest
-import android.app.Notification
-import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.PendingIntent
 import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.location.Location
-import android.net.Uri
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.provider.Settings
 import android.widget.Toast
 import com.google.android.gms.location.LocationServices
 import java.util.Locale
@@ -57,63 +50,18 @@ internal object ArrivalAccessHintPolicy {
     }
 }
 
-/** Background location is required because Wolt/Maps, not CourierPilot, is foreground on the trip. */
+/** Background location improves reminder timing, but ETA fallback keeps it optional. */
 internal object ArrivalLocationPermission {
-    private const val CHANNEL_ID = "courierpilot_arrival_setup"
-    private const val NOTIFICATION_ID = 0x4D71
+    private const val LEGACY_SETUP_NOTIFICATION_ID = 0x4D71
 
     fun hasBackgroundAccess(context: Context): Boolean =
         RouteResearchLocation.hasPermission(context) &&
             context.checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED
 
-    fun showSetup(context: Context) {
-        val app = context.applicationContext
-        if (hasBackgroundAccess(app)) {
-            clearSetup(app)
-            return
-        }
-        if (Build.VERSION.SDK_INT >= 33 &&
-            app.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) return
-
-        val manager = app.getSystemService(NotificationManager::class.java) ?: return
-        manager.createNotificationChannel(
-            NotificationChannel(
-                CHANNEL_ID,
-                "Arrival reminder setup",
-                NotificationManager.IMPORTANCE_DEFAULT,
-            ).apply {
-                description = "Setup needed for door-code reminders at the delivery address"
-                setShowBadge(false)
-            }
-        )
-
-        val settingsIntent = Intent(
-            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-            Uri.parse("package:${app.packageName}"),
-        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        val contentIntent = PendingIntent.getActivity(
-            app,
-            NOTIFICATION_ID,
-            settingsIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val body = "Open Permissions → Location and choose Allow all the time. This lets CourierPilot show saved door codes when you reach the delivery address."
-        val notification = Notification.Builder(app, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_stat_courierpilot)
-            .setContentTitle("Enable arrival code reminders")
-            .setContentText(body)
-            .setStyle(Notification.BigTextStyle().bigText(body))
-            .setContentIntent(contentIntent)
-            .setAutoCancel(true)
-            .setOnlyAlertOnce(true)
-            .build()
-        manager.notify(NOTIFICATION_ID, notification)
-    }
-
+    /** Remove the old setup nag from installs that saw it before ETA fallback existed. */
     fun clearSetup(context: Context) {
         context.applicationContext.getSystemService(NotificationManager::class.java)
-            ?.cancel(NOTIFICATION_ID)
+            ?.cancel(LEGACY_SETUP_NOTIFICATION_ID)
     }
 }
 
@@ -135,6 +83,8 @@ internal object ArrivalAccessHintMonitor {
         val armedAt: Long,
         val identityConfirmed: Boolean = true,
         val destination: RoutePoint? = null,
+        val fallbackNotifyAt: Long? = null,
+        val fallbackTimingSource: String? = null,
         val lastCheckStartedAt: Long = 0L,
         val lastDistanceMeters: Double? = null,
     )
@@ -179,6 +129,8 @@ internal object ArrivalAccessHintMonitor {
                 armedAt = stored.armedAt,
                 identityConfirmed = false,
                 destination = stored.destination,
+                fallbackNotifyAt = stored.fallbackNotifyAt,
+                fallbackTimingSource = stored.fallbackTimingSource,
             )
             geocodeGeneration = null
             locationGeneration = null
@@ -198,19 +150,20 @@ internal object ArrivalAccessHintMonitor {
         deliveryKey: String,
         buildingKey: String,
         suggestion: AccessCodeSuggestion,
+        eta: ArrivalEtaWindow? = null,
     ) {
         if (deliveryKey.isBlank() || buildingKey.isBlank() || suggestion.codes.isEmpty()) return
         val app = context.applicationContext
-        if (ArrivalLocationPermission.hasBackgroundAccess(app)) {
-            ArrivalLocationPermission.clearSetup(app)
-        } else {
-            ArrivalLocationPermission.showSetup(app)
-        }
-
+        // Background location is now an optional precision upgrade. Never nag for it automatically.
+        ArrivalLocationPermission.clearSetup(app)
+        val preciseArrivalAvailable = ArrivalLocationPermission.hasBackgroundAccess(app)
         val now = System.currentTimeMillis()
+        val candidateFallbackAt = now + ArrivalAccessHintTimingPolicy.notificationDelayMs(eta)
+        val candidateTimingSource = eta?.source ?: "default-delay"
         var shouldResolve = false
         var shouldPoke = false
         var restoredIdentityConfirmed = false
+        var fallbackMovedEarlier = false
         var snapshot: ArmedReminder? = null
 
         synchronized(lock) {
@@ -226,15 +179,33 @@ internal object ArrivalAccessHintMonitor {
                     .filter(String::isNotEmpty)
                     .distinct()
                 restoredIdentityConfirmed = !current.identityConfirmed
+                val nextFallbackAt = when {
+                    current.fallbackNotifyAt == null -> candidateFallbackAt
+                    eta != null -> minOf(current.fallbackNotifyAt, candidateFallbackAt)
+                    else -> current.fallbackNotifyAt
+                }
+                fallbackMovedEarlier = current.fallbackNotifyAt != null && nextFallbackAt < current.fallbackNotifyAt
+                val nextTimingSource = if (nextFallbackAt != current.fallbackNotifyAt) {
+                    candidateTimingSource
+                } else {
+                    current.fallbackTimingSource ?: candidateTimingSource
+                }
                 active = current.copy(
                     buildingKey = buildingKey,
                     suggestion = suggestion.copy(codes = mergedCodes, updatedAt = now),
                     identityConfirmed = true,
+                    fallbackNotifyAt = nextFallbackAt,
+                    fallbackTimingSource = nextTimingSource,
                 )
                 snapshot = active
-                shouldResolve = current.destination == null && geocodeGeneration != current.generation
-                shouldPoke = current.destination != null &&
-                    (restoredIdentityConfirmed || now - current.lastCheckStartedAt >= SCREEN_POKE_MIN_MS)
+                shouldResolve = preciseArrivalAvailable &&
+                    current.destination == null && geocodeGeneration != current.generation
+                shouldPoke = if (preciseArrivalAvailable) {
+                    current.destination != null &&
+                        (restoredIdentityConfirmed || now - current.lastCheckStartedAt >= SCREEN_POKE_MIN_MS)
+                } else {
+                    restoredIdentityConfirmed || fallbackMovedEarlier || nextFallbackAt <= now + SCREEN_POKE_MIN_MS
+                }
             } else {
                 generationCounter++
                 active = ArmedReminder(
@@ -244,12 +215,14 @@ internal object ArrivalAccessHintMonitor {
                     suggestion = suggestion,
                     armedAt = now,
                     identityConfirmed = true,
+                    fallbackNotifyAt = candidateFallbackAt,
+                    fallbackTimingSource = candidateTimingSource,
                 )
                 snapshot = active
                 geocodeGeneration = null
                 locationGeneration = null
-                shouldResolve = true
-                shouldPoke = false
+                shouldResolve = preciseArrivalAvailable
+                shouldPoke = !preciseArrivalAvailable
             }
         }
         snapshot?.let { persist(app, it) }
@@ -263,8 +236,25 @@ internal object ArrivalAccessHintMonitor {
                 dedupeWindowMs = 10_000L,
             )
         }
+        if (!preciseArrivalAvailable) {
+            val due = snapshot?.fallbackNotifyAt ?: candidateFallbackAt
+            CaptureEventLog.append(
+                app,
+                stage = "access_code_eta_fallback_armed",
+                platform = suggestion.platform,
+                message = "source=${snapshot?.fallbackTimingSource ?: candidateTimingSource}; " +
+                    "eta_min=${eta?.minMinutes ?: -1}; eta_max=${eta?.maxMinutes ?: -1}; " +
+                    "notify_in_ms=${(due - now).coerceAtLeast(0L)}",
+                dedupeWindowMs = 30_000L,
+            )
+        }
         if (shouldResolve) resolveDestination(app)
-        if (shouldPoke) scheduleCheck(0L)
+        if (shouldPoke) {
+            val fallbackDelay = snapshot?.fallbackNotifyAt
+                ?.let { (it - now).coerceAtLeast(0L) }
+                ?: 0L
+            scheduleCheck(if (preciseArrivalAvailable) 0L else fallbackDelay)
+        }
     }
 
     /** Cancel a stale armed reminder when the visible delivery address has changed. */
@@ -370,6 +360,7 @@ internal object ArrivalAccessHintMonitor {
 
     private fun check(app: Context) {
         val now = System.currentTimeMillis()
+        var fallbackPersist: ArmedReminder? = null
         val reminder = synchronized(lock) {
             val current = active ?: return
             if (!current.identityConfirmed) return
@@ -380,6 +371,39 @@ internal object ArrivalAccessHintMonitor {
                 PendingArrivalReminderStore.clear(app)
                 return
             }
+            current
+        }
+
+        if (!ArrivalLocationPermission.hasBackgroundAccess(app)) {
+            val due = reminder.fallbackNotifyAt ?: (reminder.armedAt + ArrivalAccessHintTimingPolicy.DEFAULT_DELAY_MS)
+            if (reminder.fallbackNotifyAt == null) {
+                synchronized(lock) {
+                    val current = active
+                    if (current != null && current.generation == reminder.generation && current.identityConfirmed) {
+                        active = current.copy(
+                            fallbackNotifyAt = due,
+                            fallbackTimingSource = current.fallbackTimingSource ?: "default-delay",
+                        )
+                        fallbackPersist = active
+                    }
+                }
+                fallbackPersist?.let { persist(app, it) }
+            }
+            if (now >= due) {
+                notifyFromEtaFallback(app, reminder.copy(
+                    fallbackNotifyAt = due,
+                    fallbackTimingSource = reminder.fallbackTimingSource ?: "default-delay",
+                ))
+            } else {
+                scheduleCheck(due - now)
+            }
+            return
+        }
+        ArrivalLocationPermission.clearSetup(app)
+
+        val locationReminder = synchronized(lock) {
+            val current = active ?: return
+            if (!current.identityConfirmed || current.generation != reminder.generation) return
             if (current.destination == null) {
                 current
             } else {
@@ -390,7 +414,7 @@ internal object ArrivalAccessHintMonitor {
             }
         }
 
-        if (reminder.destination == null) {
+        if (locationReminder.destination == null) {
             resolveDestination(app)
             return
         }
@@ -399,8 +423,8 @@ internal object ArrivalAccessHintMonitor {
             val fix = result.getOrNull()
             val current = synchronized(lock) {
                 val live = active
-                if (locationGeneration == reminder.generation) locationGeneration = null
-                if (live == null || !live.identityConfirmed || live.generation != reminder.generation) return@requestArrivalFix
+                if (locationGeneration == locationReminder.generation) locationGeneration = null
+                if (live == null || !live.identityConfirmed || live.generation != locationReminder.generation) return@requestArrivalFix
                 live
             }
 
@@ -420,7 +444,7 @@ internal object ArrivalAccessHintMonitor {
             val distance = ArrivalAccessHintPolicy.distanceMeters(fix.point, destination)
             synchronized(lock) {
                 val live = active
-                if (live != null && live.identityConfirmed && live.generation == reminder.generation) {
+                if (live != null && live.identityConfirmed && live.generation == locationReminder.generation) {
                     active = live.copy(lastDistanceMeters = distance)
                 }
             }
@@ -435,8 +459,7 @@ internal object ArrivalAccessHintMonitor {
 
     private fun requestArrivalFix(context: Context, callback: (Result<CurrentLocationFix>) -> Unit) {
         if (!ArrivalLocationPermission.hasBackgroundAccess(context)) {
-            ArrivalLocationPermission.showSetup(context)
-            callback(Result.failure(SecurityException("Background location is required for arrival-timed access hints")))
+            callback(Result.failure(SecurityException("Background location unavailable; ETA fallback owns timing")))
             return
         }
         ArrivalLocationPermission.clearSetup(context)
@@ -475,6 +498,31 @@ internal object ArrivalAccessHintMonitor {
         distanceMeters: Double,
         arrivalFix: CurrentLocationFix,
         arrivalCapturedAt: Long,
+    ) = notifyAccessHint(
+        app = app,
+        reminder = reminder,
+        arrivalFix = arrivalFix,
+        arrivalCapturedAt = arrivalCapturedAt,
+        stage = "access_code_arrival_match",
+        message = "Historical access hint shown at ${String.format(Locale.US, "%.0f", distanceMeters)} m from destination",
+    )
+
+    private fun notifyFromEtaFallback(app: Context, reminder: ArmedReminder) = notifyAccessHint(
+        app = app,
+        reminder = reminder,
+        arrivalFix = null,
+        arrivalCapturedAt = 0L,
+        stage = "access_code_eta_fallback",
+        message = "Historical access hint shown from ETA fallback; source=${reminder.fallbackTimingSource ?: "default-delay"}",
+    )
+
+    private fun notifyAccessHint(
+        app: Context,
+        reminder: ArmedReminder,
+        arrivalFix: CurrentLocationFix?,
+        arrivalCapturedAt: Long,
+        stage: String,
+        message: String,
     ) {
         val database = CourierMetaDatabase.get(app)
         val liveCodes = database.codesForBuilding(reminder.buildingKey, limit = 50)
@@ -512,9 +560,9 @@ internal object ArrivalAccessHintMonitor {
         ).show()
         CaptureEventLog.append(
             app,
-            stage = "access_code_arrival_match",
+            stage = stage,
             platform = suggestion.platform,
-            message = "Historical access hint shown at ${String.format(Locale.US, "%.0f", distanceMeters)} m from destination",
+            message = message,
             dedupeWindowMs = 30_000L,
         )
     }
@@ -528,6 +576,8 @@ internal object ArrivalAccessHintMonitor {
                 suggestion = reminder.suggestion,
                 armedAt = reminder.armedAt,
                 destination = reminder.destination,
+                fallbackNotifyAt = reminder.fallbackNotifyAt,
+                fallbackTimingSource = reminder.fallbackTimingSource,
             )
         )
     }

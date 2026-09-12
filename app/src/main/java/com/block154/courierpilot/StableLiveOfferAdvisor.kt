@@ -412,9 +412,9 @@ internal class StableLiveOfferAdvisor(
         handler.post {
             if (dismissed || finalPresentationLocked || generation != expectedGeneration) return@post
             // Ordinary offers never fall back to platform-distance profitability after a real route
-            // failure. Wolt add-ons are different: their money and distance are already incremental,
-            // while the Valhalla chain is the full remaining route, so keep the clearly-labelled
-            // provisional incremental rate instead of replacing it with an unavailable marker.
+            // failure. Wolt add-ons keep their explicit +distance as a truthful fallback when the
+            // incremental Valhalla geometry is unavailable or the add-on layout is not yet safe to
+            // isolate. Exact one-stop tail add-ons use their verified dropoff-to-dropoff route above.
             val keptIncrementalRate = currentParsed?.takeIf { it.isIncrementalOffer }
                 ?.let { renderProvisionalProfitability(it, marker = "Wolt") } == true
             if (!keptIncrementalRate) setDecisionUnavailable()
@@ -510,9 +510,12 @@ internal class StableLiveOfferAdvisor(
         val hasRoute = cachedPedestrianRoute != null || cachedCyclewayRoute != null
         when {
             !hasPrice -> setDecisionLoading()
-            // Wolt add-on money and distance are explicitly incremental. A full Valhalla route
-            // cannot be used as the denominator without subtracting the already-accepted baseline,
-            // so keep the primary rate truthful and immediate using Wolt's incremental distance.
+            // Exact one-stop Wolt add-ons can now resolve the actual incremental tail
+            // (existing drop-off -> appended drop-off). Prefer that verified route once available.
+            parsed.isIncrementalOffer && hasRoute ->
+                renderProfitability(parsed, cachedPedestrianRoute, cachedCyclewayRoute)
+            // Until the incremental tail is ready, or for add-on layouts whose insertion point is
+            // ambiguous, Wolt's own +distance is still the truthful zero-latency fallback.
             parsed.isIncrementalOffer && renderProvisionalProfitability(parsed, marker = "Wolt") -> Unit
             // A single successful Valhalla profile is still verified route evidence. The scoring
             // engine averages walking + cycling when both exist, but falls back to the surviving

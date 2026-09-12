@@ -12,6 +12,8 @@ internal data class PendingArrivalReminder(
     val suggestion: AccessCodeSuggestion,
     val armedAt: Long,
     val destination: RoutePoint?,
+    val fallbackNotifyAt: Long? = null,
+    val fallbackTimingSource: String? = null,
 )
 
 /** Durable single-slot state so a process restart does not lose an armed reminder mid-delivery. */
@@ -32,6 +34,8 @@ internal object PendingArrivalReminderStore {
             json.put("latitude", it.latitude)
             json.put("longitude", it.longitude)
         }
+        reminder.fallbackNotifyAt?.takeIf { it > 0L }?.let { json.put("fallbackNotifyAt", it) }
+        reminder.fallbackTimingSource?.takeIf(String::isNotBlank)?.let { json.put("fallbackTimingSource", it) }
         context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .edit()
             .putString(KEY_ACTIVE, json.toString())
@@ -71,6 +75,8 @@ internal object PendingArrivalReminderStore {
                 destination = if (json.has("latitude") && json.has("longitude")) {
                     RoutePoint(json.getDouble("latitude"), json.getDouble("longitude"))
                 } else null,
+                fallbackNotifyAt = json.optLong("fallbackNotifyAt", 0L).takeIf { it > 0L },
+                fallbackTimingSource = json.optString("fallbackTimingSource").takeIf(String::isNotBlank),
             )
         }.getOrElse {
             clear(context)

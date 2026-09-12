@@ -205,6 +205,12 @@ internal object DeliveryMemory {
             return
         }
 
+        val arrivalEta = ArrivalAccessHintEtaResolver.resolve(
+            context = context,
+            packageName = packageName,
+            screenText = text,
+            now = now,
+        )
         var matched = false
         for (address in detectedAddresses.asReversed().distinct()) {
             val canonical = AddressMemoryResolver.canonicalize(context, database, address)
@@ -238,6 +244,7 @@ internal object DeliveryMemory {
                 deliveryKey = deliveryKey,
                 buildingKey = canonical.first,
                 suggestion = suggestion,
+                eta = arrivalEta,
             )
             matched = true
             break

@@ -118,3 +118,17 @@ For live offer profitability, pedestrian and bicycle Valhalla routes are complem
 
 The mean is deliberate. Pedestrian routing may use stairs, passages or shortcuts that are not realistically rideable, while bicycle routing can make unnecessary road/cycleway detours through places where a courier can legally and practically continue with the bike. Averaging the pair when both exist reduces the impact of either profile's systematic edge cases. Do not replace this policy with a bicycle-only or pedestrian-only default without new field evidence.
 
+
+## Wolt incremental add-on distance policy
+
+Wolt add-ons must be scored on the travel that the new money actually buys, not blindly on the
+full remaining route. For the field-confirmed `+1 stop` layout with one shared pickup and exactly
+two customer drop-offs, Wolt renders the already accepted customer first and the appended customer
+second. CourierPilot therefore routes **existing drop-off → appended drop-off** and uses the normal
+walking/cycling policy on that tail (`both = mean`, one surviving profile = fallback). Current GPS
+and the pickup are deliberately excluded from this denominator, and this exact tail can be routed
+without location permission.
+
+Other incremental layouts remain conservative until their insertion point can be identified without
+guessing. They may continue to show Wolt's explicit `+distance` as the live fallback rather than
+pretending a full remaining-route Valhalla distance is incremental.
