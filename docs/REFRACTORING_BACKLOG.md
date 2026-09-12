@@ -37,13 +37,14 @@ Do not remove Wolt/Bolt parser branches just because they are marked `legacy`. C
 
 - [x] Add screenshot retention controls and storage-size visibility.
 - [x] Migrate `euroPerKilometer` to currency-neutral `moneyPerKilometer` without changing scoring semantics.
-- [ ] Split large accessibility and live-advisor classes into capture/state/routing/presentation pieces.
+- [x] Split large accessibility and live-advisor classes into capture/state/routing/presentation pieces where there is a real ownership boundary.
   - [x] Extract low-level courier Accessibility window/tree traversal into `OfferAccessibilitySurface`.
   - [x] Extract visible live-advisor tree inspection into `LiveAdvisorSurfaceInspector`.
   - [x] Extract Android screenshot acquisition/fallback/bitmap plumbing into `OfferScreenshotCapture`; OCR and persistence policy remain in `OfferAccessibilityService`.
   - [x] Extract Wolt capture-session state/frame accumulation into `WoltCaptureSession`; capture policy, route recovery and OCR timing remain in `OfferAccessibilityService`.
   - [x] Extract overlay view/gesture rendering into `LiveAdvisorOverlayView`; offer lifetime, scoring and cached decision state remain in `StableLiveOfferAdvisor`.
-  - [ ] Reassess whether the remaining route coordination needs another owner after those mechanical splits. Do not move route/scoring rules merely to satisfy a class-count target.
+  - [x] Reassess remaining route coordination. `AutomaticWoltRouteCoordinator` already owns GPS, geocoding, Valhalla computation, prepared-route reuse and route outcomes. The Wolt code that remains in `OfferAccessibilityService` is Accessibility disclosure/semantics recovery and must stay next to capture policy; adding another route owner would only add callbacks and split one UI transaction across more classes.
+  - Further extraction is allowed only when another cohesive responsibility becomes independently testable; class size alone is not a reason to move lifetime/scoring rules.
 - [ ] Define the minimum supported upgrade baseline before deleting one-shot database repair revisions.
   - Current policy deliberately declares no minimum directly-upgradable historical version, so `AddressDataRepair` and `OfferDataRepair` remain supported compatibility code.
   - Do not invent a baseline during cleanup. The product support decision and baseline-to-current replay coverage must exist first; see `docs/UPGRADE_SUPPORT_POLICY.md`.
