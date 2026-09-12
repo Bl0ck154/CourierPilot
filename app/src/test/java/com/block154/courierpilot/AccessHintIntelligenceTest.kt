@@ -2,6 +2,7 @@ package com.block154.courierpilot
 
 import android.content.Context
 import android.content.Intent
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -20,11 +21,17 @@ class AccessHintIntelligenceTest {
     @Before
     fun setUp() {
         context = RuntimeEnvironment.getApplication()
+        ArrivalAccessHintMonitor.cancelAll(context)
         listOf(
             "courierpilot_pending_arrival_hint_v1",
             "courierpilot_access_hint_feedback_v1",
             "courierpilot_learned_entrances_v1",
         ).forEach { context.getSharedPreferences(it, Context.MODE_PRIVATE).edit().clear().commit() }
+    }
+
+    @After
+    fun tearDown() {
+        ArrivalAccessHintMonitor.cancelAll(context)
     }
 
     @Test
@@ -50,6 +57,72 @@ class AccessHintIntelligenceTest {
                 now + ArrivalAccessHintPolicy.REMINDER_TTL_MS + 1,
             )
         )
+    }
+
+    @Test
+    fun armingDifferentDeliveryReplacesPersistedReminder() {
+        val now = System.currentTimeMillis()
+        seedLearnedEntrance("building-a", now)
+        seedLearnedEntrance("building-b", now)
+
+        ArrivalAccessHintMonitor.arm(
+            context,
+            deliveryKey = "delivery-a",
+            buildingKey = "building-a",
+            suggestion = AccessCodeSuggestion("Test g. 1", listOf("1111"), "Wolt", now),
+        )
+        assertEquals("delivery-a", PendingArrivalReminderStore.load(context)?.deliveryKey)
+
+        ArrivalAccessHintMonitor.arm(
+            context,
+            deliveryKey = "delivery-b",
+            buildingKey = "building-b",
+            suggestion = AccessCodeSuggestion("Test g. 2", listOf("2222"), "Wolt", now + 1_000L),
+        )
+
+        val persisted = PendingArrivalReminderStore.load(context)
+        assertNotNull(persisted)
+        assertEquals("delivery-b", persisted!!.deliveryKey)
+        assertEquals("building-b", persisted.buildingKey)
+        assertEquals(listOf("2222"), persisted.suggestion.codes)
+    }
+
+    @Test
+    fun changedVisibleDeliveryCancelsPersistedReminderButSameDeliveryKeepsIt() {
+        val now = System.currentTimeMillis()
+        seedLearnedEntrance("cancel-building", now)
+        ArrivalAccessHintMonitor.arm(
+            context,
+            deliveryKey = "delivery-current",
+            buildingKey = "cancel-building",
+            suggestion = AccessCodeSuggestion("Test g. 3", listOf("3333"), "Bolt", now),
+        )
+
+        ArrivalAccessHintMonitor.cancelUnless(context, listOf("delivery-current"))
+        assertEquals("delivery-current", PendingArrivalReminderStore.load(context)?.deliveryKey)
+
+        ArrivalAccessHintMonitor.cancelUnless(context, listOf("delivery-next"))
+        assertNull(PendingArrivalReminderStore.load(context))
+    }
+
+    @Test
+    fun explicitCancellationClearsDurableReminder() {
+        val now = System.currentTimeMillis()
+        PendingArrivalReminderStore.save(
+            context,
+            PendingArrivalReminder(
+                deliveryKey = "delivery",
+                buildingKey = "building",
+                suggestion = AccessCodeSuggestion("Test g. 4", listOf("4444"), "Wolt", now),
+                armedAt = now,
+                destination = RoutePoint(54.68, 25.27),
+            )
+        )
+        assertNotNull(PendingArrivalReminderStore.load(context))
+
+        ArrivalAccessHintMonitor.cancelAll(context)
+
+        assertNull(PendingArrivalReminderStore.load(context))
     }
 
     @Test
@@ -163,6 +236,21 @@ class AccessHintIntelligenceTest {
         )
 
         assertEquals(0, LearnedEntranceStore.sampleCount(context, building))
+    }
+
+    private fun seedLearnedEntrance(buildingKey: String, now: Long) {
+        LearnedEntranceStore.record(
+            context,
+            buildingKey,
+            CurrentLocationFix(RoutePoint(54.68000, 25.27000), 10f, 1_000L, "test"),
+            now,
+        )
+        LearnedEntranceStore.record(
+            context,
+            buildingKey,
+            CurrentLocationFix(RoutePoint(54.68003, 25.27003), 10f, 1_000L, "test"),
+            now + 1L,
+        )
     }
 
     companion object {
