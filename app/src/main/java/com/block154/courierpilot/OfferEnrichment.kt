@@ -38,12 +38,20 @@ private fun OfferRecord.withCurrentParsedStructureUnchecked(): OfferRecord {
         parsedBase
     }
 
-    val parsedMerchants = parsed?.merchantNames.orEmpty().filterNot { value ->
-        packageName == CourierSignals.WOLT_PACKAGE && WoltOfferUiText.isMerchantUiNoise(value)
-    }
-    val storedMerchants = merchantNames.filterNot { value ->
-        packageName == CourierSignals.WOLT_PACKAGE && WoltOfferUiText.isMerchantUiNoise(value)
-    }
+    val parsedMerchants = parsed?.merchantNames.orEmpty()
+        .map { value ->
+            if (packageName == CourierSignals.WOLT_PACKAGE) WoltMerchantLabelRepair.repair(value) else value
+        }
+        .filterNot { value ->
+            packageName == CourierSignals.WOLT_PACKAGE && WoltOfferUiText.isMerchantUiNoise(value)
+        }
+    val storedMerchants = merchantNames
+        .map { value ->
+            if (packageName == CourierSignals.WOLT_PACKAGE) WoltMerchantLabelRepair.repair(value) else value
+        }
+        .filterNot { value ->
+            packageName == CourierSignals.WOLT_PACKAGE && WoltOfferUiText.isMerchantUiNoise(value)
+        }
 
     // A complete current parse of the redesigned Wolt card is stronger than old persisted route
     // structure. Previous versions rewarded list length, so three stale/misclassified pickup rows
@@ -119,10 +127,14 @@ private fun OfferRecord.withCurrentParsedStructureUnchecked(): OfferRecord {
         ?: parsed?.deliveryCount
         ?: deliveryCount
 
-    val safeStoredRestaurant = restaurant?.takeUnless { value ->
-        (packageName == CourierSignals.BOLT_PACKAGE && BoltOfferTextSanitizer.isOrphanBranchFragment(value)) ||
-            (packageName == CourierSignals.WOLT_PACKAGE && WoltOfferUiText.isMerchantUiNoise(value))
-    }
+    val safeStoredRestaurant = restaurant
+        ?.let { value ->
+            if (packageName == CourierSignals.WOLT_PACKAGE) WoltMerchantLabelRepair.repair(value) else value
+        }
+        ?.takeUnless { value ->
+            (packageName == CourierSignals.BOLT_PACKAGE && BoltOfferTextSanitizer.isOrphanBranchFragment(value)) ||
+                (packageName == CourierSignals.WOLT_PACKAGE && WoltOfferUiText.isMerchantUiNoise(value))
+        }
 
     return copy(
         // The persisted amount/currency is capture-time truth. Structural reparsing must never
