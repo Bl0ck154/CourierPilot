@@ -49,4 +49,47 @@ class PhotonAddressGeocoderTest {
         assertEquals(54.6732561, point!!.latitude, 0.0000001)
         assertEquals(25.2589167, point.longitude, 0.0000001)
     }
+
+    @Test
+    fun poiWithPostcodePrefersMatchingNameInsteadOfNearbyPostcodeFeature() {
+        val body = """
+            {
+              "features": [
+                {
+                  "properties":{
+                    "countrycode":"LT",
+                    "city":"Vilnius",
+                    "name":"Unrelated place",
+                    "housenumber":"03114",
+                    "postcode":"03114"
+                  },
+                  "geometry":{"coordinates":[25.2800,54.6800]}
+                },
+                {
+                  "properties":{
+                    "countrycode":"LT",
+                    "city":"Vilnius",
+                    "name":"Mona Lisa",
+                    "street":"A. Vivulskio g.",
+                    "housenumber":"34",
+                    "postcode":"03114"
+                  },
+                  "geometry":{"coordinates":[25.2580,54.6740]}
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val point = PhotonAddressGeocoder.parsePoint(
+            body = body,
+            countryCode = "LT",
+            requestedAddress = "Šunų kirpimo studija “Mona Lisa”, Vilnius, 03114",
+            cityName = "Vilnius",
+            reference = RoutePoint(54.6800, 25.2800),
+        )
+
+        assertNotNull(point)
+        assertEquals(54.6740, point!!.latitude, 0.0000001)
+        assertEquals(25.2580, point.longitude, 0.0000001)
+    }
 }
