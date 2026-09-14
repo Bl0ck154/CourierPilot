@@ -132,7 +132,8 @@ internal object LithuanianAddressRegistryGeocoder {
 
 /** Persistent address-to-coordinate cache shared by Android, Photon and LT registry resolutions. */
 internal object RouteGeocodePersistentCache {
-    private const val PREFS = "courierpilot_geocode_cache_v1"
+    // v2 intentionally drops coordinates learned before POI-name-aware Photon ranking.
+    private const val PREFS = "courierpilot_geocode_cache_v2"
     private const val TTL_MS = 30L * 24L * 60L * 60L * 1000L
     private const val MAX_ENTRIES = 600
 
