@@ -50,9 +50,14 @@ internal object PhotonAddressGeocoder {
         parsePoint(body, countryCode, requestedAddress = null, cityName = null, reference = null)
 
     /**
-     * Photon can return several same-country places for a street query. Never select a candidate
-     * merely because it appears first: prefer the requested city, postcode, house number and street.
-     * The optional phone reference is used only as a local tie-breaker and is never sent to Photon.
+     * Photon can return several same-country places for a street or POI query. Never select a
+     * candidate merely because it appears first: prefer the requested city, postcode, house number,
+     * street and POI name. The optional phone reference is used only as a local tie-breaker and is
+     * never sent to Photon.
+     *
+     * Wolt sometimes renders a destination as a POI plus city/postcode only, for example
+     * `Mona Lisa ..., Vilnius, 03114`. The postcode must not be mistaken for a house number and an
+     * exact Photon POI-name match must outrank a random nearby feature from the same postcode.
      */
     internal fun parsePoint(
         body: String,
@@ -64,9 +69,12 @@ internal object PhotonAddressGeocoder {
         val features = runCatching { JSONObject(body).optJSONArray("features") }.getOrNull() ?: return null
         val normalizedCountry = countryCode?.trim()?.uppercase()
         val request = requestedAddress.orEmpty()
-        val requestedHouse = HOUSE_NUMBER.find(request)?.groupValues?.getOrNull(1)?.let(::normalizeToken).orEmpty()
+        val requestHead = request.substringBefore(',').trim()
+        val requestedHouse = HOUSE_NUMBER.find(requestHead)?.groupValues?.getOrNull(1)?.let(::normalizeToken).orEmpty()
         val requestedPostcode = POSTCODE.find(request)?.value.orEmpty()
-        val requestedStreet = normalizeStreet(request)
+        val requestedStreet = normalizeStreet(requestHead)
+        val requestedPlaceName = normalizeToken(requestHead)
+        val requestedNameWords = normalizeWords(requestHead)
         val requestedCity = normalizeToken(cityName.orEmpty())
 
         data class Candidate(val point: RoutePoint, val score: Double, val countryMatches: Boolean)
@@ -99,8 +107,19 @@ internal object PhotonAddressGeocoder {
                 (requestedStreet.contains(featureStreet) || featureStreet.contains(requestedStreet))
             ) score += 240.0
 
+            val featurePlaceName = normalizeToken(properties?.optString("name").orEmpty())
+            val featureNameWords = normalizeWords(properties?.optString("name").orEmpty())
+            val compactNameMatch = requestedPlaceName.length >= 4 && featurePlaceName.length >= 4 &&
+                (requestedPlaceName.contains(featurePlaceName) || featurePlaceName.contains(requestedPlaceName))
+            if (compactNameMatch) {
+                score += 620.0
+            } else {
+                val commonNameWords = requestedNameWords.intersect(featureNameWords).size
+                if (commonNameWords >= 2) score += 360.0 + commonNameWords * 40.0
+            }
+
             if (reference != null) {
-                // Distance is a tie-breaker only. Address semantics above dominate selection.
+                // Distance is a tie-breaker only. Address/POI semantics above dominate selection.
                 score -= kotlin.math.sqrt(distanceSquared(reference, point)) / 10_000.0
             }
             candidates += Candidate(point, score, countryMatches)
@@ -112,6 +131,12 @@ internal object PhotonAddressGeocoder {
     private fun normalizeToken(value: String): String = value
         .lowercase()
         .replace(Regex("""[^\p{L}\p{N}]+"""), "")
+
+    private fun normalizeWords(value: String): Set<String> = value
+        .lowercase()
+        .split(Regex("""[^\p{L}\p{N}]+"""))
+        .filter { it.length >= 2 }
+        .toSet()
 
     private fun normalizeStreet(value: String): String = value
         .lowercase()
