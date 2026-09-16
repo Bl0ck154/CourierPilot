@@ -324,6 +324,22 @@ internal object CourierSignals {
         return hasStrongNotificationStylePhrase && hasDecision && (hasPrice || hasRouteEvidence)
     }
 
+    /**
+     * Strong fallback used only after Bolt's spatial OCR has isolated the lower offer card around a
+     * real money anchor. The visual crop is already the primary proof; requiring decision-button text
+     * as well made a single missed "Decline" OCR line drop an otherwise complete Bolt offer.
+     *
+     * Keep this deliberately stricter than "price exists": two independent card fields must survive
+     * alongside the money amount so account totals or arbitrary lower sheets cannot arm capture.
+     */
+    fun looksLikeBoltSpatialOfferCard(parsed: ParsedOffer): Boolean {
+        if (parsed.priceCents == null || parsed.money == null) return false
+        val hasMerchant = parsed.restaurant != null || parsed.merchantNames.isNotEmpty()
+        val hasPickup = parsed.pickupAddresses.isNotEmpty()
+        val hasEta = parsed.estimatedMinutesMin != null || parsed.estimatedMinutesMax != null
+        return listOf(hasMerchant, hasPickup, hasEta).count { it } >= 2
+    }
+
     fun likelyAddresses(text: String): List<String> = text.lineSequence()
         .map { it.trim().replace(Regex("\\s+"), " ") }
         .filter { it.length in 4..180 }

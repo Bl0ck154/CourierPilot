@@ -36,6 +36,12 @@ internal class OfferAccessibilitySurface(
         return null
     }
 
+    fun isActive(window: CourierWindow): Boolean {
+        val active = service.rootInActiveWindow ?: return false
+        return active.windowId == window.windowId &&
+            active.packageName?.toString() == window.packageName
+    }
+
     fun findCourierWindow(packageName: String): CourierWindow? {
         val active = service.rootInActiveWindow
         if (active?.packageName?.toString() == packageName) {
