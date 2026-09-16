@@ -12,7 +12,8 @@ internal object OfferDedupeIdentity {
     private const val NORMAL_FUZZY_WINDOW_MS = 3L * 60L * 1000L
     private const val SPARSE_FRAME_WINDOW_MS = 45L * 1000L
     private const val BOLT_CARD_BURST_WINDOW_MS = 120L * 1000L
-    private const val BOLT_VISUAL_BURST_WINDOW_MS = 120L * 1000L
+    private const val BOLT_SPARSE_CARD_BURST_WINDOW_MS = 30L * 1000L
+    private const val BOLT_VISUAL_BURST_WINDOW_MS = 30L * 1000L
     private const val WOLT_PRICE_DRIFT_WINDOW_MS = 20L * 1000L
     private const val BOLT_ETA_TOLERANCE_MINUTES = 2
     private const val DISTANCE_TOLERANCE_METERS = 150
@@ -81,35 +82,56 @@ internal object OfferDedupeIdentity {
             return false
         }
 
-        // Visual similarity is a final same-price Bolt guard. For different prices it is deliberately
-        // not enough by itself: two consecutive offers can have visually similar bottom cards. Cross-
-        // price dedupe must pass the stronger route identity below.
-        if (
-            pricesMatch &&
-            first.packageName == CourierSignals.BOLT_PACKAGE &&
-            elapsed <= BOLT_VISUAL_BURST_WINDOW_MS &&
-            first.visualFingerprint.isNotBlank() &&
-            second.visualFingerprint.isNotBlank() &&
-            OfferVisualFingerprint.isNear(first.visualFingerprint, second.visualFingerprint)
-        ) {
-            return true
-        }
+        if (first.packageName == CourierSignals.BOLT_PACKAGE && pricesMatch) {
+            // Bolt often exposes only one pickup address and no platform distance. A long fuzzy
+            // window therefore risks collapsing a genuinely new request from the same busy venue.
+            // Keep visual/sparse recovery short and reserve the longer 120 s enrichment window for
+            // cards where at least two canonical route addresses prove that the route is the same.
+            if (
+                elapsed <= BOLT_VISUAL_BURST_WINDOW_MS &&
+                first.visualFingerprint.isNotBlank() &&
+                second.visualFingerprint.isNotBlank() &&
+                OfferVisualFingerprint.isNear(first.visualFingerprint, second.visualFingerprint)
+            ) {
+                return true
+            }
 
-        if (first.packageName == CourierSignals.BOLT_PACKAGE && elapsed <= BOLT_CARD_BURST_WINDOW_MS) {
             val firstRouteAddresses = addressTokens(first.pickupAddresses + first.dropoffAddresses)
             val secondRouteAddresses = addressTokens(second.pickupAddresses + second.dropoffAddresses)
             val countCompatible = first.deliveryCount == null || second.deliveryCount == null ||
                 first.deliveryCount == second.deliveryCount
             val exactAddressSet = firstRouteAddresses.isNotEmpty() && firstRouteAddresses == secondRouteAddresses
 
-            if (pricesMatch && exactAddressSet && countCompatible) return true
-            if (pricesMatch &&
-                overlaps(firstRouteAddresses, secondRouteAddresses) &&
+            if (
+                elapsed <= BOLT_CARD_BURST_WINDOW_MS &&
+                exactAddressSet &&
+                firstRouteAddresses.size >= 2 &&
+                countCompatible
+            ) {
+                return true
+            }
+            if (
+                elapsed <= BOLT_SPARSE_CARD_BURST_WINDOW_MS &&
+                exactAddressSet &&
                 countCompatible &&
                 boltEtaCompatible(first, second)
             ) {
                 return true
             }
+
+            // Preserve the very short notification/price-only -> rich-screen recovery. This is the
+            // one sparse case where one side legitimately has no route identity yet.
+            val firstHasRouteIdentity = first.distanceMeters != null || merchantTokens(first.asParsedOffer()).isNotEmpty() ||
+                firstRouteAddresses.isNotEmpty()
+            val secondHasRouteIdentity = second.distanceMeters != null || merchantTokens(second.asParsedOffer()).isNotEmpty() ||
+                secondRouteAddresses.isNotEmpty()
+            if (elapsed <= SPARSE_FRAME_WINDOW_MS && (!firstHasRouteIdentity || !secondHasRouteIdentity)) {
+                return true
+            }
+
+            // Bolt must not fall through to the generic three-minute venue/address fuzzy dedupe.
+            // With a sparse card that evidence is shared by many legitimate consecutive requests.
+            return false
         }
 
         if (!pricesMatch) {

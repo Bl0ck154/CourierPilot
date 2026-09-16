@@ -48,7 +48,7 @@ class BoltHistoryRegressionTest {
     }
 
     @Test
-    fun sameBoltCard_isDedupedAcrossLongerOcrEnrichmentBurst() {
+    fun sameSparseBoltCard_isDedupedInsideShortOcrBurst() {
         val first = boltRecord(
             capturedAt = 1_000_000L,
             priceCents = 336,
@@ -58,13 +58,43 @@ class BoltHistoryRegressionTest {
             etaMax = 10,
         )
         val second = boltRecord(
-            capturedAt = 1_070_000L,
+            capturedAt = 1_020_000L,
             priceCents = 336,
             merchant = "str.)",
             address = "Sodų g. 15, Vilnius",
             etaMin = 11,
             etaMax = 13,
         )
+
+        assertTrue(OfferDedupeIdentity.isSameLiveOffer(first, second))
+    }
+
+    @Test
+    fun sameSparseBoltEvidence_afterOneMinuteCanBeANewOffer() {
+        val first = boltRecord(
+            capturedAt = 2_000_000L,
+            priceCents = 336,
+            merchant = "Real Shop",
+            address = "Sodų g. 15, Vilnius",
+            etaMin = 8,
+            etaMax = 10,
+        )
+        val nextRequest = first.copy(capturedAt = first.capturedAt + 70_000L)
+
+        assertFalse(OfferDedupeIdentity.isSameLiveOffer(first, nextRequest))
+    }
+
+    @Test
+    fun completeBoltRoute_canStillDeduplicateLongerOcrEnrichment() {
+        val first = boltRecord(
+            capturedAt = 3_000_000L,
+            priceCents = 336,
+            merchant = "Real Shop",
+            address = "Sodų g. 15, Vilnius",
+            etaMin = 8,
+            etaMax = 10,
+        ).copy(dropoffAddresses = listOf("Žirmūnų g. 54, Vilnius"))
+        val second = first.copy(capturedAt = first.capturedAt + 70_000L, restaurant = "str.)", merchantNames = listOf("str.)"))
 
         assertTrue(OfferDedupeIdentity.isSameLiveOffer(first, second))
     }
