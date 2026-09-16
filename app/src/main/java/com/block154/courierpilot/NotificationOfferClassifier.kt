@@ -151,20 +151,33 @@ internal object NotificationOfferClassifier {
             learnedProfileMatched &&
                 text.isBlank() &&
                 structure.contentIntentKind == PendingIntentKind.ACTIVITY
+        val learnedSingleDecisionOffer =
+            structure.packageName == CourierSignals.BOLT_PACKAGE &&
+                learnedProfileMatched &&
+                anyDecisionAction &&
+                structure.actionIntentCount >= 1 &&
+                structure.sameCreatorActionIntentCount >= 1 &&
+                structure.contentIntentKind == PendingIntentKind.ACTIVITY
         if (learnedTextlessOffer) {
             reasons += "learned_textless_offer"
+        } else if (learnedSingleDecisionOffer) {
+            // OEM/Android notification rendering can occasionally expose only one of Bolt's
+            // decision actions. A single generic Accept/Decline remains insufficient by itself;
+            // this recovery is allowed only for an already screen-confirmed structural profile and
+            // an app-owned decision PendingIntent.
+            reasons += "learned_single_decision_offer"
         } else if (learnedProfileMatched && !strongOfferText && !decisionPair) {
             reasons += "learned_profile_diagnostic_only"
         }
 
-        // Fail closed for everything except explicit order evidence or the narrow textless learned
-        // profile above. Also reject group summaries, ongoing status notifications, and notifications
-        // whose tap intent is not owned by the courier app.
+        // Fail closed for everything except explicit order evidence or the narrow learned-profile
+        // recoveries above. Also reject group summaries, ongoing status notifications, and
+        // notifications whose tap intent is not owned by the courier app.
         val strictOffer =
             !structure.ongoing &&
                 !structure.groupSummary &&
                 structure.contentCreatorMatchesApp &&
-                (strongOfferText || decisionPair || learnedTextlessOffer)
+                (strongOfferText || decisionPair || learnedTextlessOffer || learnedSingleDecisionOffer)
 
         if (!strictOffer) {
             if (hasTwoAppActions && !strongOfferText && !decisionPair) reasons += "structure_diagnostic_only"

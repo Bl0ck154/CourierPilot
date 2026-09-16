@@ -138,6 +138,29 @@ class CourierSignalsTest {
     }
 
     @Test
+    fun spatialBoltCardSurvivesMissingDeclineOcrLine() {
+        val text = """
+            Show map
+            TIO BIGOTES Ispaniškos Empanados (Rūdninkų str.)
+            Rūdninkų 8-105, Vilnius
+            ~9 min
+            ~7 min
+            16 min, 4,45 €
+        """.trimIndent()
+        val parsed = OfferParser.parse(text)
+
+        assertFalse(CourierSignals.looksLikeOfferScreen(text, parsed))
+        assertTrue(CourierSignals.looksLikeBoltSpatialOfferCard(parsed))
+    }
+
+    @Test
+    fun spatialBoltFallbackRejectsPriceOnlyBottomSheet() {
+        val parsed = OfferParser.parse("16 min, 4,45 €")
+
+        assertFalse(CourierSignals.looksLikeBoltSpatialOfferCard(parsed))
+    }
+
+    @Test
     fun accessCodeMemoryDropsApartmentNumberAndKeepsDoorCode() {
         val text = """
             Customer

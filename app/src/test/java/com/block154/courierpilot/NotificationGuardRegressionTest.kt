@@ -125,6 +125,24 @@ class NotificationGuardRegressionTest {
     }
 
     @Test
+    fun learnedBoltProfileCanRecoverOneAppOwnedDecisionAction() {
+        val learned = learnedBoltProfile()
+        val decision = NotificationOfferClassifier.classify(
+            structure = learned.copy(
+                actionCount = 1,
+                actionIntentCount = 1,
+                sameCreatorActionIntentCount = 1,
+            ),
+            text = "Courier update",
+            actionLabels = listOf("Accept"),
+            learnedProfiles = listOf(learned),
+        )
+
+        assertTrue(decision.isOffer)
+        assertTrue(decision.reasons.contains("learned_single_decision_offer"))
+    }
+
+    @Test
     fun ongoingNotificationNeverAutoOpensEvenWithNewOrderText() {
         val decision = NotificationOfferClassifier.classify(
             structure = learnedBoltProfile().copy(flags = Notification.FLAG_ONGOING_EVENT),

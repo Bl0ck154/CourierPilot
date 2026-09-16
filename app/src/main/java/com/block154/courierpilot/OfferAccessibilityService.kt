@@ -207,9 +207,25 @@ class OfferAccessibilityService : AccessibilityService() {
 
                 if (armFromVisibleOffer(visible.packageName, uiText, parsed)) {
                     pending = OfferState.pending(this)
-                } else if (shouldRunDiscoveryOcr(visible.packageName)) {
-                    discoverCurrentFrame(visible, uiText)
-                    return
+                } else {
+                    val nowElapsed = SystemClock.elapsedRealtime()
+                    val discoveryPlan = OfferDiscoveryOcrPolicy.plan(
+                        packageName = visible.packageName,
+                        activeCourierWindow = accessibilitySurface.isActive(visible),
+                        nowElapsed = nowElapsed,
+                        lastCourierEventPackage = lastCourierEventPackage,
+                        lastCourierEventAtElapsed = lastCourierEventAtElapsed,
+                        lastDiscoveryOcrAtElapsed = lastDiscoveryOcrAtElapsed,
+                    )
+                    if (discoveryPlan.runNow) {
+                        lastDiscoveryOcrAtElapsed = nowElapsed
+                        discoverCurrentFrame(visible, uiText)
+                        return
+                    }
+                    discoveryPlan.retryAfterMs?.let { retryAfterMs ->
+                        scheduleAttempt(retryAfterMs.coerceAtLeast(50L))
+                        return
+                    }
                 }
             }
             if (pending == null) {
@@ -881,7 +897,12 @@ class OfferAccessibilityService : AccessibilityService() {
         DeliveryMemory.observeScreen(this, packageName, text, source)
     }
 
-    private fun armFromVisibleOffer(packageName: String, text: String, parsed: ParsedOffer): Boolean {
+    private fun armFromVisibleOffer(
+        packageName: String,
+        text: String,
+        parsed: ParsedOffer,
+        boltSpatialOcrConfirmed: Boolean = false,
+    ): Boolean {
         // A real Wolt navigation page is stronger evidence than stale offer semantics left behind
         // by Compose. Never re-arm an old offer over Stats/History/Settings-like screens.
         if (CourierSignals.looksLikeWoltNonOfferNavigationScreen(packageName, text)) return false
@@ -889,7 +910,11 @@ class OfferAccessibilityService : AccessibilityService() {
             LiveAdvisorHub.onActiveTaskSurface(this, packageName)
             return false
         }
-        if (!CourierSignals.looksLikeOfferScreen(text, parsed)) return false
+        val looksLikeOffer = CourierSignals.looksLikeOfferScreen(text, parsed) ||
+            (boltSpatialOcrConfirmed &&
+                packageName == CourierSignals.BOLT_PACKAGE &&
+                CourierSignals.looksLikeBoltSpatialOfferCard(parsed))
+        if (!looksLikeOffer) return false
         if (LiveAdvisorHub.isUserDismissedOffer(packageName, parsed)) {
             CaptureEventLog.append(
                 this,
@@ -950,14 +975,11 @@ class OfferAccessibilityService : AccessibilityService() {
         return armed
     }
 
-    private fun shouldRunDiscoveryOcr(packageName: String): Boolean {
-        val now = SystemClock.elapsedRealtime()
-        if (packageName != lastCourierEventPackage) return false
-        if (now - lastCourierEventAtElapsed > DISCOVERY_EVENT_WINDOW_MS) return false
-        if (now - lastDiscoveryOcrAtElapsed < DISCOVERY_OCR_MIN_INTERVAL_MS) return false
-        lastDiscoveryOcrAtElapsed = now
-        return true
-    }
+    private fun passiveDiscoveryRetryDelay(window: CourierWindow): Long =
+        OfferDiscoveryOcrPolicy.passiveRescanDelayMs(
+            packageName = window.packageName,
+            activeCourierWindow = accessibilitySurface.isActive(window),
+        ) ?: IDLE_WATCHDOG_MS
 
     private fun discoverCurrentFrame(window: CourierWindow, accessibilityText: String) {
         val platform = OfferState.platformLabel(window.packageName)
@@ -994,7 +1016,12 @@ class OfferAccessibilityService : AccessibilityService() {
                             observeCourierScreen(window.packageName, combined, ScreenTextSource.OCR_AUGMENTED)
                             if (combined.isNotBlank()) OfferState.saveUiText(this@OfferAccessibilityService, combined)
                             val parsed = OfferParser.parse(combined)
-                            val armed = armFromVisibleOffer(window.packageName, combined, parsed)
+                            val armed = armFromVisibleOffer(
+                                packageName = window.packageName,
+                                text = combined,
+                                parsed = parsed,
+                                boltSpatialOcrConfirmed = window.packageName == CourierSignals.BOLT_PACKAGE && combined.isNotBlank(),
+                            )
                             val pending = if (armed) OfferState.pending(this@OfferAccessibilityService) else null
                             val trustedPrice = parsed.priceCents != null && (
                                 window.packageName != CourierSignals.WOLT_PACKAGE ||
@@ -1014,13 +1041,16 @@ class OfferAccessibilityService : AccessibilityService() {
                                     )
                                 }
                                 bitmap.recycle()
-                                scheduleAttempt(if (pending != null) 250L else IDLE_WATCHDOG_MS)
+                                scheduleAttempt(
+                                    if (pending != null) 250L
+                                    else passiveDiscoveryRetryDelay(window),
+                                )
                             }
                         }
                         .addOnFailureListener {
                             if (finishCapture(captureToken)) {
                                 bitmap.recycle()
-                                scheduleAttempt(IDLE_WATCHDOG_MS)
+                                scheduleAttempt(passiveDiscoveryRetryDelay(window))
                             } else if (!bitmap.isRecycled) {
                                 bitmap.recycle()
                             }
@@ -1677,8 +1707,6 @@ class OfferAccessibilityService : AccessibilityService() {
         private const val WOLT_IDLE_HOME_END_MIN_CHECKS = 2
         private const val WOLT_ROUTE_OCR_RECOVERY_DELAY_MS = 220L
         private const val WOLT_ROUTE_OCR_RECOVERY_RETRIES = 2
-        private const val DISCOVERY_EVENT_WINDOW_MS = 1_500L
-        private const val DISCOVERY_OCR_MIN_INTERVAL_MS = 1_800L
         private const val DISCOVERY_SCREENSHOT_RETRY_MS = 1_200L
         private const val OPTIONAL_SCREENSHOT_FAILURE_LIMIT = 3
         private const val CAPTURE_OPERATION_TIMEOUT_MS = 8_000L
