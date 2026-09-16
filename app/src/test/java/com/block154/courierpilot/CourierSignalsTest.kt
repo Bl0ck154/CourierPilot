@@ -161,6 +161,13 @@ class CourierSignalsTest {
     }
 
     @Test
+    fun spatialBoltOfferDoesNotUseLongLivedScreenTombstone() {
+        assertFalse(ScreenOfferDedupePolicy.shouldApply(CourierSignals.BOLT_PACKAGE, boltSpatialOcrConfirmed = true))
+        assertTrue(ScreenOfferDedupePolicy.shouldApply(CourierSignals.BOLT_PACKAGE, boltSpatialOcrConfirmed = false))
+        assertTrue(ScreenOfferDedupePolicy.shouldApply(CourierSignals.WOLT_PACKAGE, boltSpatialOcrConfirmed = true))
+    }
+
+    @Test
     fun accessCodeMemoryDropsApartmentNumberAndKeepsDoorCode() {
         val text = """
             Customer

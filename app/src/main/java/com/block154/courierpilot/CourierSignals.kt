@@ -488,6 +488,17 @@ internal object CourierSignals {
         .toList()
 }
 
+/**
+ * The generic screen tombstone is useful for Accessibility-driven offers, but Bolt's spatial OCR
+ * is a stronger live-card proof. Applying a ten-minute semantic tombstone after that proof can hide
+ * a distinct request that reuses the same restaurant/pickup/price tuple, so Bolt spatial captures
+ * fall through to the active-advisor and persistence duplicate guards instead.
+ */
+internal object ScreenOfferDedupePolicy {
+    fun shouldApply(packageName: String, boltSpatialOcrConfirmed: Boolean): Boolean =
+        packageName != CourierSignals.BOLT_PACKAGE || !boltSpatialOcrConfirmed
+}
+
 /** Prevents a still-visible offer screen from being archived again after a successful capture. */
 internal object ScreenOfferDeduper {
     private const val PREFS = "courierpilot_screen_offer_dedupe"

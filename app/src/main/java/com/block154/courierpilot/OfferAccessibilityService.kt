@@ -957,7 +957,13 @@ class OfferAccessibilityService : AccessibilityService() {
         }
 
         val fingerprint = CourierSignals.offerFingerprint(packageName, text)
-        if (!ScreenOfferDeduper.shouldArm(this, packageName, fingerprint)) return false
+        // Bolt's spatial OCR already proved that a live bottom-card is visible. Do not let the
+        // long-lived screen tombstone suppress a genuinely new Bolt request that happens to reuse
+        // the same merchant/pickup/price fingerprint. The active-advisor guard above handles the
+        // normal same-screen case, while persistence still has semantic + visual duplicate guards.
+        if (ScreenOfferDedupePolicy.shouldApply(packageName, boltSpatialOcrConfirmed) &&
+            !ScreenOfferDeduper.shouldArm(this, packageName, fingerprint)
+        ) return false
 
         val result = OfferState.arm(this, packageName, resolveAppName(packageName), "screen:$fingerprint")
         val armed = result == ArmResult.ARMED || result == ArmResult.REPLACED_SAME_PLATFORM
