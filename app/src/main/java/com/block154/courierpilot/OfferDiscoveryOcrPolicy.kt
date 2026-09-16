@@ -16,7 +16,7 @@ internal data class OfferDiscoveryOcrPlan(
 internal object OfferDiscoveryOcrPolicy {
     const val EVENT_WINDOW_MS = 1_500L
     const val OCR_MIN_INTERVAL_MS = 1_800L
-    const val BOLT_ACTIVE_RESCAN_MS = 1_800L
+    const val BOLT_ACTIVE_RESCAN_MS = 3_000L
 
     fun plan(
         packageName: String,
