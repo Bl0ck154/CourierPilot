@@ -23,12 +23,20 @@ internal class LiveOfferVerdictCache(
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Verdict>): Boolean =
             size > capacity
     }
-    private val ids = mutableMapOf<Long, String>()
+    private val identityOwners = mutableMapOf<String, Long>()
 
     @Synchronized
     fun find(platform: String, parsed: ParsedOffer, offerId: Long? = null): Verdict? {
         purgeExpired()
-        val key = offerId?.let(ids::get) ?: identityKey(platform, parsed)
+        val identity = identityKey(platform, parsed)
+        val key = if (offerId != null) {
+            val direct = "id:$offerId"
+            if (direct in byIdentity) direct
+            else if (identityOwners[identity] == null) "preview:$identity"
+            else direct
+        } else {
+            identityOwners[identity]?.let { "id:$it" } ?: "preview:$identity"
+        }
         return byIdentity[key]
     }
 
@@ -36,13 +44,18 @@ internal class LiveOfferVerdictCache(
     @Synchronized
     fun remember(platform: String, parsed: ParsedOffer, offerId: Long? = null, verdict: Verdict): Verdict {
         purgeExpired()
-        val key = offerId?.let(ids::get) ?: identityKey(platform, parsed)
-        val existing = byIdentity[key]
-        if (existing != null) return existing
-        byIdentity[key] = verdict
-        if (offerId != null) ids[offerId] = key
-        ids.entries.removeAll { it.value !in byIdentity }
-        return verdict
+        val identity = identityKey(platform, parsed)
+        val key = offerId?.let { "id:$it" } ?: "preview:$identity"
+        byIdentity[key]?.let { return it }
+        val chosen = if (offerId != null && identityOwners[identity] == null) {
+            byIdentity.remove("preview:$identity") ?: verdict
+        } else {
+            verdict
+        }
+        byIdentity[key] = chosen
+        if (offerId != null) identityOwners[identity] = offerId
+        pruneAliases()
+        return chosen
     }
 
     @Synchronized
@@ -56,7 +69,11 @@ internal class LiveOfferVerdictCache(
         byIdentity.entries.removeAll { (_, value) ->
             now - value.createdAtMs !in 0 until ttlMs
         }
-        ids.entries.removeAll { it.value !in byIdentity }
+        pruneAliases()
+    }
+
+    private fun pruneAliases() {
+        identityOwners.entries.removeAll { "id:${it.value}" !in byIdentity }
     }
 
     companion object {
