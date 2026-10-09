@@ -53,6 +53,18 @@ class LiveOfferVerdictCacheTest {
     }
 
     @Test
+    fun twoPersistedOfferIdsWithSameSparseBoltFingerprintStayIndependent() {
+        val cache = LiveOfferVerdictCache(nowMs = { 100L })
+        val first = verdict(100L)
+        val next = first.copy(rateLine = "€0.30/km 👎", band = OfferDecisionBand.BAD)
+        cache.remember("Bolt", bolt, 1001L, first)
+        assertNull(cache.find("Bolt", bolt, 1002L))
+        assertEquals(next, cache.remember("Bolt", bolt, 1002L, next))
+        assertEquals(first, cache.find("Bolt", bolt, 1001L))
+        assertEquals(next, cache.find("Bolt", bolt, 1002L))
+    }
+
+    @Test
     fun ttlExpiresAfterThirtyMinutes() {
         var time = 100L
         val cache = LiveOfferVerdictCache(nowMs = { time })
