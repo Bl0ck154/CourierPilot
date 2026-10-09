@@ -382,17 +382,27 @@ class OfferDatabase private constructor(context: Context) :
         offset = 0,
     )
 
-    fun searchPage(query: String, limit: Int = 50, offset: Int = 0): List<OfferRecord> {
-        val spec = searchSpec(query)
+    fun searchPage(query: String, limit: Int = 50, offset: Int = 0, platform: String? = null): List<OfferRecord> {
+        val spec = withPlatform(searchSpec(query), platform)
         return queryOffers(spec.first, spec.second, limit.coerceIn(1, 200), offset)
     }
 
-    fun offerCount(query: String = ""): Int {
-        val spec = searchSpec(query)
+    fun offerCount(query: String = "", platform: String? = null): Int {
+        val spec = withPlatform(searchSpec(query), platform)
         val where = spec.first?.let { " WHERE $it" }.orEmpty()
         readableDatabase.rawQuery("SELECT COUNT(*) FROM offers$where", spec.second).use { cursor ->
             return if (cursor.moveToFirst()) cursor.getInt(0) else 0
         }
+    }
+
+    private fun withPlatform(
+        spec: Pair<String?, Array<String>?>,
+        platform: String?,
+    ): Pair<String?, Array<String>?> {
+        val value = platform?.trim()?.takeIf(String::isNotBlank) ?: return spec
+        val clause = "LOWER(platform) = ?"
+        val selection = spec.first?.let { "($it) AND $clause" } ?: clause
+        return selection to ((spec.second ?: emptyArray()) + value.lowercase())
     }
 
     private fun searchSpec(query: String): Pair<String?, Array<String>?> {
