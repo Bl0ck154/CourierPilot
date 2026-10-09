@@ -474,21 +474,14 @@ internal class StableLiveOfferAdvisor(
                 cachedPedestrianRoute = null
                 cachedCyclewayRoute = null
                 verdictTimedOut = true // late sparse OCR must not restart the spinner
-                val metres = outcome.etaEstimateMeters?.takeIf { it > 0 }
-                val line = metres?.let { distance ->
-                    currentParsed?.money?.let { LiveAdvisorPresentation.provisionalRateLine(it, distance) }
-                }
-                cachedDecisionLine = line ?: "?/km"
+                val terminal = BoltTerminalPresentationPolicy.present(
+                    currentParsed?.money, outcome.etaEstimateMeters, outcome.etaToCustomerMinutes,
+                )
+                cachedDecisionLine = terminal.rateLine
                 cachedDecisionBand = OfferDecisionBand.UNKNOWN
                 cachedDecisionLoading = false
                 applyDecisionPresentation()
-                if (metres != null) {
-                    val minutes = outcome.etaToCustomerMinutes
-                    setRouteContent("🕒 " + (minutes?.let { "~$it min " } ?: "") +
-                        "≈ ${"%.1f".format(Locale.US, metres / 1000.0)} km")
-                } else {
-                    setRouteContent("⚠️ Route unavailable")
-                }
+                setRouteContent(terminal.routeLine)
             }
             CaptureEventLog.append(
                 service,
