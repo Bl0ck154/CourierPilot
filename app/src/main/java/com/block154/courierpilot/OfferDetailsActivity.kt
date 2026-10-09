@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.block154.courierpilot.ui.BrandBlue
 import com.block154.courierpilot.ui.CourierPilotTheme
+import com.block154.courierpilot.ui.LocalCourierPalette
 import com.block154.courierpilot.ui.Success
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -171,7 +172,7 @@ private fun OfferDetailsScreen(
 ) {
     val context = LocalContext.current
     var rawExpanded by remember { mutableStateOf(false) }
-    val merchant = OfferPresentation.merchantTitle(offer)
+    val merchant = OfferPresentation.merchantSummary(offer)
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -197,7 +198,7 @@ private fun OfferDetailsScreen(
                         Column(Modifier.weight(1f)) {
                             Surface(
                                 shape = RoundedCornerShape(50),
-                                color = if (offer.platform == "Wolt") Color(0xFFEAF5FF) else Color(0xFFEAF8EE),
+                                color = if (offer.platform == "Wolt") LocalCourierPalette.current.woltBg else LocalCourierPalette.current.boltBg,
                             ) {
                                 Text(
                                     offer.platform,

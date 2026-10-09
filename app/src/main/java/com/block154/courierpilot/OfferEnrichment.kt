@@ -162,27 +162,36 @@ private fun OfferRecord.withCurrentParsedStructureUnchecked(): OfferRecord {
 private fun ParsedOffer.withRecoveredTrailingWoltMerchants(rawText: String): ParsedOffer {
     if (pickupAddresses.isEmpty() || rawText.isBlank()) return this
 
-    val recovered = rawText.lineSequence()
+    val recoveredByPickup = rawText.lineSequence()
         .map { it.replace(Regex("\\s+"), " ").trim() }
         .filter { it.isNotBlank() }
         .mapNotNull { line ->
             val match = trailingWoltBranchMerchantRegex.matchEntire(line) ?: return@mapNotNull null
             if (WoltOfferUiText.isMerchantUiNoise(line)) return@mapNotNull null
             val branch = match.groupValues.getOrNull(1).orEmpty()
-            val pickup = pickupAddresses.firstOrNull { address -> branchMatchesPickup(branch, address) }
+            val pickupIndex = pickupAddresses.indexOfFirst { address -> branchMatchesPickup(branch, address) }
+                .takeIf { it >= 0 }
                 ?: return@mapNotNull null
-            pickup to line
+            pickupIndex to line
         }
-        .distinctBy { (pickup, merchant) -> identityToken(pickup) + "|" + identityToken(merchant) }
-        .sortedBy { (pickup, _) -> pickupAddresses.indexOfFirst { address -> addressesSemanticallyEqual(address, pickup) } }
-        .map { it.second }
-        .distinctBy(::identityToken)
-        .toList()
+        .distinctBy { (pickupIndex, _) -> pickupIndex }
+        .toMap()
 
-    if (recovered.isEmpty()) return this
+    if (recoveredByPickup.isEmpty()) return this
+    val parsedKeys = merchantNames.map(::identityToken).toSet()
+    if (recoveredByPickup.values.all { identityToken(it) in parsedKeys }) return this
+
+    // Multi-venue Wolt cards mix branch-suffixed titles (`Ponas Mėsainis (Kauno g.)`) with plain
+    // ones (`The Urban Garden`). Recovery can only anchor the former, so it completes the parsed
+    // list in pickup order instead of replacing it; otherwise every plain-named venue disappears.
+    val recoveredKeys = recoveredByPickup.values.map(::identityToken).toSet()
+    val leftovers = merchantNames.filterNot { identityToken(it) in recoveredKeys }.toMutableList()
+    val merged = pickupAddresses.indices.mapNotNull { index ->
+        recoveredByPickup[index] ?: leftovers.removeFirstOrNull()
+    }.distinctBy(::identityToken)
     return copy(
-        restaurant = recovered.joinToString(", "),
-        merchantNames = recovered,
+        restaurant = merged.joinToString(", "),
+        merchantNames = merged,
     )
 }
 
