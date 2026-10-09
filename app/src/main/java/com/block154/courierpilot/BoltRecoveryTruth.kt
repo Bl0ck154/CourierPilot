@@ -65,6 +65,7 @@ internal object BoltRecoveryTruth {
         var inFlight: Boolean = false,
     )
     private val offers = LinkedHashMap<Long, Pending>()
+    private val acceptedBeforeRecovery = LinkedHashMap<Long, String>()
     private val worker = Executors.newSingleThreadExecutor()
 
     @Synchronized
@@ -76,14 +77,16 @@ internal object BoltRecoveryTruth {
             outcome.waypoints.filter { it.kind != WaypointKind.DROPOFF }.map { it.point },
         )
         while (offers.size > 24) offers.remove(offers.keys.first())
+        val deferredAddress = acceptedBeforeRecovery.remove(outcome.offerId)
         val app = context.applicationContext
         worker.execute {
             pruneArchives(app)
             archiveMatchingSample(app, outcome.offerId)
         }
+        // A rapid accept screen may be parsed before map recovery has finished.
+        deferredAddress?.let { processAcceptedAddress(app, outcome.offerId, it) }
     }
 
-    /** Archive only the research sample captured alongside this offer; never a later offer's. */
     /** Mirror existing screenshot retention (0 means keep indefinitely). */
     private fun pruneArchives(context: Context) {
         val days = CaptureStorageSettings.retentionDays(context)
@@ -95,6 +98,7 @@ internal object BoltRecoveryTruth {
             ?.forEach(File::deleteRecursively)
     }
 
+    /** Never attach the last sample unless it was captured alongside this exact offer. */
     private fun archiveMatchingSample(context: Context, offerId: Long) {
         val recordedAt = runCatching { OfferDatabase.get(context).findById(offerId)?.capturedAt }
             .getOrNull() ?: return
@@ -122,13 +126,25 @@ internal object BoltRecoveryTruth {
         val address = DeliveryScreenDetailsExtractor.addressValueForPlatform(
             CourierSignals.BOLT_PACKAGE, text,
         )?.takeIf(String::isNotBlank) ?: return
+        processAcceptedAddress(context.applicationContext, offerId, address)
+    }
+
+    private fun processAcceptedAddress(app: Context, offerId: Long, address: String) {
         val addressKey = address.trim().lowercase()
         val pending = synchronized(this) {
-            offers[offerId]?.takeUnless { it.inFlight || addressKey in it.seenAddresses }?.also {
-                it.inFlight = true
+            val current = offers[offerId]
+            if (current == null) {
+                acceptedBeforeRecovery[offerId] = address
+                while (acceptedBeforeRecovery.size > 24) {
+                    acceptedBeforeRecovery.remove(acceptedBeforeRecovery.keys.first())
+                }
+                null
+            } else {
+                current.takeUnless { it.inFlight || addressKey in it.seenAddresses }?.also {
+                    it.inFlight = true
+                }
             }
         } ?: return
-        val app = context.applicationContext
         worker.execute {
             val actual = PhotonAddressGeocoder.resolve(address, null)
             if (actual == null) {
