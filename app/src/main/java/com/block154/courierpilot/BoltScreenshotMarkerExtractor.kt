@@ -316,10 +316,10 @@ internal object BoltScreenshotMarkerExtractor {
             bitmap.getPixels(row, 0, bitmap.width, 0, y, bitmap.width, 1)
             val left = maxOf(0, xCenter - diameter / 3)
             val right = minOf(bitmap.width - 1, xCenter + diameter / 3)
-            val matches = (left..right).count { x ->
+            val matchCount = (left..right).count { x ->
                 !excluded(x, y, excludeRects) && matches(row[x], palette)
             }
-            if (matches in 1..maxOf(2, diameter / 3)) {
+            if (matchCount in 1..maxOf(2, diameter / 3)) {
                 if (++run >= needed) return true
             } else {
                 run = 0
