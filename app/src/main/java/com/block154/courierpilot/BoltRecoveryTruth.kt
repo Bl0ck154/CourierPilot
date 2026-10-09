@@ -42,6 +42,9 @@ internal object BoltRecoveryTruthMath {
     fun nearest(recovered: List<RoutePoint>, truth: RoutePoint): RoutePoint? =
         recovered.minByOrNull { errorMeters(it, truth) }
 
+    fun nearestUnusedIndex(recovered: List<RoutePoint>, truth: RoutePoint, used: Set<Int>): Int? =
+        recovered.indices.filterNot { it in used }.minByOrNull { errorMeters(recovered[it], truth) }
+
     fun stats(errors: List<Double>): BoltRecoveryTruthStats {
         val values = errors.filter { it.isFinite() && it >= 0.0 }.sorted()
         if (values.isEmpty()) return BoltRecoveryTruthStats(0, null, null)
@@ -57,9 +60,11 @@ internal object BoltRecoveryTruth {
         val diagnostic: BoltRecoveryDiagnostics,
         val etaMinutes: Int?,
         val realRoutePrefix: List<RoutePoint>,
+        val seenAddresses: MutableSet<String> = mutableSetOf(),
+        val usedMarkers: MutableSet<Int> = mutableSetOf(),
+        var inFlight: Boolean = false,
     )
     private val offers = LinkedHashMap<Long, Pending>()
-    private val processing = mutableSetOf<Long>()
     private val worker = Executors.newSingleThreadExecutor()
 
     @Synchronized
@@ -114,18 +119,29 @@ internal object BoltRecoveryTruth {
         val address = DeliveryScreenDetailsExtractor.addressValueForPlatform(
             CourierSignals.BOLT_PACKAGE, text,
         )?.takeIf(String::isNotBlank) ?: return
+        val addressKey = address.trim().lowercase()
         val pending = synchronized(this) {
-            if (offerId in processing) null else offers[offerId]?.also { processing.add(offerId) }
+            offers[offerId]?.takeUnless { it.inFlight || addressKey in it.seenAddresses }?.also {
+                it.inFlight = true
+            }
         } ?: return
         val app = context.applicationContext
         worker.execute {
             val actual = PhotonAddressGeocoder.resolve(address, null)
             if (actual == null) {
-                synchronized(this) { processing.remove(offerId) }
+                synchronized(this) { pending.inFlight = false }
                 return@execute
             }
-            val recovered = BoltRecoveryTruthMath.nearest(pending.diagnostic.projectedDropoffs, actual)
-                ?: return@execute
+            val index = synchronized(this) {
+                BoltRecoveryTruthMath.nearestUnusedIndex(
+                    pending.diagnostic.projectedDropoffs, actual, pending.usedMarkers,
+                )
+            }
+            if (index == null) {
+                synchronized(this) { pending.inFlight = false }
+                return@execute
+            }
+            val recovered = pending.diagnostic.projectedDropoffs[index]
             val d = pending.diagnostic
             // Only an actual customer address may train ETA. A route to a projected pin cannot.
             // Multi-drop permutations are still ambiguous, so do not train those until mapped.
@@ -161,7 +177,14 @@ internal object BoltRecoveryTruth {
                     BoltEtaDistanceModel(app).observe(pending.etaMinutes, trueRouteMeters)
                 }
             }
-            synchronized(this) { offers.remove(offerId); processing.remove(offerId) }
+            synchronized(this) {
+                pending.seenAddresses.add(addressKey)
+                pending.usedMarkers.add(index)
+                pending.inFlight = false
+                if (pending.usedMarkers.size >= pending.diagnostic.projectedDropoffs.size) {
+                    offers.remove(offerId)
+                }
+            }
         }
     }
 }
