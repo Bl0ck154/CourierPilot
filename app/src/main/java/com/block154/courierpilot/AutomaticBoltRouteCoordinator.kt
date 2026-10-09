@@ -247,10 +247,24 @@ internal object BoltMultiStopMapRecovery {
         val candidates = mutableListOf<Candidate>()
         var bestRejectedFit: NorthUpAnchorFit? = null
         var rejectedRotation = false
+        var rejectedRotationDegrees: Double? = null
         var rejectedWeak = false
         val minimumBaselinePx = maxOf(MIN_STRONG_BASELINE_PX, (bitmapWidthPx ?: 0) * STRONG_WIDTH_FRACTION)
         knownPickups.forEachIndexed { knownIndex, known ->
             markers.pickups.forEachIndexed { markerIndex, marker ->
+                // Measure pairing rotation before solving the constrained scale. At ~90 degrees
+                // the least-squares dot product approaches zero and may fail positivity first.
+                val rawAngle = runCatching {
+                    LocalMapTransform.fromTwoAnchors(
+                        KnownMapAnchor(currentMarker.screenCenter, current),
+                        KnownMapAnchor(marker.screenCenter, known.point),
+                    ).clockwiseRotationDegrees
+                }.getOrNull()
+                if (rawAngle != null && abs(rawAngle) > MAX_ABS_ROTATION_DEGREES) {
+                    rejectedRotation = true
+                    rejectedRotationDegrees = rawAngle
+                    return@forEachIndexed
+                }
                 val fit = runCatching {
                     LocalMapTransform.fitNorthUp(
                         KnownMapAnchor(currentMarker.screenCenter, current),
@@ -308,7 +322,7 @@ internal object BoltMultiStopMapRecovery {
             }
             return BoltRecoveryResult(null, emptyDiagnostics.copy(
                 scaleMetersPerPixel = bestRejectedFit?.transform?.metersPerPixel,
-                measuredRotationDegrees = bestRejectedFit?.measuredRotationDegrees,
+                measuredRotationDegrees = bestRejectedFit?.measuredRotationDegrees ?: rejectedRotationDegrees,
                 anchorBaselinePx = bestRejectedFit?.baselinePx,
                 anchorBaselineMeters = bestRejectedFit?.baselineMeters,
                 weakAnchorReason = why,
