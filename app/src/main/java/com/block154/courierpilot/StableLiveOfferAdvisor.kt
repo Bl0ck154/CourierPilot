@@ -141,10 +141,22 @@ internal class StableLiveOfferAdvisor(
             currentNotificationKey = notificationKey
             currentNotificationRemoved = notificationIsAlreadyRemoved(packageName, notificationKey)
         }
-        currentParsed = parsed
-        restoreLockedVerdict(platform, parsed)
+        // A later sparse OCR frame must not erase priced evidence from a hidden session.
+        val stableParsed = if (confirmedSameSurface && userHidden) {
+            val previous = currentParsed
+            parsed.copy(
+                priceCents = parsed.priceCents ?: previous?.priceCents,
+                money = parsed.money ?: previous?.money,
+                distanceMeters = parsed.distanceMeters ?: previous?.distanceMeters,
+                pickupAddresses = parsed.pickupAddresses.ifEmpty { previous?.pickupAddresses.orEmpty() },
+                dropoffAddresses = parsed.dropoffAddresses.ifEmpty { previous?.dropoffAddresses.orEmpty() },
+                deliveryCount = parsed.deliveryCount ?: previous?.deliveryCount,
+            )
+        } else parsed
+        currentParsed = stableParsed
+        restoreLockedVerdict(platform, stableParsed)
         differentOfferConfirmation.reset()
-        if (!finalPresentationLocked) renderProgressiveDecision(parsed)
+        if (!finalPresentationLocked) renderProgressiveDecision(stableParsed)
         if (cachedRouteLine.isBlank()) renderRouteLoadingState()
         if (LiveOfferSessionVisibilityPolicy.shouldAttach(userHidden, temporarilyHidden)) {
             ensureView()
@@ -186,6 +198,7 @@ internal class StableLiveOfferAdvisor(
                 currentParsed?.let { !LiveOfferResumePolicy.definitelyDifferent(it, parsed) } == true
             )) {
             val previousPrice = currentParsed?.priceCents
+            val wasPreview = previewMode
             currentPlatform = platform
             currentParsed = parsed
             if (offerId != null) currentOfferId = offerId
@@ -204,14 +217,16 @@ internal class StableLiveOfferAdvisor(
                 ensureView()
                 applyCachedPresentation()
             }
-            CaptureEventLog.append(
-                service,
-                stage = "overlay_promote",
-                platform = platform,
-                message = "Pending advisor promoted in place after price capture",
-                dedupeWindowMs = 1_000L,
-            )
-            if (LiveAdvisorSettings.voiceEnabled(service)) speech.announceOffer(platform, parsed)
+            if (wasPreview) {
+                CaptureEventLog.append(
+                    service,
+                    stage = "overlay_promote",
+                    platform = platform,
+                    message = "Pending advisor promoted in place after price capture",
+                    dedupeWindowMs = 1_000L,
+                )
+                if (!userHidden && LiveAdvisorSettings.voiceEnabled(service)) speech.announceOffer(platform, parsed)
+            }
             startVisibilityWatchdog()
             return
         }
