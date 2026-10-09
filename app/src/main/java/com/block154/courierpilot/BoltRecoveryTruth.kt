@@ -1,6 +1,7 @@
 package com.block154.courierpilot
 
 import android.content.Context
+import java.io.File
 import java.util.LinkedHashMap
 import java.util.concurrent.Executors
 import kotlin.math.asin
@@ -58,12 +59,37 @@ internal object BoltRecoveryTruth {
     private val worker = Executors.newSingleThreadExecutor()
 
     @Synchronized
-    fun remember(outcome: AutomaticBoltRouteOutcome, etaMinutes: Int?) {
+    fun remember(context: Context, outcome: AutomaticBoltRouteOutcome, etaMinutes: Int?) {
         val diagnostics = outcome.diagnostics ?: return
         if (diagnostics.projectedDropoffs.isEmpty()) return
         offers[outcome.offerId] = Pending(diagnostics, etaMinutes)
         while (offers.size > 24) offers.remove(offers.keys.first())
+        archiveMatchingSample(context, outcome.offerId)
     }
+
+    /** Archive only the research sample captured alongside this offer; never a later offer's. */
+    private fun archiveMatchingSample(context: Context, offerId: Long) {
+        val recordedAt = runCatching { OfferDatabase.get(context).findById(offerId)?.capturedAt }
+            .getOrNull() ?: return
+        val sample = BoltAccessibilityDiagnostics.summary(context) ?: return
+        if (sample.capturedAt < recordedAt || sample.capturedAt - recordedAt > 15_000L) return
+        val target = File(context.filesDir, "diagnostics/bolt-truth/$offerId").apply { mkdirs() }
+        BoltAccessibilityDiagnostics.sampleFiles(context).forEach { source ->
+            if (source.length() in 1..8_000_000) runCatching {
+                source.copyTo(File(target, source.name), overwrite = true)
+            }
+        }
+    }
+
+    fun matchingResearchFiles(context: Context, offerIds: List<Long>): List<File> =
+        offerIds.distinct().take(20).flatMap { offerId ->
+            val dir = File(context.filesDir, "diagnostics/bolt-truth/$offerId")
+            listOf(
+                BoltAccessibilityDiagnostics.TREE_FILE,
+                BoltAccessibilityDiagnostics.METADATA_FILE,
+                BoltAccessibilityDiagnostics.SCREENSHOT_FILE,
+            ).map { File(dir, it) }.filter(File::isFile)
+        }
 
     fun observeAcceptedScreen(context: Context, offerId: Long, text: String) {
         val address = DeliveryScreenDetailsExtractor.addressValueForPlatform(
@@ -95,7 +121,11 @@ internal object BoltRecoveryTruth {
                 etaMinutes = pending.etaMinutes,
                 routeMeters = null, // Never train the ETA prior from an unverified route to a guessed pin.
             )
-            runCatching { RouteResearchDatabase.get(app).recordBoltRecoveryTruth(row) }
+            runCatching {
+                val database = RouteResearchDatabase.get(app)
+                database.recordBoltRecoveryTruth(row)
+                database.pruneBoltRecoveryTruth(CaptureStorageSettings.retentionDays(app))
+            }
             synchronized(this) { offers.remove(offerId); processing.remove(offerId) }
         }
     }
