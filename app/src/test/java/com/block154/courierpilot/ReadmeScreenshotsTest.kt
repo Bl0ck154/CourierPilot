@@ -60,6 +60,10 @@ class ReadmeScreenshotsTest {
                 save(root, "history-$suffix")
                 tapNav(root, 2)
                 save(root, "addresses-$suffix")
+                tapNav(root, 3)
+                save(root, "stats-$suffix")
+                tapNav(root, 4)
+                save(root, "pay-$suffix")
                 tapNav(root, 0)
                 tap(root, root.width - 38 * root.resources.displayMetrics.density, 47 * root.resources.displayMetrics.density)
                 save(root, "settings-$suffix")
@@ -113,6 +117,30 @@ class ReadmeScreenshotsTest {
                     captureKey = "readme-${sample.minutesAgo}",
                 )
             )
+        }
+
+        // Earlier days for the Stats bars: a deterministic spread of invented offers.
+        (1..13).forEach { daysAgo ->
+            val dayOffers = (daysAgo * 7) % 6 + 2
+            repeat(dayOffers) { n ->
+                val cents = 250 + ((daysAgo * 37 + n * 53) % 600)
+                val meters = 2_000 + ((daysAgo * 211 + n * 389) % 6_000)
+                offers.insert(
+                    OfferRecord(
+                        capturedAt = now - daysAgo * 86_400_000L - n * 1_800_000L,
+                        platform = if ((daysAgo + n) % 3 == 0) "Bolt" else "Wolt",
+                        packageName = if ((daysAgo + n) % 3 == 0) CourierSignals.BOLT_PACKAGE else CourierSignals.WOLT_PACKAGE,
+                        priceCents = cents,
+                        distanceMeters = meters,
+                        restaurant = "Demo Kitchen",
+                        screenshotUri = "",
+                        screenshotFilename = "",
+                        rawText = "",
+                        merchantNames = listOf("Demo Kitchen"),
+                        captureKey = "readme-$daysAgo-$n",
+                    )
+                )
+            }
         }
 
         val meta = CourierMetaDatabase.get(context)

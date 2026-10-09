@@ -1,5 +1,7 @@
 package com.block154.courierpilot
 
+import com.block154.courierpilot.ui.GroupedBlock
+
 import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -53,7 +55,7 @@ internal fun AppUpdateSettingsSummaryCard() {
     val busy = initialLoading || status.phase == AppUpdatePhase.CHECKING || status.phase == AppUpdatePhase.DOWNLOADING
     val ready = status.phase == AppUpdatePhase.READY
 
-    Card(shape = RoundedCornerShape(20.dp)) {
+    GroupedBlock {
         Column(
             Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
