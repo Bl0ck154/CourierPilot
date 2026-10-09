@@ -520,6 +520,11 @@ internal object BoltMultiStopMapRecovery {
  * If the screenshot cannot recover the full expected drop-off set, routing fails closed to known
  * pickups rather than inventing a partial customer route.
  */
+internal object BoltPickupResolutionOrder {
+    /** Parallel callbacks must never reorder pickup stops in the paid route. */
+    fun <T : Any> successfulInRequestOrder(completed: List<T?>): List<T> = completed.filterNotNull()
+}
+
 internal object AutomaticBoltRouteCoordinator {
     private val executor = Executors.newSingleThreadExecutor()
     private val inFlight = Collections.synchronizedSet(mutableSetOf<Long>())
@@ -717,10 +722,12 @@ internal object AutomaticBoltRouteCoordinator {
             val snapshot = synchronized(lock) {
                 if (delivered) null else {
                     delivered = true
-                    resolved.filterNotNull() to durations.toList()
+                    BoltPickupResolutionOrder.successfulInRequestOrder(resolved.toList()) to durations.toList()
                 }
             }
-            snapshot?.let { (waypoints, times) -> callback(waypoints, times) }
+            snapshot?.let { (waypoints, times) ->
+                handler.post { callback(waypoints, times) }
+            }
         }
         val timeout = Runnable { emit() }
         handler.postDelayed(timeout, PICKUP_BATCH_TIMEOUT_MS)
