@@ -595,7 +595,7 @@ internal object LiveAdvisorHub {
                 // Score/render the candidate against the existing reference corpus before inserting
                 // this offer into local/server market history.
                 if (isCurrentOffer(current)) {
-                    BoltRecoveryTruth.remember(outcome, outcome.etaToCustomerMinutes)
+                    BoltRecoveryTruth.remember(service, outcome, outcome.etaToCustomerMinutes)
                     advisor?.updateBoltRoute(outcome)
                 }
                 if (comparison != null && outcome.scope == BoltRouteScope.FULL) {
