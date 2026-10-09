@@ -367,28 +367,17 @@ internal class LiveAdvisorOverlayView(
         }
     }
 
-    fun setCaptureSuppressed(suppressed: Boolean) {
-        // A screenshot callback can arrive in the middle of the courier's finger movement.
-        if (gestureTouchActive || isSwipeExitRunning) return
-        if (!LiveAdvisorCapturePolicy.shouldSuppressOverlay(platformProvider())) {
-            captureSuppressed = false
-            root?.apply {
-                animate().cancel()
-                translationY = 0f
-                alpha = 1f
-            }
-            return
-        }
+    fun setCaptureSuppressed(suppressed: Boolean, cleanFrame: Boolean = false) {
+        // Normal display captures are masked in pixels; alpha must remain stable, even for Bolt.
+        // An explicit one-frame clean recovery is the sole exception.
+        // A clean frame must always be revealed, even if a gesture began during the frame.
+        if (suppressed && !OfferOverlayCapturePolicy.shouldChangeAlpha(
+                cleanFrame, gestureTouchActive, isSwipeExitRunning
+            )) return
+        if (!suppressed && !cleanFrame) return
         if (captureSuppressed == suppressed) return
         captureSuppressed = suppressed
-        val view = root ?: return
-        view.animate().cancel()
-        if (suppressed) {
-            view.alpha = 0f
-        } else {
-            view.translationY = 0f
-            view.alpha = 1f
-        }
+        root?.alpha = if (suppressed) 0f else 1f
     }
 
     private fun installGestureSurface(view: View) {

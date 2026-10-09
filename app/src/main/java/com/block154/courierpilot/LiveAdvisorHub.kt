@@ -405,9 +405,12 @@ internal object LiveAdvisorHub {
         if (!sameExactNotification) userDismissedOffer = null
     }
 
-    fun setCaptureSuppressed(context: Context, suppressed: Boolean) {
+    /** Main-thread snapshot of the attached card, for display screenshot pixel masking. */
+    fun overlayScreenRect(): android.graphics.Rect? = advisor?.overlayScreenRect()
+
+    fun setCaptureSuppressed(context: Context, suppressed: Boolean, cleanFrame: Boolean = false) {
         attach(context)
-        advisor?.setCaptureSuppressed(suppressed)
+        advisor?.setCaptureSuppressed(suppressed, cleanFrame)
     }
 
     fun onActiveTaskSurface(context: Context, packageName: String) {
