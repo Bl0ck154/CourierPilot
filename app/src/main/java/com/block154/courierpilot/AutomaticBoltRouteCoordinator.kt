@@ -30,6 +30,9 @@ internal data class AutomaticBoltRouteOutcome(
     val scope: BoltRouteScope?,
     val note: String? = null,
     val failureReason: String? = null,
+    val etaEstimateMeters: Int? = null,
+    val recoveryConfidence: Double? = null,
+    val diagnostics: BoltRecoveryDiagnostics? = null,
 )
 
 internal data class BoltSemanticMarkers(
@@ -530,6 +533,12 @@ internal object AutomaticBoltRouteCoordinator {
             return
         }
 
+        val mapBottomScreenPx = captureMapBottomPx(context, parsed)
+        val eta = etaFor(app, offerId, parsed)
+        val etaModel = BoltEtaDistanceModel(app)
+        val toCustomerEtaMeters = eta.toCustomerMin?.let(etaModel::estimateMeters)
+        val etaEstimateMeters = (eta.toCustomerMin ?: eta.totalMin ?: parsed.estimatedMinutesMin)
+            ?.let(etaModel::estimateMeters)
         val initialSemanticMarkers = captureMapMarkers(context, parsed)?.takeIf(::hasUsefulMarkers)
 
         // Bolt keeps location hot while a courier is online. Reuse a very fresh accurate fix instead
@@ -558,7 +567,7 @@ internal object AutomaticBoltRouteCoordinator {
                     ?: captureMapMarkers(context, parsed)?.takeIf(::hasUsefulMarkers)
 
                 executor.execute {
-                    val screenshotMarkers = if (lateSemanticMarkers == null) loadScreenshotMarkers(app, offerId) else null
+                    val screenshotMarkers = if (lateSemanticMarkers == null) loadScreenshotMarkers(app, offerId, mapBottomScreenPx) else null
                     val mapMarkers = lateSemanticMarkers ?: screenshotMarkers
                     val markerSource = when {
                         lateSemanticMarkers != null -> "Accessibility semantics"
@@ -566,12 +575,15 @@ internal object AutomaticBoltRouteCoordinator {
                         else -> null
                     }
 
-                    val recovery = BoltMultiStopMapRecovery.recover(
+                    val recovered = BoltMultiStopMapRecovery.recoverDetailed(
                         markers = mapMarkers,
                         current = fix.point,
                         knownPickups = knownPickups,
                         expectedDropoffs = parsed.deliveryCount,
+                        bitmapWidthPx = app.resources.displayMetrics.widthPixels,
+                        etaToCustomerMeters = toCustomerEtaMeters,
                     )
+                    val recovery = recovered.recovery
                     val expectedDropoffs = parsed.deliveryCount?.takeIf { it > 0 }
                     val fullDropoffSet = recovery?.orderedDropoffs?.takeIf { recovered ->
                         recovered.isNotEmpty() && (expectedDropoffs == null || recovered.size >= expectedDropoffs)
@@ -636,6 +648,9 @@ internal object AutomaticBoltRouteCoordinator {
                                 scope = scope.takeIf { anySuccess },
                                 note = note.takeIf { anySuccess },
                                 failureReason = reason,
+                                etaEstimateMeters = etaEstimateMeters,
+                                recoveryConfidence = recovered.confidence,
+                                diagnostics = recovered.diagnostics,
                             )
                         )
                     }
@@ -693,7 +708,11 @@ internal object AutomaticBoltRouteCoordinator {
         return runCatching { BoltMarkerSemanticExtractor.extract(root, parsed) }.getOrNull()
     }
 
-    private fun loadScreenshotMarkers(context: Context, offerId: Long): BoltSemanticMarkers? {
+    private fun loadScreenshotMarkers(
+        context: Context,
+        offerId: Long,
+        mapBottomScreenPx: Int?,
+    ): BoltSemanticMarkers? {
         val screenshotUri = runCatching { OfferDatabase.get(context).findById(offerId)?.screenshotUri }
             .getOrNull()
             ?.takeIf { it.isNotBlank() }
@@ -702,10 +721,59 @@ internal object AutomaticBoltRouteCoordinator {
             context.contentResolver.openInputStream(Uri.parse(screenshotUri))?.use(BitmapFactory::decodeStream)
         }.getOrNull() ?: return null
         return try {
-            BoltScreenshotMarkerExtractor.extract(bitmap)
+            val screenHeight = context.resources.displayMetrics.heightPixels.coerceAtLeast(1)
+            val bottom = mapBottomScreenPx?.let { (it.toLong() * bitmap.height / screenHeight).toInt() }
+            BoltScreenshotMarkerExtractor.extract(bitmap, mapBottomPx = bottom)
         } finally {
             bitmap.recycle()
         }
+    }
+
+    /**
+     * Accessibility's offer-sheet header gives a much more reliable map boundary than 72%
+     * of the bitmap. Retain the legacy crop when the sheet is not semantically exposed.
+     */
+    private fun captureMapBottomPx(context: Context, parsed: ParsedOffer): Int? {
+        val service = context as? AccessibilityService ?: return null
+        val root = service.rootInActiveWindow ?: return null
+        if (root.packageName?.toString() != CourierSignals.BOLT_PACKAGE) return null
+        val height = context.resources.displayMetrics.heightPixels
+        val pickups = parsed.pickupAddresses.filter { it.length >= 5 }
+            .map { it.lowercase(Locale.ROOT).take(24) }
+        var best: Int? = null
+        var inspected = 0
+        fun visit(node: AccessibilityNodeInfo, depth: Int) {
+            if (depth > 24 || inspected++ > 400) return
+            val label = listOfNotNull(
+                runCatching { node.text?.toString() }.getOrNull(),
+                runCatching { node.contentDescription?.toString() }.getOrNull(),
+            ).joinToString(" ").lowercase(Locale.ROOT)
+            val isSheet = pickups.any { label.contains(it) } ||
+                (label.contains("min") && (label.contains("€") || label.contains("accept") || label.contains("priim")))
+            if (isSheet) {
+                val rect = Rect()
+                runCatching { node.getBoundsInScreen(rect) }
+                if (!rect.isEmpty && rect.top in (height * 0.30).toInt()..height) {
+                    best = minOf(best ?: rect.top, rect.top)
+                }
+            }
+            for (index in 0 until node.childCount) {
+                if (inspected > 400) break
+                val child = runCatching { node.getChild(index) }.getOrNull() ?: continue
+                visit(child, depth + 1)
+            }
+        }
+        visit(root, 0)
+        return best
+    }
+
+    private fun etaFor(context: Context, offerId: Long, parsed: ParsedOffer): BoltEtas {
+        // Text comes from the local offer record only; never emit its address rows into telemetry.
+        val rawText = runCatching {
+            OfferDatabase.get(context).findById(offerId)?.rawText.orEmpty()
+        }.getOrDefault("")
+        val etas = BoltEtaExtractor.extract(rawText)
+        return etas.copy(totalMin = etas.totalMin ?: parsed.estimatedMinutesMin)
     }
 
     private fun hasUsefulMarkers(markers: BoltSemanticMarkers): Boolean =
@@ -764,7 +832,15 @@ internal object AutomaticBoltRouteCoordinator {
         }
         inFlight.remove(offerId)
         context.mainExecutor.execute {
-            onComplete(AutomaticBoltRouteOutcome(offerId, waypoints, null, null, failureReason = reason))
+            val eta = etaFor(context, offerId, parsed)
+            val etaMinutes = eta.toCustomerMin ?: eta.totalMin
+            onComplete(
+                AutomaticBoltRouteOutcome(
+                    offerId, waypoints, null, null, failureReason = reason,
+                    etaEstimateMeters = etaMinutes?.let { BoltEtaDistanceModel(context).estimateMeters(it) },
+                    diagnostics = BoltRecoveryDiagnostics(weakAnchorReason = reason),
+                )
+            )
         }
     }
 
