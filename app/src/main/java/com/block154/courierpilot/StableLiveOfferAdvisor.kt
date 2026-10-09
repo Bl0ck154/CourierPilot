@@ -106,9 +106,9 @@ internal class StableLiveOfferAdvisor(
             incomingNotificationKey = notificationKey,
             compatibleOfferEvidence = compatibleOfferEvidence,
         )
-        val confirmedSameSurface = sameSurface && currentParsed?.let {
-            !LiveOfferResumePolicy.definitelyDifferent(it, parsed)
-        } == true
+        val confirmedSameSurface = LiveOfferSessionVisibilityPolicy.sameSession(
+            sameSurface, currentParsed, parsed,
+        )
         val createdSurface = !confirmedSameSurface
         if (!confirmedSameSurface) {
             generation += 1
@@ -196,9 +196,7 @@ internal class StableLiveOfferAdvisor(
             incomingNotificationKey = notificationKey,
             compatibleOfferEvidence = compatibleOfferEvidence,
         )
-        if (samePreviewSurface && (compatibleOfferEvidence ||
-                currentParsed?.let { !LiveOfferResumePolicy.definitelyDifferent(it, parsed) } == true
-            )) {
+        if (LiveOfferSessionVisibilityPolicy.sameSession(samePreviewSurface, currentParsed, parsed)) {
             val previousPrice = currentParsed?.priceCents
             val wasPreview = previewMode
             currentPlatform = platform
