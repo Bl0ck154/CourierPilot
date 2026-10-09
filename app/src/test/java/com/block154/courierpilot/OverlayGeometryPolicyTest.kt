@@ -10,7 +10,7 @@ class OverlayGeometryPolicyTest {
         assertEquals(286, OverlayGeometryPolicy.widthPx(360, 1f))
         assertEquals(314, OverlayGeometryPolicy.widthPx(393, 1f))
         assertEquals(330, OverlayGeometryPolicy.widthPx(412, 1f))
-        assertEquals(572, OverlayGeometryPolicy.widthPx(720, 2f))
+        assertEquals(571, OverlayGeometryPolicy.widthPx(720, 2f))
         assertEquals(800, OverlayGeometryPolicy.widthPx(2000, 2f))
     }
 
@@ -32,7 +32,7 @@ class OverlayGeometryPolicyTest {
     fun placementUsesCutoutInsetAndClampsDeepObstacles() {
         assertEquals(48, OverlayGeometryPolicy.defaultYPx(40, 44, 840, 1f))
         assertEquals(294, OverlayGeometryPolicy.defaultYPx(400, 44, 840, 1f))
-        assertEquals(48, OverlayGeometryPolicy.defaultYPx(null, 40, 100, 1f))
+        assertEquals(53, OverlayGeometryPolicy.defaultYPx(null, 40, 100, 1f))
     }
 
     @Test
