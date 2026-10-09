@@ -50,6 +50,7 @@ internal class StableLiveOfferAdvisor(
     private var cachedDecisionBand = OfferDecisionBand.UNKNOWN
     private var cachedDecisionLoading = true
     private var finalPresentationLocked = false
+    private var currentLockedVerdict: LiveOfferVerdictCache.Verdict? = null
     private var cachedRouteLine = ""
     private var cachedRouteVisible = true
     private var cachedPedestrianRoute: RouteResult? = null
@@ -125,6 +126,7 @@ internal class StableLiveOfferAdvisor(
             cachedDecisionBand = OfferDecisionBand.UNKNOWN
             cachedDecisionLoading = true
             finalPresentationLocked = false
+            currentLockedVerdict = null
             decisionThresholds.beginOffer(platform, generation)
             cachedRouteLine = ""
             cachedRouteVisible = true
@@ -201,7 +203,12 @@ internal class StableLiveOfferAdvisor(
             val wasPreview = previewMode
             currentPlatform = platform
             currentParsed = parsed
-            if (offerId != null) currentOfferId = offerId
+            if (offerId != null) {
+                currentOfferId = offerId
+                // Preview scoring can finish before persistence enriches the parsed identity.
+                // Bind that identical verdict to the durable ID without evaluating again.
+                currentLockedVerdict?.let { verdictCache.remember(platform, parsed, offerId, it) }
+            }
             if (notificationKey.isNotBlank()) {
                 currentNotificationKey = notificationKey
                 currentNotificationRemoved = notificationIsAlreadyRemoved(packageName, notificationKey)
@@ -249,6 +256,7 @@ internal class StableLiveOfferAdvisor(
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
         cachedDecisionLoading = true
         finalPresentationLocked = false
+        currentLockedVerdict = null
         decisionThresholds.beginOffer(platform, generation)
         cachedRouteLine = ""
         cachedRouteVisible = true
@@ -739,6 +747,7 @@ internal class StableLiveOfferAdvisor(
     }
 
     private fun applyLockedVerdict(verdict: LiveOfferVerdictCache.Verdict) {
+        currentLockedVerdict = verdict
         cachedDecisionLine = verdict.rateLine
         cachedDecisionBand = verdict.band
         cachedDecisionLoading = false
@@ -873,6 +882,7 @@ internal class StableLiveOfferAdvisor(
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
         cachedDecisionLoading = true
         finalPresentationLocked = false
+        currentLockedVerdict = null
         decisionThresholds.clearOffer()
         cachedRouteLine = ""
         cachedRouteVisible = true
