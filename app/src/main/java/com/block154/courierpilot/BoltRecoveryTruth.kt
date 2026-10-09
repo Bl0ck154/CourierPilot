@@ -76,8 +76,11 @@ internal object BoltRecoveryTruth {
             outcome.waypoints.filter { it.kind != WaypointKind.DROPOFF }.map { it.point },
         )
         while (offers.size > 24) offers.remove(offers.keys.first())
-        pruneArchives(context)
-        archiveMatchingSample(context, outcome.offerId)
+        val app = context.applicationContext
+        worker.execute {
+            pruneArchives(app)
+            archiveMatchingSample(app, outcome.offerId)
+        }
     }
 
     /** Archive only the research sample captured alongside this offer; never a later offer's. */
