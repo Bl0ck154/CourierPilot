@@ -3,7 +3,12 @@ package com.block154.courierpilot
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [35])
 class PhotonReverseAddressTest {
     @Test fun parsesStreetAndHouseFromPhotonFixture() {
         val json = """{"features":[{"properties":{"street":"Pilies gatvė","housenumber":"12","city":"Vilnius","country":"Lithuania"},"geometry":{"coordinates":[25.28,54.68]}}]}"""
