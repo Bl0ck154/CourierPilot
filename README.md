@@ -133,6 +133,7 @@ Release signing is documented in [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNIN
 
 ## Releases and roadmap
 
+- **0.17.2** — Wolt stacked routes read straight from the card (no drop-off click), clean proof screenshots. See [`docs/RELEASE_0.17.2.md`](docs/RELEASE_0.17.2.md).
 - **0.17.1** — instant History with incremental loading, redesigned Stats, Pay and Settings. See [`docs/RELEASE_0.17.1.md`](docs/RELEASE_0.17.1.md).
 - **0.17.0** — new grouped-list design for Home/History/Addresses, System/Light/Dark theme, every venue of stacked Wolt orders. See [`docs/RELEASE_0.17.0.md`](docs/RELEASE_0.17.0.md).
 - **0.16.2** — full Bolt venue names, new Wolt "Deliver to" screen, door-code reminders. See [`docs/RELEASE_0.16.2.md`](docs/RELEASE_0.16.2.md).

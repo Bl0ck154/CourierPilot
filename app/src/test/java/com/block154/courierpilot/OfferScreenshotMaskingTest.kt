@@ -68,6 +68,28 @@ class OfferScreenshotMaskingTest {
     }
 
     @Test
+    fun maskBlendsSurroundingMapInsteadOfAFlatPaleBlock() {
+        val bitmap = Bitmap.createBitmap(400, 400, Bitmap.Config.ARGB_8888)
+        val park = Color.rgb(120, 170, 110)
+        val street = Color.rgb(236, 238, 240)
+        Canvas(bitmap).apply {
+            drawRect(Rect(0, 0, 200, 400), Paint().apply { color = park })
+            drawRect(Rect(200, 0, 400, 400), Paint().apply { color = street })
+            drawRect(Rect(60, 150, 340, 250), Paint().apply { color = Color.rgb(20, 30, 50) })
+        }
+        assertTrue(OfferOverlayBitmapMask.paint(bitmap, Rect(60, 150, 340, 250)))
+        val nearPark = bitmap.getPixel(64, 200)
+        val nearStreet = bitmap.getPixel(336, 200)
+        // Each side continues its own neighbourhood; no dark card pixels survive.
+        assertTrue(Color.green(nearPark) < 200 && Color.red(nearPark) < 160)
+        assertTrue(Color.red(nearStreet) > 200)
+        for (x in 60 until 340 step 11) for (y in 150 until 250 step 9) {
+            assertTrue(Color.red(bitmap.getPixel(x, y)) > 100)
+        }
+        bitmap.recycle()
+    }
+
+    @Test
     fun overlayOnlyIntersectsMapWhenRectOverlapsMapCrop() {
         assertTrue(OfferOverlayBitmapMask.intersectsMap(Rect(20, 110, 200, 220), 800))
         assertFalse(OfferOverlayBitmapMask.intersectsMap(Rect(20, 650, 200, 720), 800))
