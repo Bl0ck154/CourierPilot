@@ -71,4 +71,61 @@ class LiveOfferUserDismissalPolicyTest {
 
         assertFalse(LiveOfferUserDismissalPolicy.isSameOffer(dismissed, sparse))
     }
+
+    @Test
+    fun boltSamePriceAndPickupIsSuppressedWithoutDistanceOrCount() {
+        val base = ParsedOffer(
+            priceCents = 241,
+            distanceMeters = null,
+            restaurant = "Casa Della Pasta",
+            pickupAddresses = listOf("Vokiečių gatvė 13, Vilnius"),
+        )
+        val sparse = base.copy(
+            pickupAddresses = listOf("Vokiečių g. 13, Vilnius"),
+            restaurant = null,
+            merchantNames = emptyList(),
+        )
+        val initial = LiveOfferUserDismissalPolicy.identity(CourierSignals.BOLT_PACKAGE, base)
+        val updated = LiveOfferUserDismissalPolicy.identity(CourierSignals.BOLT_PACKAGE, sparse)
+        assertTrue(initial.pickupKey != null)
+        assertTrue(LiveOfferUserDismissalPolicy.isSameOffer(initial, updated))
+    }
+
+    @Test
+    fun boltDifferentPickupAndMerchantIsDifferentOfferEvenAtSamePrice() {
+        val first = ParsedOffer(
+            priceCents = 241,
+            distanceMeters = null,
+            restaurant = "Casa Della Pasta",
+            pickupAddresses = listOf("Vokiečių gatvė 13, Vilnius"),
+        )
+        val second = first.copy(
+            restaurant = "Sushi Square",
+            pickupAddresses = listOf("Vilniaus g. 47, Vilnius"),
+        )
+        assertFalse(
+            LiveOfferUserDismissalPolicy.isSameOffer(
+                LiveOfferUserDismissalPolicy.identity(CourierSignals.BOLT_PACKAGE, first),
+                LiveOfferUserDismissalPolicy.identity(CourierSignals.BOLT_PACKAGE, second),
+            ),
+        )
+    }
+
+    @Test
+    fun boltDurationAndDeliveryCountContradictionsAreNotSuppressed() {
+        val base = ParsedOffer(
+            priceCents = 241,
+            distanceMeters = null,
+            restaurant = "Casa Della Pasta",
+            deliveryCount = 1,
+            estimatedMinutesMin = 15,
+        )
+        val dismissed = LiveOfferUserDismissalPolicy.identity(CourierSignals.BOLT_PACKAGE, base)
+        assertFalse(LiveOfferUserDismissalPolicy.isSameOffer(
+            dismissed, LiveOfferUserDismissalPolicy.identity(CourierSignals.BOLT_PACKAGE, base.copy(estimatedMinutesMin = 22)),
+        ))
+        assertFalse(LiveOfferUserDismissalPolicy.isSameOffer(
+            dismissed, LiveOfferUserDismissalPolicy.identity(CourierSignals.BOLT_PACKAGE, base.copy(deliveryCount = 2)),
+        ))
+    }
 }
