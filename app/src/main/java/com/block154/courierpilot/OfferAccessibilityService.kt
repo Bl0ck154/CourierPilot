@@ -1269,7 +1269,7 @@ class OfferAccessibilityService : AccessibilityService() {
                             dedupeWindowMs = 2_000L,
                         )
                         persistOffer(null, pending, text, parsed)
-                        return@prepareCaptureBitmap
+                        return
                     }
                     prepareCaptureBitmap(screenshot, captureToken, pending, parsed.deliveryCount ?: 1) { bitmap ->
                     if (bitmap == null) {
