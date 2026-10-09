@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="820" viewBox="0 0 900 820" role="img" aria-labelledby="title desc">
+  <title id="title">Live card on a courier offer screen</title>
+  <desc id="desc">Illustration of a phone showing a courier offer over a map. The CourierPilot card sits below the app's own menu and Decline buttons and shows the euro-per-kilometre rate, verdict emoji and walking/cycling route distances. Callouts explain each part.</desc>
+  <defs>
+    <clipPath id="screen"><rect x="32" y="32" width="376" height="756" rx="34"/></clipPath>
+    <filter id="shadow" x="-10%" y="-20%" width="120%" height="160%"><feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0f172a" flood-opacity="0.25"/></filter>
+    <filter id="glow" x="-30%" y="-60%" width="160%" height="220%"><feGaussianBlur stdDeviation="3"/></filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="#64748b"/></marker>
+  </defs>
+  <style>
+    .ui { font-family: Inter, 'Segoe UI', Roboto, Arial, sans-serif; }
+    .callnum { font: 700 15px Inter, 'Segoe UI', Roboto, Arial, sans-serif; fill: #0b1520; }
+    .callt { font: 700 17px Inter, 'Segoe UI', Roboto, Arial, sans-serif; fill: #0f172a; }
+    .calls { font: 500 14px Inter, 'Segoe UI', Roboto, Arial, sans-serif; fill: #475569; }
+  </style>
+
+  <rect width="900" height="820" fill="#f8fafc" rx="28"/>
+
+  <!-- phone -->
+  <rect x="20" y="20" width="400" height="780" rx="46" fill="#111827"/>
+  <g clip-path="url(#screen)">
+    <rect x="32" y="32" width="376" height="756" fill="#ECEEE8"/>
+    <path d="M10 92 L440 130" stroke="#CFE3F2" stroke-width="22"/>
+    <ellipse cx="90" cy="330" rx="120" ry="80" fill="#D3E7CB"/>
+    <ellipse cx="380" cy="470" rx="130" ry="95" fill="#D3E7CB"/>
+    <path d="M0 300 L440 220" stroke="#fff" stroke-width="10"/>
+    <path d="M190 0 L250 800" stroke="#fff" stroke-width="10"/>
+    <path d="M0 470 L440 520" stroke="#fff" stroke-width="10"/>
+    <path d="M310 0 L280 560" stroke="#fff" stroke-width="7"/>
+
+    <!-- route line and pins -->
+    <path d="M330 336 L104 446" stroke="#16a34a" stroke-width="3"/>
+    <g transform="translate(330 300)">
+      <path d="M0 36 L-10 20 A22 22 0 1 1 10 20 Z" fill="#5E69EB"/>
+      <circle cx="0" cy="2" r="9" fill="none" stroke="#fff" stroke-width="3"/>
+    </g>
+    <circle cx="352" cy="344" r="8" fill="#2196F3" stroke="#fff" stroke-width="3"/>
+    <g transform="translate(104 410)">
+      <path d="M0 36 L-10 20 A22 22 0 1 1 10 20 Z" fill="#22935D"/>
+      <circle cx="0" cy="-3" r="5" fill="#fff"/>
+      <path d="M-9 10 a9 7 0 0 1 18 0" fill="#fff"/>
+    </g>
+
+    <!-- courier app controls (generic) -->
+    <circle cx="80" cy="84" r="24" fill="#fff" filter="url(#shadow)"/>
+    <path d="M70 77h20M70 84h20M70 91h20" stroke="#0f172a" stroke-width="2.5" stroke-linecap="round"/>
+    <rect x="268" y="60" width="120" height="48" rx="24" fill="#fff" filter="url(#shadow)"/>
+    <text class="ui" x="328" y="90" text-anchor="middle" font-size="17" font-weight="600" fill="#9F1239">Decline</text>
+
+    <!-- CourierPilot live card -->
+    <g transform="translate(52 118)" filter="url(#shadow)">
+      <rect width="336" height="64" rx="14" fill="#0f1724" fill-opacity="0.92" stroke="#fff" stroke-opacity="0.07"/>
+      <text class="ui" x="14" y="43" font-family="'Roboto Condensed','Arial Narrow',sans-serif" font-size="32" font-weight="700" fill="#F2C53D" filter="url(#glow)" opacity="0.4">€1.43</text>
+      <text class="ui" x="14" y="43" font-family="'Roboto Condensed','Arial Narrow',sans-serif" font-size="32" font-weight="700" fill="#F2C53D">€1.43<tspan font-size="13" fill-opacity="0.75">/km</tspan></text>
+      <text x="128" y="41" font-size="21">👍</text>
+      <text class="ui" x="304" y="27" text-anchor="end" font-size="13" font-weight="500" fill="#c3ccd8">🚶 5.06 km</text>
+      <text class="ui" x="304" y="47" text-anchor="end" font-size="13" font-weight="500" fill="#c3ccd8">🚲 5.97 km</text>
+      <text class="ui" x="316" y="38" font-size="15" fill="#94a3b8">×</text>
+    </g>
+
+    <!-- offer sheet (generic) -->
+    <rect x="32" y="560" width="376" height="240" rx="24" fill="#fff"/>
+    <rect x="200" y="572" width="40" height="5" rx="3" fill="#cbd5e1"/>
+    <text class="ui" x="56" y="616" font-size="18" font-weight="700" fill="#0f172a">Restaurant (Old Town)</text>
+    <text class="ui" x="56" y="642" font-size="14" fill="#475569">Example st. 12, City</text>
+    <text class="ui" x="56" y="664" font-size="14" fill="#475569">~4 min</text>
+    <path d="M56 680H384" stroke="#e2e8f0"/>
+    <text class="ui" x="56" y="706" font-size="14" fill="#475569">~14 min</text>
+    <rect x="56" y="722" width="328" height="48" rx="24" fill="#2E8B57"/>
+    <text class="ui" x="220" y="752" text-anchor="middle" font-size="17" font-weight="600" fill="#fff">18 min, 3.41 €</text>
+  </g>
+
+  <!-- callouts -->
+  <g>
+    <path d="M470 120 H400" fill="none" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <circle cx="484" cy="120" r="13" fill="#F2C53D"/><text class="callnum" x="484" y="125" text-anchor="middle">1</text>
+    <text class="callt" x="506" y="116">Rate first, coloured by verdict</text>
+    <text class="calls" x="506" y="137">Real route €/km. Gold = great, grey = poor.</text>
+
+    <path d="M470 196 H360 V172" fill="none" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <circle cx="484" cy="196" r="13" fill="#F2C53D"/><text class="callnum" x="484" y="201" text-anchor="middle">2</text>
+    <text class="callt" x="506" y="192">Walking and cycling distance</text>
+    <text class="calls" x="506" y="213">Your GPS → restaurant → customer(s).</text>
+
+    <path d="M470 84 H392" fill="none" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <circle cx="484" cy="62" r="13" fill="#F2C53D"/><text class="callnum" x="484" y="67" text-anchor="middle">3</text>
+    <text class="callt" x="506" y="58">Never covers the app’s buttons</text>
+    <text class="calls" x="506" y="79">Placed below menu / Decline on any phone.</text>
+
+    <circle cx="484" cy="276" r="13" fill="#F2C53D"/><text class="callnum" x="484" y="281" text-anchor="middle">4</text>
+    <text class="callt" x="506" y="272">Swipe sideways to hide</text>
+    <text class="calls" x="506" y="293">Visual only: the offer, route and emoji stay put.</text>
+
+    <circle cx="484" cy="346" r="13" fill="#F2C53D"/><text class="callnum" x="484" y="351" text-anchor="middle">5</text>
+    <text class="callt" x="506" y="342">Drag up or down to move it</text>
+    <text class="calls" x="506" y="363">The position is remembered.</text>
+
+    <path d="M470 430 H342" fill="none" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <circle cx="484" cy="430" r="13" fill="#F2C53D"/><text class="callnum" x="484" y="435" text-anchor="middle">6</text>
+    <text class="callt" x="506" y="426">Bolt: customer read from the map</text>
+    <text class="calls" x="506" y="447">Bolt hides the address; pins are measured</text>
+    <text class="calls" x="506" y="466">from a screenshot (see below).</text>
+
+    <path d="M470 700 H392" fill="none" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <circle cx="484" cy="700" r="13" fill="#F2C53D"/><text class="callnum" x="484" y="705" text-anchor="middle">7</text>
+    <text class="callt" x="506" y="696">Price and minutes come from the offer</text>
+    <text class="calls" x="506" y="717">CourierPilot never taps Accept or Decline.</text>
+  </g>
+  <text class="calls" x="40" y="812" font-size="12" fill="#94a3b8">Illustration — not a real courier app screenshot.</text>
+</svg>
