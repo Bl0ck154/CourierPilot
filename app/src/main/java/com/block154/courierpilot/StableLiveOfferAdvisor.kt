@@ -114,9 +114,7 @@ internal class StableLiveOfferAdvisor(
         if (!LiveAdvisorSettings.enabled(service)) return
         val packageName = packageForPlatform(platform)
         val compatibleOfferEvidence = currentParsed?.let { expected ->
-            !LiveOfferResumePolicy.definitelyDifferent(expected, parsed) &&
-                (LiveOfferResumePolicy.hasCompatibleCoreIdentity(expected, parsed) ||
-                    LiveOfferResumePolicy.hasMatchingIdentity(expected, parsed))
+            LiveOfferTransactionPolicy.keyChurnCompatible(packageName, expected, parsed)
         } == true
         val sameSurface = LiveOfferTransactionPolicy.isSameSurface(
             dismissed = dismissed,
@@ -207,9 +205,7 @@ internal class StableLiveOfferAdvisor(
 
         val packageName = packageForPlatform(platform)
         val compatibleOfferEvidence = currentParsed?.let { expected ->
-            !LiveOfferResumePolicy.definitelyDifferent(expected, parsed) &&
-                (LiveOfferResumePolicy.hasCompatibleCoreIdentity(expected, parsed) ||
-                    LiveOfferResumePolicy.hasMatchingIdentity(expected, parsed))
+            LiveOfferTransactionPolicy.keyChurnCompatible(packageName, expected, parsed)
         } == true
         val samePreviewSurface = LiveOfferTransactionPolicy.isSameSurface(
             dismissed = dismissed,
@@ -350,7 +346,10 @@ internal class StableLiveOfferAdvisor(
         val visibleText = inspectVisibleSurface(rootNode).text
         if (visibleText.isBlank()) return false
         val visible = OfferParser.parse(visibleText)
-        val hasOfferUi = CourierSignals.looksLikeOfferScreen(visibleText, visible) || hasDecisionPair(visibleText)
+        val hasOfferUi = CourierSignals.looksLikeOfferScreen(visibleText, visible) || hasDecisionPair(visibleText) ||
+            // Bolt keeps its price out of Accessibility, so its re-posted ringing notifications were
+            // never coalesced. A visible Decline control plus a matching merchant/pickup is enough.
+            (packageName == CourierSignals.BOLT_PACKAGE && CourierSignals.hasDeclineControl(visibleText))
         if (!hasOfferUi || LiveOfferResumePolicy.definitelyDifferent(expected, visible)) return false
         return LiveOfferResumePolicy.hasCompatibleCoreIdentity(expected, visible) ||
             LiveOfferResumePolicy.hasMatchingIdentity(expected, visible)

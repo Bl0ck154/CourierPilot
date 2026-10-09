@@ -16,6 +16,22 @@ internal object LiveOfferTransactionPolicy {
         ArmResult.QUEUED_OTHER_PLATFORM -> false
     }
 
+    /**
+     * Evidence that an incoming capture still belongs to the live card despite a new notification key.
+     *
+     * Bolt re-posts a ringing offer under fresh keys and the first OCR frame of each re-capture is
+     * often sparse (no price, no merchant yet). Real 0.16.0 traces showed every such frame restarting
+     * the card at "Route…" and recomputing the same verdict. For Bolt, a frame that contradicts
+     * nothing is therefore the same offer; a different price/merchant still replaces the card.
+     */
+    fun keyChurnCompatible(packageName: String, expected: ParsedOffer, incoming: ParsedOffer): Boolean {
+        if (LiveOfferResumePolicy.definitelyDifferent(expected, incoming)) return false
+        if (LiveOfferResumePolicy.hasCompatibleCoreIdentity(expected, incoming) ||
+            LiveOfferResumePolicy.hasMatchingIdentity(expected, incoming)
+        ) return true
+        return packageName == CourierSignals.BOLT_PACKAGE
+    }
+
     fun isSameSurface(
         dismissed: Boolean,
         hasCurrentOffer: Boolean,

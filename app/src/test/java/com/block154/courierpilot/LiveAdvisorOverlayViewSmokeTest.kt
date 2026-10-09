@@ -48,7 +48,10 @@ class LiveAdvisorOverlayViewSmokeTest {
         assertTrue(texts.any { it.text.toString() == "×" })
         assertTrue(texts.any { it.visibility == View.GONE })
         overlay.applyDebugLines(listOf("pickup", "drop-off"))
-        assertTrue(texts.any { it.text.toString() == "pickup\ndrop-off" && it.visibility == View.VISIBLE })
+        // 0.16.1 moved the developer-only version label from the route line onto the last debug line.
+        assertTrue(texts.any {
+            it.text.toString() == "pickup\ndrop-off · v${BuildConfig.VERSION_NAME}" && it.visibility == View.VISIBLE
+        })
         overlay.applyDebugLines(emptyList())
         assertTrue(texts.any { it.text.toString().isEmpty() && it.visibility == View.GONE })
         overlay.detach(animate = false)

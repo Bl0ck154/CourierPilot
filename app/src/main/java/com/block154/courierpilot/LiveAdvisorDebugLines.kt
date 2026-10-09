@@ -62,8 +62,8 @@ internal object BoltTerminalPresentationPolicy {
         val metres = etaMeters?.takeIf { it > 0 }
         if (metres == null) return BoltTerminalPresentation("?/km", "⚠️ Route unavailable")
         val rate = money?.let { LiveAdvisorPresentation.provisionalRateLine(it, metres) } ?: "?/km"
-        val minutes = etaMinutes?.let { "~$it min " } ?: ""
-        val distance = "%.1f".format(Locale.US, metres / 1000.0)
-        return BoltTerminalPresentation(rate, "🕒 $minutes≈ $distance km")
+        val distance = "≈ ${"%.1f".format(Locale.US, metres / 1000.0)} km"
+        val routeLine = etaMinutes?.let { "🕒 ~$it min\n$distance" } ?: "🕒 $distance"
+        return BoltTerminalPresentation(rate, routeLine)
     }
 }

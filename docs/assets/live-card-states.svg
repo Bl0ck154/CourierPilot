@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="600" viewBox="0 0 960 600" role="img" aria-labelledby="title desc">
+  <title id="title">Live card states</title>
+  <desc id="desc">The CourierPilot live card in every state: the euro-per-kilometre number is coloured from saturated gold for the best offers to faint grey for the worst; estimates and loading states stay neutral.</desc>
+  <defs>
+    <filter id="glowStrong" x="-30%" y="-60%" width="160%" height="220%"><feGaussianBlur stdDeviation="6"/></filter>
+    <filter id="glowSoft" x="-30%" y="-60%" width="160%" height="220%"><feGaussianBlur stdDeviation="3.5"/></filter>
+    <filter id="sat90"><feColorMatrix type="saturate" values="0.9"/></filter>
+    <filter id="sat45"><feColorMatrix type="saturate" values="0.45"/></filter>
+    <filter id="sat15"><feColorMatrix type="saturate" values="0.15"/></filter>
+    <filter id="sat0"><feColorMatrix type="saturate" values="0"/></filter>
+    <filter id="sat60"><feColorMatrix type="saturate" values="0.6"/></filter>
+  </defs>
+  <style>
+    .title { font: 700 26px Inter, 'Segoe UI', Roboto, Arial, sans-serif; fill: #f1f5f9; }
+    .sub { font: 500 15px Inter, 'Segoe UI', Roboto, Arial, sans-serif; fill: #94a3b8; }
+    .card { fill: #0f1724; stroke: #ffffff; stroke-opacity: 0.08; }
+    .price { font: 700 36px 'Roboto Condensed', 'Arial Narrow', 'Segoe UI', sans-serif; }
+    .unit { font-size: 15px; font-weight: 600; }
+    .emoji { font: 24px 'Noto Color Emoji', 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif; }
+    .route { font: 500 15px Inter, 'Segoe UI', Roboto, Arial, sans-serif; fill: #c3ccd8; }
+    .close { font: 400 18px Inter, 'Segoe UI', Roboto, Arial, sans-serif; fill: #94a3b8; }
+    .cap { font: 500 14px Inter, 'Segoe UI', Roboto, Arial, sans-serif; fill: #94a3b8; }
+    .capb { font-weight: 700; fill: #e2e8f0; }
+  </style>
+
+  <rect width="960" height="600" rx="28" fill="#0b1520"/>
+  <text class="title" x="40" y="52">Live card — colour follows €/km</text>
+  <text class="sub" x="40" y="80">Gold = best offer, grey = worst. “≈” marks an estimate, never a verdict.</text>
+
+  <!-- FIRE -->
+  <g transform="translate(40 112)">
+    <rect class="card" width="420" height="72" rx="16"/>
+    <text class="price" x="20" y="49" fill="#FFD60A" filter="url(#glowStrong)" opacity="0.6">€2.85</text>
+    <text class="price" x="20" y="49" fill="#FFD60A">€2.85<tspan class="unit" fill-opacity="0.75">/km</tspan></text>
+    <text class="emoji" x="206" y="46">🔥</text>
+    <text class="route" text-anchor="end" x="384" y="31">🚶 2.10 km</text>
+    <text class="route" text-anchor="end" x="384" y="54">🚲 2.44 km</text>
+    <text class="close" x="398" y="43">×</text>
+    <text class="cap" x="4" y="98"><tspan class="capb">Fire</tspan> — saturated gold that glows</text>
+  </g>
+
+  <!-- GOOD -->
+  <g transform="translate(40 228)">
+    <rect class="card" width="420" height="72" rx="16"/>
+    <text class="price" x="20" y="49" fill="#F2C53D" filter="url(#glowSoft)" opacity="0.4">€1.43</text>
+    <text class="price" x="20" y="49" fill="#F2C53D">€1.43<tspan class="unit" fill-opacity="0.75">/km</tspan></text>
+    <text class="emoji" x="206" y="46" filter="url(#sat90)" opacity="0.95">👍</text>
+    <text class="route" text-anchor="end" x="384" y="31">🚶 5.06 km</text>
+    <text class="route" text-anchor="end" x="384" y="54">🚲 5.97 km</text>
+    <text class="close" x="398" y="43">×</text>
+    <text class="cap" x="4" y="98"><tspan class="capb">Good</tspan> — warm yellow</text>
+  </g>
+
+  <!-- OK -->
+  <g transform="translate(40 344)">
+    <rect class="card" width="420" height="72" rx="16"/>
+    <text class="price" x="20" y="49" fill="#BDB18A">€1.12<tspan class="unit" fill-opacity="0.75">/km</tspan></text>
+    <text class="emoji" x="206" y="46" filter="url(#sat45)" opacity="0.8">😐</text>
+    <text class="route" text-anchor="end" x="384" y="31">🚶 3.40 km</text>
+    <text class="route" text-anchor="end" x="384" y="54">🚲 3.95 km</text>
+    <text class="close" x="398" y="43">×</text>
+    <text class="cap" x="4" y="98"><tspan class="capb">OK</tspan> — muted</text>
+  </g>
+
+  <!-- BAD -->
+  <g transform="translate(40 460)">
+    <rect class="card" width="420" height="72" rx="16"/>
+    <text class="price" x="20" y="49" fill="#7E828A">€0.78<tspan class="unit" fill-opacity="0.75">/km</tspan></text>
+    <text class="emoji" x="206" y="46" filter="url(#sat15)" opacity="0.55">👎</text>
+    <text class="route" text-anchor="end" x="384" y="31">🚶 4.80 km</text>
+    <text class="route" text-anchor="end" x="384" y="54">🚲 5.31 km</text>
+    <text class="close" x="398" y="43">×</text>
+    <text class="cap" x="4" y="98"><tspan class="capb">Bad</tspan> — grey</text>
+  </g>
+
+  <!-- TERRIBLE -->
+  <g transform="translate(500 112)">
+    <rect class="card" width="420" height="72" rx="16"/>
+    <text class="price" x="20" y="49" fill="#4B515C">€0.41<tspan class="unit" fill-opacity="0.75">/km</tspan></text>
+    <text class="emoji" x="206" y="46" filter="url(#sat0)" opacity="0.32">💩</text>
+    <text class="route" text-anchor="end" x="384" y="31">🚶 7.90 km</text>
+    <text class="route" text-anchor="end" x="384" y="54">🚲 8.62 km</text>
+    <text class="close" x="398" y="43">×</text>
+    <text class="cap" x="4" y="98"><tspan class="capb">Terrible</tspan> — barely visible on purpose</text>
+  </g>
+
+  <!-- ETA estimate -->
+  <g transform="translate(500 228)">
+    <rect class="card" width="420" height="72" rx="16"/>
+    <text class="price" x="20" y="49" fill="#CBD5E1">≈€1.20<tspan class="unit" fill-opacity="0.75">/km</tspan></text>
+    <text class="emoji" x="236" y="46" filter="url(#sat60)" opacity="0.8">⏳</text>
+    <text class="route" text-anchor="end" x="384" y="31">🕒 ~14 min</text>
+    <text class="route" text-anchor="end" x="384" y="54">≈ 3.2 km</text>
+    <text class="close" x="398" y="43">×</text>
+    <text class="cap" x="4" y="98"><tspan class="capb">Estimate</tspan> — from Bolt’s own minutes, no verdict</text>
+  </g>
+
+  <!-- Loading -->
+  <g transform="translate(500 344)">
+    <rect class="card" width="420" height="72" rx="16"/>
+    <circle cx="32" cy="36" r="9" fill="none" stroke="#94a3b8" stroke-opacity="0.3" stroke-width="3"/>
+    <path d="M32 27a9 9 0 0 1 9 9" fill="none" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round"/>
+    <text class="route" x="52" y="41" fill="#94a3b8">route…</text>
+    <text class="route" text-anchor="end" x="384" y="42">📍 8.00 km</text>
+    <text class="close" x="398" y="43">×</text>
+    <text class="cap" x="4" y="98"><tspan class="capb">Calculating</tspan> — never longer than 20 s</text>
+  </g>
+
+  <!-- Unknown -->
+  <g transform="translate(500 460)">
+    <rect class="card" width="420" height="72" rx="16"/>
+    <text class="price" x="20" y="49" fill="#CBD5E1">?<tspan class="unit" fill-opacity="0.75">/km</tspan></text>
+    <text class="route" text-anchor="end" x="384" y="31">⚠️ Route</text>
+    <text class="route" text-anchor="end" x="384" y="54">unavailable</text>
+    <text class="close" x="398" y="43">×</text>
+    <text class="cap" x="4" y="98"><tspan class="capb">Unknown</tspan> — no trustworthy route and no ETA</text>
+  </g>
+</svg>

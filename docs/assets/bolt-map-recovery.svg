@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="490" viewBox="0 0 1000 490" role="img" aria-labelledby="title desc">
+  <title id="title">How CourierPilot reads a Bolt map</title>
+  <desc id="desc">Bolt shows the customer only as a map pin. CourierPilot anchors the map on the restaurant pin using its geocoded address, sets the scale from Bolt's own minute estimate, ignores shop icons that look like the courier dot, projects the customer pin to coordinates and finally checks the route against Bolt's minutes.</desc>
+  <defs>
+    <clipPath id="map"><rect x="30" y="45" width="440" height="415" rx="22"/></clipPath>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="#334155"/></marker>
+  </defs>
+  <style>
+    .lbl { font: 600 13px Inter, 'Segoe UI', Roboto, Arial, sans-serif; fill: #0f172a; }
+    .step { font: 800 15px Inter, 'Segoe UI', Roboto, Arial, sans-serif; fill: #0b1520; }
+    .h { font: 700 17px Inter, 'Segoe UI', Roboto, Arial, sans-serif; fill: #0f172a; }
+    .t { font: 500 14px Inter, 'Segoe UI', Roboto, Arial, sans-serif; fill: #475569; }
+  </style>
+  <rect width="1000" height="490" rx="28" fill="#f8fafc"/>
+
+  <g clip-path="url(#map)">
+    <rect x="30" y="45" width="440" height="415" fill="#ECEEE8"/>
+    <ellipse cx="120" cy="120" rx="110" ry="70" fill="#D3E7CB"/>
+    <ellipse cx="400" cy="380" rx="120" ry="80" fill="#D3E7CB"/>
+    <path d="M0 210 L500 150" stroke="#fff" stroke-width="10"/>
+    <path d="M230 0 L270 460" stroke="#fff" stroke-width="10"/>
+    <path d="M0 330 L500 360" stroke="#fff" stroke-width="8"/>
+
+    <!-- scale line restaurant -> customer -->
+    <path d="M380 150 L110 300" stroke="#16a34a" stroke-width="3"/>
+    <path d="M370 176 L132 308" stroke="#334155" stroke-width="1.5" stroke-dasharray="6 5" marker-start="url(#arrow)" marker-end="url(#arrow)"/>
+    <text class="lbl" x="200" y="262" transform="rotate(-29 200 262)">distance on screen</text>
+
+    <!-- restaurant pin -->
+    <g transform="translate(380 114)">
+      <path d="M0 36 L-10 20 A22 22 0 1 1 10 20 Z" fill="#5E69EB"/>
+      <path d="M-5 -8v14M5 -8v14M-5 0h10" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+    </g>
+    <!-- courier dot -->
+    <circle cx="404" cy="156" r="8" fill="#2196F3" stroke="#fff" stroke-width="3"/>
+    <!-- customer pin -->
+    <g transform="translate(110 264)">
+      <path d="M0 36 L-10 20 A22 22 0 1 1 10 20 Z" fill="#22935D"/>
+      <circle cx="0" cy="-3" r="5" fill="#fff"/>
+      <path d="M-9 10 a9 7 0 0 1 18 0" fill="#fff"/>
+    </g>
+    <!-- shop POI -->
+    <g transform="translate(70 360)">
+      <circle r="15" fill="#4A9FE0"/>
+      <path d="M-6 -3h12l-1 9h-10z" fill="#fff"/>
+      <path d="M-3 -3a3 3 0 0 1 6 0" fill="none" stroke="#fff" stroke-width="2"/>
+      <path d="M-20 -20 L20 20 M20 -20 L-20 20" stroke="#dc2626" stroke-width="3"/>
+    </g>
+  </g>
+  <text class="lbl" x="250" y="76">restaurant pin ↔ its address</text>
+  <text class="lbl" x="414" y="186">you</text>
+  <text class="lbl" x="44" y="252">customer pin</text>
+  <text class="lbl" x="96" y="410" fill="#b91c1c">shop icon: ignored</text>
+
+  <g transform="translate(510 52)">
+    <circle cx="14" cy="10" r="14" fill="#F2C53D"/><text class="step" x="14" y="15" text-anchor="middle">1</text>
+    <text class="h" x="40" y="16">Anchor on the restaurant</text>
+    <text class="t" x="40" y="38">Its text address is geocoded, so the restaurant</text>
+    <text class="t" x="40" y="57">pin fixes where the map is.</text>
+
+    <circle cx="14" cy="96" r="14" fill="#F2C53D"/><text class="step" x="14" y="101" text-anchor="middle">2</text>
+    <text class="h" x="40" y="102">Scale from Bolt’s minutes</text>
+    <text class="t" x="40" y="124">“~14 min” to the customer ÷ distance on screen.</text>
+    <text class="t" x="40" y="143">Your blue dot only refines it when it agrees.</text>
+
+    <circle cx="14" cy="182" r="14" fill="#F2C53D"/><text class="step" x="14" y="187" text-anchor="middle">3</text>
+    <text class="h" x="40" y="188">Ignore look-alikes</text>
+    <text class="t" x="40" y="210">Shop/station icons share the dot’s blue but have</text>
+    <text class="t" x="40" y="229">a white symbol inside — they are never “you”.</text>
+
+    <circle cx="14" cy="268" r="14" fill="#F2C53D"/><text class="step" x="14" y="273" text-anchor="middle">4</text>
+    <text class="h" x="40" y="274">Pin → coordinates → route</text>
+    <text class="t" x="40" y="296">Every customer pin (doubles, triples) is routed</text>
+    <text class="t" x="40" y="315">in order from your GPS position.</text>
+
+    <circle cx="14" cy="354" r="14" fill="#F2C53D"/><text class="step" x="14" y="359" text-anchor="middle">5</text>
+    <text class="h" x="40" y="360">Sanity check</text>
+    <text class="t" x="40" y="382">If the route doesn’t fit Bolt’s minutes, the card</text>
+    <text class="t" x="40" y="401">shows an honest “≈ €X/km ⏳” instead of a verdict.</text>
+  </g>
+</svg>

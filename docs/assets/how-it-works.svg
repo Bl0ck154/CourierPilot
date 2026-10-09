@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="340" viewBox="0 0 1200 340" role="img" aria-labelledby="title desc">
+  <title id="title">How CourierPilot works</title>
+  <desc id="desc">Pipeline from an incoming courier offer to the live card: the offer appears, CourierPilot captures it with Accessibility and OCR, resolves the stops, routes them with a self-hosted Valhalla server and shows a colour-graded euro-per-kilometre verdict. Sanity checks run along the way.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10z" fill="#53e09c"/></marker>
+  </defs>
+  <style>
+    .box { fill: #101e2a; stroke: #334654; stroke-width: 2; }
+    .num { font: 800 15px Inter, 'Segoe UI', Roboto, Arial, sans-serif; fill: #0b1520; }
+    .h { font: 700 19px Inter, 'Segoe UI', Roboto, Arial, sans-serif; fill: #f1f5f9; }
+    .t { font: 500 14px Inter, 'Segoe UI', Roboto, Arial, sans-serif; fill: #aebdcc; }
+    .note { font: 600 14px Inter, 'Segoe UI', Roboto, Arial, sans-serif; fill: #f5d47c; }
+  </style>
+  <rect width="1200" height="340" rx="28" fill="#07111b"/>
+  <text x="40" y="50" font-family="Inter,'Segoe UI',Roboto,Arial,sans-serif" font-size="24" font-weight="800" fill="#f7fbff">How it works</text>
+
+  <g transform="translate(40 80)">
+    <rect class="box" width="196" height="160" rx="20"/>
+    <circle cx="28" cy="30" r="14" fill="#53e09c"/><text class="num" x="28" y="35" text-anchor="middle">1</text>
+    <text class="h" x="52" y="36">Offer appears</text>
+    <text class="t" x="18" y="72">Wolt or Bolt rings:</text>
+    <text class="t" x="18" y="94">notification and/or</text>
+    <text class="t" x="18" y="116">the offer screen.</text>
+  </g>
+  <path d="M240 160H268" stroke="#53e09c" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <g transform="translate(274 80)">
+    <rect class="box" width="196" height="160" rx="20"/>
+    <circle cx="28" cy="30" r="14" fill="#53e09c"/><text class="num" x="28" y="35" text-anchor="middle">2</text>
+    <text class="h" x="52" y="36">Capture</text>
+    <text class="t" x="18" y="72">Accessibility text +</text>
+    <text class="t" x="18" y="94">OCR of the offer card.</text>
+    <text class="t" x="18" y="116">Saved only with a</text>
+    <text class="t" x="18" y="138">real, non-zero price.</text>
+  </g>
+  <path d="M474 160H502" stroke="#53e09c" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <g transform="translate(508 80)">
+    <rect class="box" width="196" height="160" rx="20"/>
+    <circle cx="28" cy="30" r="14" fill="#53e09c"/><text class="num" x="28" y="35" text-anchor="middle">3</text>
+    <text class="h" x="52" y="36">Stops</text>
+    <text class="t" x="18" y="72">Wolt: text addresses</text>
+    <text class="t" x="18" y="94">→ geocoder.</text>
+    <text class="t" x="18" y="116">Bolt: restaurant text +</text>
+    <text class="t" x="18" y="138">customer pins on map.</text>
+  </g>
+  <path d="M708 160H736" stroke="#53e09c" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <g transform="translate(742 80)">
+    <rect class="box" width="196" height="160" rx="20"/>
+    <circle cx="28" cy="30" r="14" fill="#53e09c"/><text class="num" x="28" y="35" text-anchor="middle">4</text>
+    <text class="h" x="52" y="36">Route</text>
+    <text class="t" x="18" y="72">Your GPS → pickups →</text>
+    <text class="t" x="18" y="94">customers on a</text>
+    <text class="t" x="18" y="116">self-hosted Valhalla:</text>
+    <text class="t" x="18" y="138">🚶 walk and 🚲 bike.</text>
+  </g>
+  <path d="M942 160H970" stroke="#53e09c" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <g transform="translate(976 80)">
+    <rect class="box" width="184" height="160" rx="20"/>
+    <circle cx="28" cy="30" r="14" fill="#53e09c"/><text class="num" x="28" y="35" text-anchor="middle">5</text>
+    <text class="h" x="52" y="36">Verdict</text>
+    <text x="18" y="84" font-family="'Roboto Condensed','Arial Narrow',sans-serif" font-size="30" font-weight="700" fill="#F2C53D">€1.43<tspan font-size="13" fill-opacity="0.75">/km</tspan> <tspan font-size="20">👍</tspan></text>
+    <text class="t" x="18" y="116">Locked for the offer:</text>
+    <text class="t" x="18" y="138">it never flips mid-offer.</text>
+  </g>
+
+  <text class="note" x="40" y="288">Safety nets:</text>
+  <text class="t" x="140" y="288">Bolt route must fit Bolt’s own minutes · the same offer keeps one card · swiping only hides it · no auto-accept, ever</text>
+  <text class="t" x="40" y="314">Everything stays on the phone except routing requests to your own Valhalla server (and optional, redacted diagnostics).</text>
+</svg>
