@@ -4,13 +4,21 @@ import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.SystemClock
+import android.text.SpannableString
+import android.text.TextUtils
+import android.text.style.AbsoluteSizeSpan
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.VelocityTracker
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
@@ -35,6 +43,9 @@ internal class LiveAdvisorOverlayView(
 ) {
     private val windowManager = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val touchSlop = ViewConfiguration.get(service).scaledTouchSlop
+    private val obstacleFinder = OverlayObstacleFinder(service)
+    private var screenHeightPx = 0
+    private var topInsetPx = 0
 
     private var root: LinearLayout? = null
     private var windowParams: WindowManager.LayoutParams? = null
@@ -42,7 +53,12 @@ internal class LiveAdvisorOverlayView(
     private var decisionText: TextView? = null
     private var decisionSpinner: ProgressBar? = null
     private var routeText: TextView? = null
+    private var debugText: TextView? = null
     private var captureSuppressed = false
+    private var velocityTracker: VelocityTracker? = null
+
+    var isSwipeExitRunning: Boolean = false
+        private set
 
     private var gestureDownX = 0f
     private var gestureDownY = 0f
@@ -80,12 +96,34 @@ internal class LiveAdvisorOverlayView(
     val isGestureTouchActive: Boolean
         get() = gestureTouchActive
 
+    /** Actual window coordinates; excludes detached and not-yet-laid-out views. */
+    fun screenRect(): Rect? {
+        val view = root ?: return null
+        if (!view.isAttachedToWindow || view.width <= 0 || view.height <= 0) return null
+        val location = IntArray(2)
+        view.getLocationOnScreen(location)
+        return Rect(location[0], location[1], location[0] + view.width, location[1] + view.height)
+    }
+
+    fun applyDebugLines(lines: List<String>) {
+        debugText?.apply {
+            text = lines.filter { it.isNotBlank() }.take(3).joinToString("\n")
+            visibility = if (text.isEmpty()) View.GONE else View.VISIBLE
+        }
+    }
+
     fun ensure() {
-        if (root != null) return
+        if (root != null) {
+            refreshWidth()
+            return
+        }
+        screenHeightPx = screenHeight()
+        topInsetPx = topInset()
+        obstacleFinder.reset()
 
         val container = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(10), dp(5), dp(10), dp(7))
+            setPadding(dp(8), dp(4), dp(8), dp(4))
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = dp(12).toFloat()
@@ -96,43 +134,18 @@ internal class LiveAdvisorOverlayView(
         }
         installGestureSurface(container)
 
-        val topRow = LinearLayout(service).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        installGestureSurface(topRow)
-
-        val title = TextView(service).apply {
-            text = "CourierPilot · ${BuildConfig.VERSION_NAME}"
-            setTextColor(Color.rgb(148, 163, 184))
-            textSize = 9.5f
-            includeFontPadding = false
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-        }
-        installGestureSurface(title)
-        topRow.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-
-        topRow.addView(TextView(service).apply {
-            text = "×"
-            setTextColor(Color.rgb(148, 163, 184))
-            textSize = 17f
-            includeFontPadding = false
-            gravity = Gravity.CENTER
-            setPadding(dp(8), 0, 0, 0)
-            setOnClickListener { onDismiss("closed by user") }
-        })
-        container.addView(topRow)
-
+        // The old title/header row wasted a full line above every offer.
+        val body = FrameLayout(service)
         val mainRow = LinearLayout(service).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(2), 0, 0)
+            setPadding(0, 0, dp(CLOSE_TOUCH_DP), 0)
         }
         installGestureSurface(mainRow)
 
         routeText = TextView(service).apply {
             setTextColor(Color.rgb(190, 200, 214))
-            textSize = 11.5f
+            textSize = 11f
             includeFontPadding = false
             typeface = Typeface.create("sans-serif", Typeface.NORMAL)
             gravity = Gravity.START or Gravity.CENTER_VERTICAL
@@ -142,7 +155,7 @@ internal class LiveAdvisorOverlayView(
             mainRow.addView(
                 view,
                 LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginEnd = dp(8)
+                    marginEnd = dp(3)
                 },
             )
         }
@@ -160,8 +173,12 @@ internal class LiveAdvisorOverlayView(
             includeFontPadding = false
             typeface = Typeface.create("monospace", Typeface.BOLD)
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
-            setPadding(dp(9), dp(3), dp(9), dp(3))
-            maxLines = 1
+            setPadding(dp(1), 0, dp(1), 0)
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.END
+            setAutoSizeTextTypeUniformWithConfiguration(
+                16, 24, 1, TypedValue.COMPLEX_UNIT_SP,
+            )
         }.also { view ->
             installGestureSurface(view)
             rateFrame.addView(
@@ -180,19 +197,48 @@ internal class LiveAdvisorOverlayView(
         }.also { spinner ->
             rateFrame.addView(
                 spinner,
-                FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER),
+                FrameLayout.LayoutParams(dp(16), dp(16), Gravity.CENTER),
             )
         }
 
         mainRow.addView(
             rateFrame,
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(RATE_MIN_HEIGHT_DP)),
+            LinearLayout.LayoutParams(0, dp(RATE_MIN_HEIGHT_DP), 0.55f),
         )
-        container.addView(mainRow)
+        body.addView(
+            mainRow,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+        body.addView(
+            TextView(service).apply {
+                text = "×"
+                setTextColor(Color.rgb(148, 163, 184))
+                textSize = 14f
+                includeFontPadding = false
+                gravity = Gravity.CENTER
+                contentDescription = "Close live advisor"
+                setOnClickListener { onDismiss("closed by user") }
+            },
+            FrameLayout.LayoutParams(dp(CLOSE_TOUCH_DP), dp(CLOSE_TOUCH_DP), Gravity.TOP or Gravity.END),
+        )
+        container.addView(body)
 
-        val screenWidth = service.resources.displayMetrics.widthPixels
+        debugText = TextView(service).apply {
+            textSize = 8.5f
+            includeFontPadding = false
+            typeface = Typeface.MONOSPACE
+            maxLines = 3
+            ellipsize = TextUtils.TruncateAt.END
+            setTextColor(Color.rgb(148, 163, 184))
+            visibility = View.GONE
+        }.also { container.addView(it) }
+
+        val screenWidth = screenWidth()
         val params = WindowManager.LayoutParams(
-            (screenWidth - dp(HORIZONTAL_MARGIN_DP * 2)).coerceAtLeast(1),
+            OverlayGeometryPolicy.widthPx(screenWidth, service.resources.displayMetrics.density),
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
@@ -203,7 +249,12 @@ internal class LiveAdvisorOverlayView(
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             x = 0
-            y = LiveAdvisorSettings.overlayYPx(service) ?: dp(DEFAULT_Y_DP)
+            y = LiveAdvisorSettings.overlayYPx(service) ?: OverlayGeometryPolicy.defaultYPx(
+                obstacleFinder.topClickableBottomPx(screenHeightPx),
+                topInsetPx,
+                screenHeightPx,
+                service.resources.displayMetrics.density,
+            )
         }
         windowParams = params
 
@@ -230,6 +281,7 @@ internal class LiveAdvisorOverlayView(
                 decisionText = null
                 decisionSpinner = null
                 routeText = null
+                debugText = null
                 windowParams = null
                 CaptureEventLog.append(
                     service,
@@ -290,7 +342,19 @@ internal class LiveAdvisorOverlayView(
     fun applyRoute(text: String, visible: Boolean) {
         routeText?.apply {
             visibility = if (visible) View.VISIBLE else View.INVISIBLE
-            this.text = text
+            if (DeveloperModeSettings.enabled(service) && visible) {
+                val suffix = " · v${BuildConfig.VERSION_NAME}"
+                this.text = SpannableString(text + suffix).apply {
+                    setSpan(
+                        AbsoluteSizeSpan(8, true),
+                        text.length,
+                        length,
+                        android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                    )
+                }
+            } else {
+                this.text = text
+            }
         }
     }
 
