@@ -7,7 +7,6 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
-import android.graphics.Paint
 import android.graphics.Point
 import android.graphics.Rect
 import android.os.Build
@@ -57,8 +56,70 @@ internal object OfferOverlayBitmapMask {
     fun intersectsMap(rect: Rect?, bitmapHeight: Int): Boolean =
         rect != null && rect.top < (bitmapHeight * 0.72f).toInt() && rect.bottom > 0
 
+    /**
+     * Fills the card area by blending the pixels just outside its four edges (a Coons-style
+     * bilinear patch). A flat median fill left a visible pale block on saved proof screenshots
+     * over a map; the blend continues the surrounding map colours instead. Only pixels outside
+     * the rect are read, so the card's own €/km text can never leak into OCR.
+     */
     fun paint(bitmap: Bitmap, rect: Rect?): Boolean {
         if (rect == null || rect.isEmpty || !bitmap.isMutable) return false
+        val left = rect.left.coerceIn(0, bitmap.width)
+        val top = rect.top.coerceIn(0, bitmap.height)
+        val right = rect.right.coerceIn(0, bitmap.width)
+        val bottom = rect.bottom.coerceIn(0, bitmap.height)
+        val width = right - left
+        val height = bottom - top
+        if (width <= 0 || height <= 0) return false
+
+        val fallback = medianBorderColor(bitmap, Rect(left, top, right, bottom))
+        val topEdge = IntArray(width) { i -> edgeAverage(bitmap, left + i, top - 1, dx = 0, dy = -1, fallback) }
+        val bottomEdge = IntArray(width) { i -> edgeAverage(bitmap, left + i, bottom, dx = 0, dy = 1, fallback) }
+        val leftEdge = IntArray(height) { j -> edgeAverage(bitmap, left - 1, top + j, dx = -1, dy = 0, fallback) }
+        val rightEdge = IntArray(height) { j -> edgeAverage(bitmap, right, top + j, dx = 1, dy = 0, fallback) }
+
+        val row = IntArray(width)
+        for (j in 0 until height) {
+            val v = (j + 0.5f) / height
+            for (i in 0 until width) {
+                val u = (i + 0.5f) / width
+                row[i] = blend(leftEdge[j], rightEdge[j], u, topEdge[i], bottomEdge[i], v)
+            }
+            bitmap.setPixels(row, 0, width, left, top + j, width, 1)
+        }
+        return true
+    }
+
+    private fun blend(l: Int, r: Int, u: Float, t: Int, b: Int, v: Float): Int {
+        fun channel(shift: Int): Int {
+            val horizontal = ((l shr shift) and 0xFF) * (1 - u) + ((r shr shift) and 0xFF) * u
+            val vertical = ((t shr shift) and 0xFF) * (1 - v) + ((b shr shift) and 0xFF) * v
+            return ((horizontal + vertical) / 2f + 0.5f).toInt().coerceIn(0, 255)
+        }
+        return Color.rgb(channel(16), channel(8), channel(0))
+    }
+
+    /** Mean of up to four pixels stepping away from the card; off-bitmap edges use [fallback]. */
+    private fun edgeAverage(bitmap: Bitmap, x: Int, y: Int, dx: Int, dy: Int, fallback: Int): Int {
+        var red = 0
+        var green = 0
+        var blue = 0
+        var count = 0
+        for (step in 0 until 4) {
+            val px = x + dx * step
+            val py = y + dy * step
+            if (px !in 0 until bitmap.width || py !in 0 until bitmap.height) break
+            val pixel = bitmap.getPixel(px, py)
+            red += Color.red(pixel)
+            green += Color.green(pixel)
+            blue += Color.blue(pixel)
+            count++
+        }
+        if (count == 0) return fallback
+        return Color.rgb(red / count, green / count, blue / count)
+    }
+
+    private fun medianBorderColor(bitmap: Bitmap, rect: Rect): Int {
         val red = ArrayList<Int>()
         val green = ArrayList<Int>()
         val blue = ArrayList<Int>()
@@ -69,7 +130,6 @@ internal object OfferOverlayBitmapMask {
             green.add(Color.green(pixel))
             blue.add(Color.blue(pixel))
         }
-        // Four-pixel-wide border OUTSIDE the mask, never the €/km text inside it.
         for (offset in 1..4) {
             for (x in rect.left until rect.right step 4) {
                 sample(x, rect.top - offset)
@@ -85,11 +145,7 @@ internal object OfferOverlayBitmapMask {
             values.sort()
             return values[values.size / 2]
         }
-        Canvas(bitmap).drawRect(rect, Paint().apply {
-            color = Color.rgb(median(red), median(green), median(blue))
-            style = Paint.Style.FILL
-        })
-        return true
+        return Color.rgb(median(red), median(green), median(blue))
     }
 }
 

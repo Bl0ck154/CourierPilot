@@ -275,6 +275,40 @@ internal object OfferParser {
                 .forEach(::addDropoff)
         }
 
+        val collapsedCount = collapsedDropoffIndexes.firstNotNullOfOrNull { index ->
+            WoltOfferUiText.collapsedMultipleDropoffsRegex.matchEntire(lines[index])
+                ?.groupValues?.getOrNull(1)?.toIntOrNull()
+        }
+
+        // Wolt can keep the collapsed "Multiple drop-offs" destinations in the card's
+        // Accessibility semantics: bare `street` / `city, postcode` rows with no venue name, either
+        // after the marker or straight after the last pickup. They are customers, never pickups.
+        // Accept them only when they complete the announced drop-off count exactly.
+        val firstCollapsedIndex = collapsedDropoffIndexes.firstOrNull()
+        if (collapsedCount != null && firstCollapsedIndex != null && dropoffs.size < collapsedCount) {
+            val expandedRange = expandedIndex?.let { start ->
+                val relativeEnd = lines.drop(start + 1).indexOfFirst { it.equals("Done", ignoreCase = true) }
+                start until (if (relativeEnd >= 0) start + 2 + relativeEnd else lines.size)
+            }
+            var previousStreetIndex = contentStart - 1
+            val hidden = mutableListOf<String>()
+            for (index in contentStart until lines.size) {
+                val line = lines[index]
+                if (!looksLikeModernStreetAddress(line)) continue
+                val segmentStart = (previousStreetIndex + 1).coerceAtLeast(contentStart)
+                previousStreetIndex = index
+                if (expandedRange != null && index in expandedRange) continue
+                if (pickups.any { addressesEquivalent(it, line) }) continue
+                if (dropoffs.any { addressesEquivalent(it, line) }) continue
+                if (hidden.any { addressesEquivalent(it, line) }) continue
+                val namedSegment = lines.subList(segmentStart, index).any(::isModernWoltMerchantCandidate)
+                if (index > firstCollapsedIndex || !namedSegment) hidden += line
+            }
+            if (hidden.isNotEmpty() && dropoffs.size + hidden.size == collapsedCount) {
+                hidden.forEach(::addDropoff)
+            }
+        }
+
         // ML Kit text-block order is not guaranteed to be strictly top-to-bottom. On the current
         // Wolt build it can emit the pickup name/address *before* the duplicated compact route
         // summary. In that case the summary-bounded pass above sees the customer address but misses
@@ -303,8 +337,10 @@ internal object OfferParser {
                 .mapNotNull(WoltOfferUiText::routeStopCount)
                 .maxOrNull()
         }
+        // The announced drop-off count reserves its stops even before their addresses are known,
+        // so unlabelled customer rows can never be recovered as extra pickups.
         val pickupLimit = expectedTotalStops
-            ?.let { (it - dropoffs.size).coerceAtLeast(1) }
+            ?.let { (it - maxOf(dropoffs.size, collapsedCount ?: 0)).coerceAtLeast(1) }
             ?: Int.MAX_VALUE
 
         lines.forEachIndexed { index, address ->
@@ -368,10 +404,6 @@ internal object OfferParser {
             }
         }
 
-        val collapsedCount = collapsedDropoffIndexes.firstNotNullOfOrNull { index ->
-            WoltOfferUiText.collapsedMultipleDropoffsRegex.matchEntire(lines[index])
-                ?.groupValues?.getOrNull(1)?.toIntOrNull()
-        }
         val expandedCount = expandedIndex?.let { index ->
             lines.drop(index + 1).take(3).firstNotNullOfOrNull { line ->
                 WoltOfferUiText.standaloneStopsRegex.matchEntire(line)
@@ -410,7 +442,19 @@ internal object OfferParser {
         if (WoltOfferUiText.standaloneMultipleDropoffsRegex.matches(line)) return false
         if (WoltOfferUiText.singleCustomerDropoffRegex.matches(line)) return false
         if (WoltOfferUiText.isEarningsLabel(line)) return false
+        if (isLocalityLine(line)) return false
         return lower !in MODERN_WOLT_NOISE_LINES
+    }
+
+    /**
+     * The second line of a Wolt address row (`Vilnius`, `Vilnius, 10300`). Wolt can expose hidden
+     * destination rows in the collapsed card's semantics; their locality line must never be taken
+     * for a venue name, or the customer address becomes a pickup.
+     */
+    private fun isLocalityLine(line: String): Boolean {
+        val clean = line.trim().trimEnd(',').trim()
+        if (Regex("""(?iu)^\p{L}[\p{L} .'-]{1,30},\s*(?:LT\s*-?\s*)?\d{4,5}$""").matches(clean)) return true
+        return clean.lowercase(Locale.ROOT) in LOCALITY_NAMES
     }
 
     private fun addressesEquivalent(a: String, b: String): Boolean =
@@ -742,6 +786,12 @@ internal object OfferParser {
         "close drawer", "google map", "map marker",
         "ready", "show map", "priimti", "atmesti", "užduotis", "uzduot", "užsakymas", "uzsakymas",
         "принять", "отклонить", "заказ", "задание", "прийняти", "відхилити", "замовлення", "завдання"
+    )
+
+    private val LOCALITY_NAMES = setOf(
+        "vilnius", "kaunas", "klaipėda", "klaipeda", "šiauliai", "siauliai", "panevėžys", "panevezys",
+        "alytus", "marijampolė", "marijampole", "palanga", "riga", "rīga", "tallinn", "tartu",
+        "warszawa", "warsaw", "kraków", "krakow", "helsinki", "lithuania", "lietuva",
     )
 
     private val MODERN_WOLT_NOISE_LINES = setOf(

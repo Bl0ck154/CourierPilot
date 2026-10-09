@@ -4,7 +4,7 @@ import java.util.Locale
 
 /** PII must remain solely in the UI, never in CaptureEventLog or RemoteDiagnostics. */
 internal object LiveAdvisorDebugLines {
-    private val postcode = Regex("""(?<!\d)\d{5}(?!\d)""")
+    private val postcode = Regex("""(?i)(?:\bLT\s*-?\s*)?(?<!\d)\d{5}(?!\d)""")
     private val country = Regex("""(?i)\b(lithuania|lietuva|latvia|poland|estonia)\b""")
 
     fun shortAddress(raw: String): String =
