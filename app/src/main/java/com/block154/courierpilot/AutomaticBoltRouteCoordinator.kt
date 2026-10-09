@@ -202,17 +202,23 @@ internal data class BoltMapStopRecovery(
 )
 
 /**
- * Conservative north-up map recovery. Short GPS-to-restaurant baselines cannot supply a stable
- * metres/pixel scale: estimate it from the independent Bolt ETA or refuse to project customers.
+ * Conservative north-up map recovery.
+ *
+ * Translation always comes from a pickup pin matched to its geocoded text address. The blue
+ * current-location dot is only a *scale* hint: Mapbox POI icons (shops, stations) share its colour
+ * and real 0.16.0 offers anchored the whole map on a POI next to the customer, shrinking a ~3 km
+ * delivery to 0.55 km. The dot's scale is therefore used only when it is strong and agrees with
+ * Bolt's own customer-leg ETA; otherwise the ETA alone sets the scale, or recovery fails closed.
  */
 internal object BoltMultiStopMapRecovery {
     private data class Candidate(
         val transform: LocalMapTransform,
-        val fit: NorthUpAnchorFit,
+        val fit: NorthUpAnchorFit?,
         val anchorKnownIndex: Int,
         val anchorMarkerIndex: Int,
         val weak: Boolean,
         val etaConflict: Boolean,
+        val weakReason: String?,
         val score: Double,
     )
 
@@ -239,13 +245,15 @@ internal object BoltMultiStopMapRecovery {
             pickupMarkerCount = markers?.pickups?.size ?: 0,
             dropoffMarkerCount = markers?.dropoffs?.size ?: 0,
         )
-        val currentMarker = markers?.currentLocation
-            ?: return BoltRecoveryResult(null, emptyDiagnostics.copy(weakAnchorReason = "current_marker_missing"), null)
-        if (knownPickups.isEmpty() || markers.pickups.isEmpty()) {
+        if (markers == null || knownPickups.isEmpty() || markers.pickups.isEmpty()) {
             return BoltRecoveryResult(null, emptyDiagnostics.copy(weakAnchorReason = "pickup_anchor_missing"), null)
         }
+        val currentMarker = markers.currentLocation
+        val etaPrior = etaToCustomerMeters?.takeIf { it > 0 }
+        if (currentMarker == null && etaPrior == null) {
+            return BoltRecoveryResult(null, emptyDiagnostics.copy(weakAnchorReason = "current_marker_missing"), null)
+        }
 
-        val screenChainPx = screenRouteLength(currentMarker.screenCenter, markers.pickups, markers.dropoffs)
         val candidates = mutableListOf<Candidate>()
         var bestRejectedFit: NorthUpAnchorFit? = null
         var rejectedRotation = false
@@ -254,65 +262,86 @@ internal object BoltMultiStopMapRecovery {
         val minimumBaselinePx = maxOf(MIN_STRONG_BASELINE_PX, (bitmapWidthPx ?: 0) * STRONG_WIDTH_FRACTION)
         knownPickups.forEachIndexed { knownIndex, known ->
             markers.pickups.forEachIndexed { markerIndex, marker ->
-                // Measure pairing rotation before solving the constrained scale. At ~90 degrees
-                // the least-squares dot product approaches zero and may fail positivity first.
-                val rawAngle = runCatching {
-                    LocalMapTransform.fromTwoAnchors(
-                        KnownMapAnchor(currentMarker.screenCenter, current),
-                        KnownMapAnchor(marker.screenCenter, known.point),
-                    ).clockwiseRotationDegrees
-                }.getOrNull()
-                if (rawAngle != null && abs(rawAngle) > MAX_ABS_ROTATION_DEGREES) {
-                    rejectedRotation = true
-                    rejectedRotationDegrees = rawAngle
-                    return@forEachIndexed
-                }
-                val fit = runCatching {
-                    LocalMapTransform.fitNorthUp(
-                        KnownMapAnchor(currentMarker.screenCenter, current),
-                        KnownMapAnchor(marker.screenCenter, known.point),
-                    )
-                }.getOrNull() ?: return@forEachIndexed
-                if (bestRejectedFit == null || fit.baselinePx > bestRejectedFit!!.baselinePx) {
-                    bestRejectedFit = fit
-                }
-                if (abs(fit.measuredRotationDegrees) > MAX_ABS_ROTATION_DEGREES) {
-                    rejectedRotation = true
-                    return@forEachIndexed
-                }
-                val weak = fit.baselinePx < minimumBaselinePx || fit.baselineMeters < MIN_STRONG_BASELINE_METERS
-                val transform = if (weak) {
-                    val prior = etaToCustomerMeters?.takeIf { it > 0 }
-                    if (prior == null || screenChainPx <= 1.0) {
-                        rejectedWeak = true
-                        return@forEachIndexed
-                    }
-                    val scale = prior / (screenChainPx * DETOUR_FACTOR)
-                    if (!scale.isFinite() || scale !in MIN_METERS_PER_PIXEL..MAX_METERS_PER_PIXEL) {
-                        rejectedWeak = true
-                        return@forEachIndexed
-                    }
-                    LocalMapTransform(KnownMapAnchor(currentMarker.screenCenter, current), scale)
+                // Bolt's to-customer ETA covers restaurant -> customers, so measure that screen chain
+                // from this pickup pin; the courier dot is not part of it (and may be a POI).
+                val pickupChainPx = screenRouteLength(
+                    marker.screenCenter,
+                    markers.pickups.filterIndexed { index, _ -> index != markerIndex },
+                    markers.dropoffs,
+                )
+                val etaScale = etaPrior
+                    ?.takeIf { pickupChainPx > 1.0 }
+                    ?.let { prior -> prior / (pickupChainPx * DETOUR_FACTOR) }
+                    ?.takeIf { it.isFinite() && it in MIN_METERS_PER_PIXEL..MAX_METERS_PER_PIXEL }
+
+                var fit: NorthUpAnchorFit? = null
+                var dotWeakReason: String? = null
+                if (currentMarker == null) {
+                    dotWeakReason = "current_marker_missing"
                 } else {
-                    fit.transform
+                    // Measure pairing rotation before solving the constrained scale. At ~90 degrees
+                    // the least-squares dot product approaches zero and may fail positivity first.
+                    val rawAngle = runCatching {
+                        LocalMapTransform.fromTwoAnchors(
+                            KnownMapAnchor(currentMarker.screenCenter, current),
+                            KnownMapAnchor(marker.screenCenter, known.point),
+                        ).clockwiseRotationDegrees
+                    }.getOrNull()
+                    fit = runCatching {
+                        LocalMapTransform.fitNorthUp(
+                            KnownMapAnchor(currentMarker.screenCenter, current),
+                            KnownMapAnchor(marker.screenCenter, known.point),
+                        )
+                    }.getOrNull()
+                    fit?.let { candidate ->
+                        if (bestRejectedFit == null || candidate.baselinePx > bestRejectedFit!!.baselinePx) {
+                            bestRejectedFit = candidate
+                        }
+                    }
+                    val measuredRotation = rawAngle ?: fit?.measuredRotationDegrees
+                    dotWeakReason = when {
+                        measuredRotation != null && abs(measuredRotation) > MAX_ABS_ROTATION_DEGREES -> {
+                            rejectedRotation = true
+                            rejectedRotationDegrees = measuredRotation
+                            "anchor_rotation_mismatch"
+                        }
+                        fit == null -> "anchor_transform_unreliable"
+                        fit.baselinePx < minimumBaselinePx || fit.baselineMeters < MIN_STRONG_BASELINE_METERS ->
+                            "anchor_baseline_too_short"
+                        fit.transform.metersPerPixel !in MIN_METERS_PER_PIXEL..MAX_METERS_PER_PIXEL ->
+                            "anchor_transform_unreliable"
+                        else -> null
+                    }
                 }
-                if (transform.metersPerPixel !in MIN_METERS_PER_PIXEL..MAX_METERS_PER_PIXEL) {
-                    return@forEachIndexed
+                val dotScale = fit?.transform?.metersPerPixel?.takeIf { dotWeakReason == null }
+                val dotAgreesWithEta = dotScale != null &&
+                    (etaScale == null || abs(dotScale - etaScale) / etaScale <= ETA_CONFLICT_FRACTION)
+                val etaConflict = dotScale != null && !dotAgreesWithEta
+                val scale = when {
+                    dotAgreesWithEta -> dotScale!!
+                    etaScale != null -> etaScale
+                    else -> {
+                        if (dotWeakReason == "anchor_baseline_too_short") rejectedWeak = true
+                        return@forEachIndexed
+                    }
                 }
+                val weak = !dotAgreesWithEta
+                val transform = LocalMapTransform(KnownMapAnchor(marker.screenCenter, known.point), scale)
                 val residual = validationResidual(
                     transform, knownPickups, markers.pickups, knownIndex, markerIndex
                 )
                 if (residual != null && residual > MAX_KNOWN_PICKUP_RESIDUAL_METERS) {
                     return@forEachIndexed
                 }
-                val etaConflict = !weak && etaToCustomerMeters != null && etaToCustomerMeters > 0 &&
-                    screenChainPx > 0 &&
-                    abs(screenChainPx * transform.metersPerPixel * DETOUR_FACTOR - etaToCustomerMeters) /
-                    etaToCustomerMeters > ETA_CONFLICT_FRACTION
-                val score = (if (weak) 1_000.0 else 0.0) +
-                    abs(fit.measuredRotationDegrees) * ROTATION_PENALTY_PER_DEGREE +
-                    (residual ?: 0.0) + (if (etaConflict) 100.0 else 0.0)
-                candidates += Candidate(transform, fit, knownIndex, markerIndex, weak, etaConflict, score)
+                val rotationPenalty = if (weak) 0.0 else abs(fit!!.measuredRotationDegrees) * ROTATION_PENALTY_PER_DEGREE
+                val score = (if (weak) 1_000.0 else 0.0) + rotationPenalty + (residual ?: 0.0) +
+                    (if (etaConflict) 100.0 else 0.0)
+                val weakReason = when {
+                    !weak -> null
+                    etaConflict -> "anchor_eta_conflict_eta_prior"
+                    else -> "${dotWeakReason ?: "anchor_transform_unreliable"}_eta_prior"
+                }
+                candidates += Candidate(transform, fit, knownIndex, markerIndex, weak, etaConflict, weakReason, score)
             }
         }
         val chosen = candidates.minByOrNull { it.score }
@@ -320,6 +349,7 @@ internal object BoltMultiStopMapRecovery {
             val why = when {
                 rejectedWeak -> "anchor_baseline_too_short"
                 rejectedRotation -> "anchor_rotation_mismatch"
+                currentMarker == null -> "current_marker_missing"
                 else -> "anchor_transform_unreliable"
             }
             return BoltRecoveryResult(null, emptyDiagnostics.copy(
@@ -372,12 +402,12 @@ internal object BoltMultiStopMapRecovery {
         }
         val diagnostics = emptyDiagnostics.copy(
             scaleMetersPerPixel = transform.metersPerPixel,
-            measuredRotationDegrees = chosen.fit.measuredRotationDegrees,
-            anchorBaselinePx = chosen.fit.baselinePx,
-            anchorBaselineMeters = chosen.fit.baselineMeters,
+            measuredRotationDegrees = chosen.fit?.measuredRotationDegrees,
+            anchorBaselinePx = chosen.fit?.baselinePx,
+            anchorBaselineMeters = chosen.fit?.baselineMeters,
             projectedPickups = inferredPickups.map { it.point },
             projectedDropoffs = dropoffs.map { it.point },
-            weakAnchorReason = if (chosen.weak) "anchor_baseline_too_short_eta_prior" else null,
+            weakAnchorReason = chosen.weakReason,
             etaConflict = chosen.etaConflict,
         )
         return BoltRecoveryResult(
@@ -665,6 +695,23 @@ internal object AutomaticBoltRouteCoordinator {
                     )
                     val anySuccess = comparison.pedestrian.isSuccess || comparison.cycleway.isSuccess
                     val reason = if (anySuccess) null else comparison.pedestrian.exceptionOrNull()?.javaClass?.simpleName ?: "route failed"
+                    val routeMeters = (comparison.cycleway.getOrNull() ?: comparison.pedestrian.getOrNull())?.distanceMeters
+                    val etaTotalMinutes = BoltRouteEtaPlausibility.totalMinutes(eta)
+                    val etaImplausible = scope == BoltRouteScope.FULL && anySuccess &&
+                        !BoltRouteEtaPlausibility.isPlausible(routeMeters, etaTotalMinutes, etaModel)
+                    if (etaImplausible) {
+                        CaptureEventLog.append(
+                            app,
+                            stage = "bolt_route_eta_implausible",
+                            platform = "Bolt",
+                            message = "route_m=${routeMeters ?: -1}; eta_total_min=${etaTotalMinutes ?: -1}; " +
+                                "expected_m=${etaTotalMinutes?.let(etaModel::estimateMeters) ?: -1}; " +
+                                "anchor=${recovered.diagnostics.weakAnchorReason ?: "strong"}; showing ETA estimate instead",
+                            dedupeWindowMs = 1_000L,
+                        )
+                    }
+                    // An implausible full route is shown as the ETA estimate, never as a verdict.
+                    val reportedScope = if (etaImplausible) BoltRouteScope.PICKUP_ONLY else scope
                     runCatching {
                         RouteResearchDatabase.get(app).recordLiveAdvisorRun(
                             offerId = offerId,
@@ -672,8 +719,13 @@ internal object AutomaticBoltRouteCoordinator {
                             parsed = parsed,
                             waypoints = waypoints,
                             locationAccuracyMeters = fix.accuracyMeters,
-                            comparison = comparison.takeIf { anySuccess },
-                            failureReason = if (anySuccess) note else reason,
+                            // History restore replays successful runs; never persist a rejected route as one.
+                            comparison = comparison.takeIf { anySuccess && !etaImplausible },
+                            failureReason = when {
+                                etaImplausible -> "$note; route rejected: incompatible with Bolt ETA"
+                                anySuccess -> note
+                                else -> reason
+                            },
                         )
                     }
                     inFlight.remove(offerId)
@@ -683,7 +735,7 @@ internal object AutomaticBoltRouteCoordinator {
                                 offerId = offerId,
                                 waypoints = waypoints,
                                 comparison = comparison.takeIf { anySuccess },
-                                scope = scope.takeIf { anySuccess },
+                                scope = reportedScope.takeIf { anySuccess },
                                 note = note.takeIf { anySuccess },
                                 failureReason = reason,
                                 etaEstimateMeters = etaEstimateMeters,

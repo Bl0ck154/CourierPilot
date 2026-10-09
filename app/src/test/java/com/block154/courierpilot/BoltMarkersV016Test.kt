@@ -65,6 +65,35 @@ class BoltMarkersV016Test {
         bitmap.recycle()
     }
 
+    @Test fun shopIconWithWhiteGlyphIsNeverTakenForTheCourierDot() {
+        val bitmap = blank()
+        disk(bitmap, 120, 700, 24, cyan) // Mapbox shop/station POI next to the customer
+        disk(bitmap, 120, 700, 9, Color.WHITE)
+        disk(bitmap, 560, 420, 14, cyan) // solid courier puck at the restaurant
+        disk(bitmap, 560, 380, 36, blue)
+        disk(bitmap, 160, 640, 36, green)
+        val markers = BoltScreenshotMarkerExtractor.extract(bitmap)
+        assertNotNull(markers)
+        val dot = markers!!.currentLocation
+        assertNotNull(dot)
+        assertTrue(dot!!.screenCenter.x > 400.0)
+        bitmap.recycle()
+    }
+
+    @Test fun onlyPoiIconsMeansNoCourierDotButPinsSurvive() {
+        val bitmap = blank()
+        disk(bitmap, 120, 700, 24, cyan)
+        disk(bitmap, 120, 700, 9, Color.WHITE)
+        disk(bitmap, 560, 380, 36, blue)
+        disk(bitmap, 160, 640, 36, green)
+        val markers = BoltScreenshotMarkerExtractor.extract(bitmap)
+        assertNotNull(markers)
+        assertNull(markers!!.currentLocation)
+        assertEquals(1, markers.pickups.size)
+        assertEquals(1, markers.dropoffs.size)
+        bitmap.recycle()
+    }
+
     private fun blank() = Bitmap.createBitmap(700, 1500, Bitmap.Config.ARGB_8888).apply {
         eraseColor(Color.rgb(245, 245, 245))
     }

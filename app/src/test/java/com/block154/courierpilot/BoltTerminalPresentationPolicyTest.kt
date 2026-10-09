@@ -11,7 +11,7 @@ class BoltTerminalPresentationPolicyTest {
         )
         assertTrue(result.rateLine.contains("€1.05/km"))
         assertTrue(result.rateLine.contains("⏳"))
-        assertEquals("🕒 ~10 min ≈ 2.3 km", result.routeLine)
+        assertEquals("🕒 ~10 min\n≈ 2.3 km", result.routeLine)
     }
 
     @Test fun failureWithoutEtaNeverShowsAFalseRoute() {

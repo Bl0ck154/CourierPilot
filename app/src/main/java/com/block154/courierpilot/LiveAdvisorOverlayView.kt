@@ -4,15 +4,19 @@ import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.SystemClock
 import android.text.SpannableString
+import android.text.Spanned
 import android.text.TextUtils
-import android.text.style.AbsoluteSizeSpan
-import android.util.TypedValue
+import android.text.style.ForegroundColorSpan
+import android.text.style.RelativeSizeSpan
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -51,6 +55,7 @@ internal class LiveAdvisorOverlayView(
     private var windowParams: WindowManager.LayoutParams? = null
     private var decisionContainer: FrameLayout? = null
     private var decisionText: TextView? = null
+    private var emojiText: TextView? = null
     private var decisionSpinner: ProgressBar? = null
     private var routeText: TextView? = null
     private var debugText: TextView? = null
@@ -107,7 +112,10 @@ internal class LiveAdvisorOverlayView(
 
     fun applyDebugLines(lines: List<String>) {
         debugText?.apply {
-            text = lines.filter { it.isNotBlank() }.take(3).joinToString("\n")
+            val shown = lines.filter { it.isNotBlank() }.take(3).toMutableList()
+            // Debug lines only exist in developer mode; the version rides on the last one.
+            if (shown.isNotEmpty()) shown[shown.lastIndex] = shown.last() + " · v${BuildConfig.VERSION_NAME}"
+            text = shown.joinToString("\n")
             visibility = if (text.isEmpty()) View.GONE else View.VISIBLE
         }
     }
@@ -123,18 +131,18 @@ internal class LiveAdvisorOverlayView(
 
         val container = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(8), dp(4), dp(8), dp(4))
+            setPadding(dp(12), dp(6), dp(4), dp(6))
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(12).toFloat()
-                setColor(Color.argb(210, 15, 23, 36))
-                setStroke(dp(1), Color.argb(105, 71, 85, 105))
+                cornerRadius = dp(14).toFloat()
+                setColor(Color.argb(230, 15, 23, 36))
+                setStroke(dp(1), Color.argb(16, 255, 255, 255))
             }
             elevation = dp(9).toFloat()
         }
         installGestureSurface(container)
 
-        // The old title/header row wasted a full line above every offer.
+        // Rate first (it is the decision), route context right-aligned, close button in the corner.
         val body = FrameLayout(service)
         val mainRow = LinearLayout(service).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -143,53 +151,50 @@ internal class LiveAdvisorOverlayView(
         }
         installGestureSurface(mainRow)
 
-        routeText = TextView(service).apply {
-            setTextColor(Color.rgb(190, 200, 214))
-            textSize = 11f
-            includeFontPadding = false
-            typeface = Typeface.create("sans-serif", Typeface.NORMAL)
-            gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            maxLines = 2
-        }.also { view ->
-            installGestureSurface(view)
-            mainRow.addView(
-                view,
-                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginEnd = dp(3)
-                },
-            )
-        }
-
         val rateFrame = FrameLayout(service).apply {
-            minimumWidth = dp(RATE_MIN_WIDTH_DP)
             minimumHeight = dp(RATE_MIN_HEIGHT_DP)
             background = null
         }
         installGestureSurface(rateFrame)
         decisionContainer = rateFrame
 
+        val rateRow = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+        }
+        installGestureSurface(rateRow)
+
         decisionText = TextView(service).apply {
-            textSize = 24f
+            textSize = RATE_TEXT_SP
             includeFontPadding = false
-            typeface = Typeface.create("monospace", Typeface.BOLD)
-            gravity = Gravity.END or Gravity.CENTER_VERTICAL
-            setPadding(dp(1), 0, dp(1), 0)
+            typeface = Typeface.create("sans-serif-condensed", Typeface.BOLD)
             setSingleLine(true)
-            ellipsize = TextUtils.TruncateAt.END
-            setAutoSizeTextTypeUniformWithConfiguration(
-                16, 24, 1, TypedValue.COMPLEX_UNIT_SP,
-            )
         }.also { view ->
             installGestureSurface(view)
-            rateFrame.addView(
-                view,
-                FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    Gravity.END or Gravity.CENTER_VERTICAL,
-                ),
-            )
+            rateRow.addView(view, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT,
+            ))
         }
+
+        emojiText = TextView(service).apply {
+            textSize = EMOJI_TEXT_SP
+            includeFontPadding = false
+            visibility = View.GONE
+        }.also { view ->
+            installGestureSurface(view)
+            rateRow.addView(view, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply { marginStart = dp(6) })
+        }
+
+        rateFrame.addView(
+            rateRow,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.START or Gravity.CENTER_VERTICAL,
+            ),
+        )
 
         decisionSpinner = ProgressBar(service, null, android.R.attr.progressBarStyleSmall).apply {
             isIndeterminate = true
@@ -197,14 +202,35 @@ internal class LiveAdvisorOverlayView(
         }.also { spinner ->
             rateFrame.addView(
                 spinner,
-                FrameLayout.LayoutParams(dp(16), dp(16), Gravity.CENTER),
+                FrameLayout.LayoutParams(dp(18), dp(18), Gravity.START or Gravity.CENTER_VERTICAL),
             )
         }
 
         mainRow.addView(
             rateFrame,
-            LinearLayout.LayoutParams(0, dp(RATE_MIN_HEIGHT_DP), 0.55f),
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f),
         )
+
+        routeText = TextView(service).apply {
+            setTextColor(Color.rgb(195, 204, 216))
+            textSize = 12f
+            includeFontPadding = false
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            textAlignment = View.TEXT_ALIGNMENT_VIEW_END
+            setLineSpacing(dp(2).toFloat(), 1f)
+            maxLines = 2
+        }.also { view ->
+            installGestureSurface(view)
+            mainRow.addView(
+                view,
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                ).apply { marginStart = dp(6) },
+            )
+        }
+
         body.addView(
             mainRow,
             FrameLayout.LayoutParams(
@@ -216,13 +242,13 @@ internal class LiveAdvisorOverlayView(
             TextView(service).apply {
                 text = "×"
                 setTextColor(Color.rgb(148, 163, 184))
-                textSize = 14f
+                textSize = 15f
                 includeFontPadding = false
                 gravity = Gravity.CENTER
                 contentDescription = "Close live advisor"
                 setOnClickListener { onDismiss("closed by user") }
             },
-            FrameLayout.LayoutParams(dp(CLOSE_TOUCH_DP), dp(CLOSE_TOUCH_DP), Gravity.TOP or Gravity.END),
+            FrameLayout.LayoutParams(dp(CLOSE_TOUCH_DP), dp(CLOSE_TOUCH_DP), Gravity.CENTER_VERTICAL or Gravity.END),
         )
         container.addView(body)
 
@@ -233,6 +259,7 @@ internal class LiveAdvisorOverlayView(
             maxLines = 3
             ellipsize = TextUtils.TruncateAt.END
             setTextColor(Color.rgb(148, 163, 184))
+            setPadding(0, dp(4), dp(8), 0)
             visibility = View.GONE
         }.also { container.addView(it) }
 
@@ -279,6 +306,7 @@ internal class LiveAdvisorOverlayView(
             .onFailure { error ->
                 decisionContainer = null
                 decisionText = null
+                emojiText = null
                 decisionSpinner = null
                 routeText = null
                 debugText = null
@@ -301,6 +329,7 @@ internal class LiveAdvisorOverlayView(
         windowParams = null
         decisionContainer = null
         decisionText = null
+        emojiText = null
         decisionSpinner = null
         routeText = null
         debugText = null
@@ -333,37 +362,48 @@ internal class LiveAdvisorOverlayView(
 
     fun applyDecision(line: String, band: OfferDecisionBand, loading: Boolean) {
         decisionSpinner?.visibility = if (loading) View.VISIBLE else View.GONE
+        val parts = LiveAdvisorRateStylePolicy.split(line)
+        val style = LiveAdvisorRateStylePolicy.style(band, estimate = parts.value.startsWith("≈"))
         decisionText?.apply {
             visibility = if (loading) View.INVISIBLE else View.VISIBLE
-            text = line
-            setTextColor(decisionColor(band))
-            when (band) {
-                OfferDecisionBand.FIRE -> setShadowLayer(dp(5).toFloat(), 0f, 0f, Color.argb(210, 255, 112, 38))
-                OfferDecisionBand.GOOD -> setShadowLayer(dp(3).toFloat(), 0f, 0f, Color.argb(120, 52, 211, 153))
-                OfferDecisionBand.OK -> setShadowLayer(dp(2).toFloat(), 0f, 0f, Color.argb(75, 245, 158, 11))
-                else -> setShadowLayer(0f, 0f, 0f, Color.TRANSPARENT)
+            textSize = LiveAdvisorRateStylePolicy.valueTextSp(parts.value)
+            text = SpannableString(parts.value + parts.unit).apply {
+                if (parts.unit.isNotEmpty()) {
+                    val unitStart = parts.value.length
+                    setSpan(RelativeSizeSpan(UNIT_RELATIVE_SIZE), unitStart, length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                    setSpan(
+                        ForegroundColorSpan(Color.argb(190, Color.red(style.color), Color.green(style.color), Color.blue(style.color))),
+                        unitStart,
+                        length,
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                    )
+                }
             }
+            setTextColor(style.color)
+            if (style.glowRadiusDp > 0f) {
+                setShadowLayer(style.glowRadiusDp * service.resources.displayMetrics.density, 0f, 0f, style.glowColor)
+            } else {
+                setShadowLayer(0f, 0f, 0f, Color.TRANSPARENT)
+            }
+        }
+        emojiText?.apply {
+            val show = !loading && parts.emoji.isNotEmpty()
+            visibility = if (show) View.VISIBLE else View.GONE
+            text = parts.emoji
+            alpha = style.emojiAlpha
+            // Color emoji ignore text color; a saturation filter on the view layer fades them instead.
+            val paint = Paint().apply {
+                colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(style.emojiSaturation) })
+            }
+            setLayerType(View.LAYER_TYPE_HARDWARE, paint)
         }
         decisionContainer?.background = null
     }
 
     fun applyRoute(text: String, visible: Boolean) {
-        val routeLine = text
         routeText?.apply {
             visibility = if (visible) View.VISIBLE else View.INVISIBLE
-            if (DeveloperModeSettings.enabled(service) && visible) {
-                val suffix = " · v${BuildConfig.VERSION_NAME}"
-                this.text = SpannableString(routeLine + suffix).apply {
-                    setSpan(
-                        AbsoluteSizeSpan(8, true),
-                        routeLine.length,
-                        length,
-                        android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
-                    )
-                }
-            } else {
-                this.text = routeLine
-            }
+            this.text = text
         }
     }
 
@@ -596,15 +636,6 @@ internal class LiveAdvisorOverlayView(
         runCatching { windowManager.updateViewLayout(view, params) }
     }
 
-    private fun decisionColor(band: OfferDecisionBand): Int = when (band) {
-        OfferDecisionBand.FIRE -> Color.rgb(255, 139, 61)
-        OfferDecisionBand.GOOD -> Color.rgb(110, 231, 183)
-        OfferDecisionBand.OK -> Color.rgb(245, 190, 72)
-        OfferDecisionBand.BAD -> Color.rgb(177, 143, 128)
-        OfferDecisionBand.TERRIBLE -> Color.rgb(121, 132, 148)
-        OfferDecisionBand.UNKNOWN -> Color.rgb(190, 200, 214)
-    }
-
     private fun dp(value: Int): Int = (value * service.resources.displayMetrics.density).toInt()
 
     private companion object {
@@ -613,9 +644,11 @@ internal class LiveAdvisorOverlayView(
         const val FADE_OFFSET_DP = 10
         const val DEFAULT_Y_DP = 48
         const val BOTTOM_MARGIN_DP = 16
-        const val CLOSE_TOUCH_DP = 32
-        const val RATE_MIN_WIDTH_DP = 112
+        const val CLOSE_TOUCH_DP = 30
         const val RATE_MIN_HEIGHT_DP = 36
+        const val RATE_TEXT_SP = 30f
+        const val EMOJI_TEXT_SP = 21f
+        const val UNIT_RELATIVE_SIZE = 0.43f
         const val SWIPE_EXIT_MARGIN_DP = 24
         const val SWIPE_EXIT_MS = 160L
         const val SNAP_BACK_MS = 180L

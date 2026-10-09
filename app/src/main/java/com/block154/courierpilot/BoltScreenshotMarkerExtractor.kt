@@ -18,6 +18,10 @@ internal object BoltScreenshotMarkerExtractor {
     private const val SAMPLE_STEP = 2
     private const val MAX_MARKERS_PER_KIND = 4
     private const val RELATIVE_PEAK_THRESHOLD = 0.50
+    private const val MAX_CURRENT_CANDIDATES = 4
+    // A larger POI icon must not hide the smaller courier puck before the glyph check runs.
+    private const val CURRENT_RELATIVE_PEAK_THRESHOLD = 0.2
+    private const val MAX_PUCK_INNER_WHITE_FRACTION = 0.08
 
     fun extract(
         bitmap: Bitmap,
@@ -28,12 +32,18 @@ internal object BoltScreenshotMarkerExtractor {
         val mapBottom = (mapBottomPx ?: (bitmap.height * MAP_BOTTOM_FRACTION).roundToInt())
             .coerceIn(1, bitmap.height)
 
-        val currentCluster = findClusters(bitmap, mapBottom, Palette.CYAN, 1, excludeRects).firstOrNull() ?: return null
+        // Mapbox POI icons (shops, stations) share the courier dot's blue. They carry a white glyph
+        // in the middle; the courier puck is solid. A missing dot is fine: recovery then anchors on
+        // the pickup pin and Bolt's ETA instead of inventing a courier position.
+        val currentCluster = findClusters(
+            bitmap, mapBottom, Palette.CYAN, MAX_CURRENT_CANDIDATES, excludeRects, CURRENT_RELATIVE_PEAK_THRESHOLD,
+        )
+            .filter { innerWhiteFraction(bitmap, it) <= MAX_PUCK_INNER_WHITE_FRACTION }
+            .maxByOrNull { it.score }
         val pickupClusters = findClusters(bitmap, mapBottom, Palette.BLUE, MAX_MARKERS_PER_KIND, excludeRects)
         val dropoffClusters = findClusters(bitmap, mapBottom, Palette.GREEN, MAX_MARKERS_PER_KIND, excludeRects)
         if (pickupClusters.isEmpty() || dropoffClusters.isEmpty()) return null
 
-        val currentPoint = ScreenPoint(currentCluster.centerX, currentCluster.centerY)
         val pickups = markerEvidence(
             bitmap = bitmap,
             mapBottom = mapBottom,
@@ -59,12 +69,14 @@ internal object BoltScreenshotMarkerExtractor {
         if (pickups.isEmpty() || dropoffs.isEmpty()) return null
 
         return BoltSemanticMarkers(
-            currentLocation = BoltMarkerEvidence(
-                kind = BoltMarkerKind.CURRENT_LOCATION,
-                screenCenter = currentPoint,
-                semanticLabel = "Bolt screenshot current-location marker",
-                confidence = 0.74,
-            ),
+            currentLocation = currentCluster?.let { cluster ->
+                BoltMarkerEvidence(
+                    kind = BoltMarkerKind.CURRENT_LOCATION,
+                    screenCenter = ScreenPoint(cluster.centerX, cluster.centerY),
+                    semanticLabel = "Bolt screenshot current-location marker",
+                    confidence = 0.74,
+                )
+            },
             pickups = pickups,
             dropoffs = dropoffs,
             unknown = emptyList(),
@@ -92,6 +104,7 @@ internal object BoltScreenshotMarkerExtractor {
         palette: Palette,
         maxMarkers: Int,
         excludeRects: List<Rect>,
+        relativePeakThreshold: Double = RELATIVE_PEAK_THRESHOLD,
     ): List<Cluster> {
         val width = bitmap.width
         val binSize = maxOf(12, width / 45)
@@ -136,7 +149,7 @@ internal object BoltScreenshotMarkerExtractor {
         val absoluteMinimum = maxOf(8, binSize * binSize / 20)
         val scoreThreshold = maxOf(
             absoluteMinimum,
-            (bestScore * RELATIVE_PEAK_THRESHOLD).roundToInt(),
+            (bestScore * relativePeakThreshold).roundToInt(),
         )
         val minimumSeparationPx = maxOf(30.0, binSize * 2.35)
         val accepted = mutableListOf<Cluster>()
@@ -327,6 +340,26 @@ internal object BoltScreenshotMarkerExtractor {
             }
         }
         return false
+    }
+
+    /** Share of near-white pixels in the inner half of a blue cluster (POI glyph vs solid puck). */
+    private fun innerWhiteFraction(bitmap: Bitmap, cluster: Cluster): Double {
+        val radius = maxOf(3, cluster.bodyDiameterPx / 4)
+        val cx = cluster.centerX.roundToInt()
+        val cy = cluster.centerY.roundToInt()
+        var white = 0
+        var total = 0
+        for (y in (cy - radius)..(cy + radius)) {
+            if (y !in 0 until bitmap.height) continue
+            for (x in (cx - radius)..(cx + radius)) {
+                if (x !in 0 until bitmap.width) continue
+                if ((x - cx) * (x - cx) + (y - cy) * (y - cy) > radius * radius) continue
+                val color = bitmap.getPixel(x, y)
+                total++
+                if ((color shr 16 and 0xff) >= 225 && (color shr 8 and 0xff) >= 225 && (color and 0xff) >= 225) white++
+            }
+        }
+        return if (total == 0) 0.0 else white.toDouble() / total
     }
 
     private fun matches(color: Int, palette: Palette): Boolean {

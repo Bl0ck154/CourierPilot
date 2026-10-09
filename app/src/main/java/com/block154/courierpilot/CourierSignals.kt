@@ -305,6 +305,11 @@ internal object CourierSignals {
         return strongHeaders.any(lower::contains)
     }
 
+    fun hasDeclineControl(text: String): Boolean {
+        val lower = text.lowercase(Locale.ROOT)
+        return rejectDecisionPhrases.any(lower::contains)
+    }
+
     fun looksLikeOfferScreen(text: String, parsed: ParsedOffer): Boolean {
         val lower = text.lowercase(Locale.ROOT)
         val hasDecision = decisionPhrases.any(lower::contains)
