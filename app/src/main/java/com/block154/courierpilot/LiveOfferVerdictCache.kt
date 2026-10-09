@@ -114,4 +114,8 @@ internal class LiveOfferVerdictCache(
 internal object LiveOfferSessionVisibilityPolicy {
     fun shouldAttach(userHidden: Boolean, temporarilyHidden: Boolean): Boolean =
         !userHidden && !temporarilyHidden
+
+    /** Only a confirmed different offer may replace a user-hidden card session. */
+    fun sameSession(transactionMatches: Boolean, current: ParsedOffer?, incoming: ParsedOffer): Boolean =
+        transactionMatches && current != null && !LiveOfferResumePolicy.definitelyDifferent(current, incoming)
 }
