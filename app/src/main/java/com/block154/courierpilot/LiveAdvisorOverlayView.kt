@@ -293,6 +293,9 @@ internal class LiveAdvisorOverlayView(
     }
 
     fun detach(animate: Boolean = true) {
+        // WS-A may hide the session synchronously inside onDismiss. Never cancel the
+        // exit animation or snap the just-swiped window back onto the display.
+        if (isSwipeExitRunning) return
         val view = root
         root = null
         windowParams = null
@@ -300,8 +303,13 @@ internal class LiveAdvisorOverlayView(
         decisionText = null
         decisionSpinner = null
         routeText = null
+        debugText = null
         gestureMode = GESTURE_NONE
+        gestureTouchActive = false
+        velocityTracker?.recycle()
+        velocityTracker = null
         captureSuppressed = false
+        obstacleFinder.reset()
         if (view == null) return
         view.animate().cancel()
         if (!animate || !view.isAttachedToWindow) {
@@ -359,6 +367,8 @@ internal class LiveAdvisorOverlayView(
     }
 
     fun setCaptureSuppressed(suppressed: Boolean) {
+        // A screenshot callback can arrive in the middle of the courier's finger movement.
+        if (gestureTouchActive || isSwipeExitRunning) return
         if (!LiveAdvisorCapturePolicy.shouldSuppressOverlay(platformProvider())) {
             captureSuppressed = false
             root?.apply {
@@ -386,9 +396,13 @@ internal class LiveAdvisorOverlayView(
     }
 
     private fun handleGesture(event: MotionEvent): Boolean {
+        if (isSwipeExitRunning) return true
         val view = root
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                velocityTracker?.recycle()
+                velocityTracker = VelocityTracker.obtain()
+                recordRawMotion(event)
                 gestureDownX = event.rawX
                 gestureDownY = event.rawY
                 gestureStartY = windowParams?.y ?: dp(DEFAULT_Y_DP)
@@ -409,6 +423,7 @@ internal class LiveAdvisorOverlayView(
                 view?.alpha = 1f
             }
             MotionEvent.ACTION_MOVE -> {
+                recordRawMotion(event)
                 val now = SystemClock.elapsedRealtime()
                 if (gestureMoveEvents > 0) {
                     gestureMaxMoveGapMs = maxOf(gestureMaxMoveGapMs, now - gestureLastMoveAtElapsed)
@@ -434,6 +449,11 @@ internal class LiveAdvisorOverlayView(
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                recordRawMotion(event)
+                velocityTracker?.computeCurrentVelocity(1000)
+                val horizontalVelocity = velocityTracker?.xVelocity ?: 0f
+                velocityTracker?.recycle()
+                velocityTracker = null
                 val dx = event.rawX - gestureDownX
                 val dy = event.rawY - gestureDownY
                 val mode = gestureMode
@@ -442,14 +462,33 @@ internal class LiveAdvisorOverlayView(
                 gestureMode = GESTURE_NONE
                 gestureTouchActive = false
                 if (mode == GESTURE_HORIZONTAL) {
-                    val threshold = maxOf(dp(SWIPE_MIN_DP).toFloat(), (view?.width ?: 1) * SWIPE_FRACTION)
-                    if (event.actionMasked == MotionEvent.ACTION_UP && abs(dx) >= threshold) {
-                        logGesturePerformance(mode, dy, event.actionMasked == MotionEvent.ACTION_CANCEL)
+                    if (event.actionMasked == MotionEvent.ACTION_UP && view != null &&
+                        OverlaySwipePolicy.shouldDismiss(
+                            dx, horizontalVelocity, view.width, service.resources.displayMetrics.density,
+                        )
+                    ) {
+                        logGesturePerformance(mode, dy, cancelled = false)
+                        isSwipeExitRunning = true
+                        // The window remains attached until the exit animation has finished.
+                        val direction = if (dx >= 0f) 1f else -1f
+                        view.animate().cancel()
+                        view.animate()
+                            .translationX(direction * (view.width + dp(SWIPE_EXIT_MARGIN_DP)))
+                            .alpha(0f)
+                            .setInterpolator(DecelerateInterpolator())
+                            .setDuration(SWIPE_EXIT_MS)
+                            .withEndAction { finishSwipeExit(view) }
+                            .start()
                         onGestureFinished()
                         onDismiss("swiped by user")
                         return true
                     }
-                    view?.animate()?.translationX(0f)?.alpha(1f)?.setDuration(SNAP_BACK_MS)?.start()
+                    view?.animate()
+                        ?.translationX(0f)
+                        ?.alpha(1f)
+                        ?.setInterpolator(DecelerateInterpolator())
+                        ?.setDuration(SNAP_BACK_MS)
+                        ?.start()
                 } else if (mode == GESTURE_VERTICAL) {
                     commitVerticalDrag(gesturePendingY)
                 }
@@ -458,6 +497,24 @@ internal class LiveAdvisorOverlayView(
             }
         }
         return true
+    }
+
+    private fun recordRawMotion(event: MotionEvent) {
+        // Raw coordinates are stable even while translationX moves the touched view.
+        val raw = MotionEvent.obtain(event)
+        raw.setLocation(event.rawX, event.rawY)
+        velocityTracker?.addMovement(raw)
+        raw.recycle()
+    }
+
+    private fun finishSwipeExit(view: View) {
+        if (!isSwipeExitRunning) return
+        isSwipeExitRunning = false
+        if (root === view) {
+            detach(animate = false)
+        } else {
+            runCatching { windowManager.removeView(view) }
+        }
     }
 
     private fun logGesturePerformance(mode: Int, dy: Float, cancelled: Boolean) {
@@ -505,9 +562,48 @@ internal class LiveAdvisorOverlayView(
     }
 
     private fun clampY(targetY: Int, view: View): Int {
-        val min = dp(MIN_Y_DP)
-        val max = (service.resources.displayMetrics.heightPixels - view.height - dp(BOTTOM_MARGIN_DP)).coerceAtLeast(min)
+        val min = topInsetPx + dp(4)
+        val max = (screenHeightPx - view.height - dp(BOTTOM_MARGIN_DP)).coerceAtLeast(min)
         return targetY.coerceIn(min, max)
+    }
+
+    private fun screenWidth(): Int = runCatching {
+        if (Build.VERSION.SDK_INT >= 30) windowManager.currentWindowMetrics.bounds.width()
+        else service.resources.displayMetrics.widthPixels
+    }.getOrDefault(service.resources.displayMetrics.widthPixels).coerceAtLeast(1)
+
+    private fun screenHeight(): Int = runCatching {
+        if (Build.VERSION.SDK_INT >= 30) windowManager.currentWindowMetrics.bounds.height()
+        else service.resources.displayMetrics.heightPixels
+    }.getOrDefault(service.resources.displayMetrics.heightPixels).coerceAtLeast(1)
+
+    private fun topInset(): Int {
+        val measured = runCatching {
+            if (Build.VERSION.SDK_INT >= 30) {
+                windowManager.currentWindowMetrics.windowInsets.getInsetsIgnoringVisibility(
+                    WindowInsets.Type.statusBars() or WindowInsets.Type.displayCutout(),
+                ).top
+            } else 0
+        }.getOrDefault(0)
+        if (measured > 0) return measured
+        val statusBarId = service.resources.getIdentifier("status_bar_height", "dimen", "android")
+        return if (statusBarId != 0) {
+            runCatching { service.resources.getDimensionPixelSize(statusBarId) }.getOrDefault(0)
+        } else 0
+    }
+
+    private fun refreshWidth() {
+        if (gestureTouchActive || isSwipeExitRunning) return
+        val view = root ?: return
+        val params = windowParams ?: return
+        val width = OverlayGeometryPolicy.widthPx(
+            screenWidth(), service.resources.displayMetrics.density,
+        )
+        if (params.width == width) return
+        params.width = width
+        screenHeightPx = screenHeight()
+        topInsetPx = topInset()
+        runCatching { windowManager.updateViewLayout(view, params) }
     }
 
     private fun decisionColor(band: OfferDecisionBand): Int = when (band) {
@@ -526,14 +622,13 @@ internal class LiveAdvisorOverlayView(
         const val FADE_OUT_MS = 280L
         const val FADE_OFFSET_DP = 10
         const val DEFAULT_Y_DP = 48
-        const val MIN_Y_DP = 12
         const val BOTTOM_MARGIN_DP = 16
-        const val HORIZONTAL_MARGIN_DP = 12
-        const val RATE_MIN_WIDTH_DP = 176
-        const val RATE_MIN_HEIGHT_DP = 44
-        const val SWIPE_MIN_DP = 44
-        const val SWIPE_FRACTION = 0.16f
-        const val SNAP_BACK_MS = 140L
+        const val CLOSE_TOUCH_DP = 32
+        const val RATE_MIN_WIDTH_DP = 112
+        const val RATE_MIN_HEIGHT_DP = 36
+        const val SWIPE_EXIT_MARGIN_DP = 24
+        const val SWIPE_EXIT_MS = 160L
+        const val SNAP_BACK_MS = 180L
         const val GESTURE_WINDOW_RELAYOUT_MIN_INTERVAL_MS = 16L
         const val GESTURE_NONE = 0
         const val GESTURE_HORIZONTAL = 1
