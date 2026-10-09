@@ -68,6 +68,7 @@ internal object BoltScreenshotMarkerExtractor {
             pickups = pickups,
             dropoffs = dropoffs,
             unknown = emptyList(),
+            bitmapWidthPx = bitmap.width,
         )
     }
 
