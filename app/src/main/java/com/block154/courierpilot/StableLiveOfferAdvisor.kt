@@ -580,13 +580,8 @@ internal class StableLiveOfferAdvisor(
             message = reason,
             dedupeWindowMs = 500L,
         )
-        // WS-B invokes onDismiss at swipe-exit start. Defer cleanup past its 160 ms animation.
-        // Closing with the X has no exit animation to preserve.
-        if (reason.contains("swip", ignoreCase = true)) {
-            handler.postDelayed({ if (userHidden && overlayView.isAttached) detachView(animate = false) }, 220L)
-        } else {
-            detachView(animate = false)
-        }
+        // WS-B owns the swipe exit animation and detaches at its end. Never cancel it here.
+        if (!overlayView.isSwipeExitRunning) detachView(animate = false)
     }
 
     fun suppressCurrentOffer(reason: String = "superseded", animate: Boolean = true) {
@@ -784,6 +779,15 @@ internal class StableLiveOfferAdvisor(
 
     private fun ensureView() {
         if (!LiveOfferSessionVisibilityPolicy.shouldAttach(userHidden, temporarilyHidden)) return
+        if (overlayView.isSwipeExitRunning) {
+            // A real replacement can arrive during the outgoing 160 ms swipe. Attach it only
+            // after WS-B has removed the old window, not into the disappearing view.
+            val expectedGeneration = generation
+            handler.postDelayed({
+                if (generation == expectedGeneration && !dismissed && !userHidden) ensureView()
+            }, 50L)
+            return
+        }
         overlayView.ensure()
     }
 
