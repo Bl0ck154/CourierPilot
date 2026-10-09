@@ -997,7 +997,7 @@ class OfferAccessibilityService : AccessibilityService() {
                 override fun onSuccess(screenshot: ScreenshotResult) {
                     if (!isCaptureCurrent(captureToken)) {
                         discardScreenshot(screenshot)
-                        return@prepareCaptureBitmap
+                        return
                     }
                     if (deferScreenshotProcessingForOverlayDrag(screenshot, captureToken, platform)) return
                     prepareCaptureBitmap(screenshot, captureToken, null) { bitmap ->
@@ -1090,7 +1090,7 @@ class OfferAccessibilityService : AccessibilityService() {
                 override fun onSuccess(screenshot: ScreenshotResult) {
                     if (!isCaptureCurrent(captureToken)) {
                         discardScreenshot(screenshot)
-                        return@prepareCaptureBitmap
+                        return
                     }
                     if (deferScreenshotProcessingForOverlayDrag(screenshot, captureToken, platform)) return
                     prepareCaptureBitmap(screenshot, captureToken, pending, OfferParser.parse(accessibilityText).deliveryCount ?: 1) { bitmap ->
@@ -1255,7 +1255,7 @@ class OfferAccessibilityService : AccessibilityService() {
                 override fun onSuccess(screenshot: ScreenshotResult) {
                     if (!isCaptureCurrent(captureToken)) {
                         discardScreenshot(screenshot)
-                        return@prepareCaptureBitmap
+                        return
                     }
                     if (deferScreenshotProcessingForOverlayDrag(screenshot, captureToken, platform)) return
                     if (pending.packageName == CourierSignals.WOLT_PACKAGE && !isVisibleWoltOfferSurface(pending)) {
