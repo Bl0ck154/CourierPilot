@@ -597,8 +597,10 @@ internal object LiveAdvisorHub {
                 val comparison = outcome.comparison
                 // Score/render the candidate against the existing reference corpus before inserting
                 // this offer into local/server market history.
+                // The courier may accept the offer before routing finishes. Retain local
+                // research evidence by offer ID even when the on-screen advisor has ended.
+                BoltRecoveryTruth.remember(service, outcome, outcome.etaToCustomerMinutes)
                 if (isCurrentOffer(current)) {
-                    BoltRecoveryTruth.remember(service, outcome, outcome.etaToCustomerMinutes)
                     advisor?.updateBoltRoute(outcome)
                 }
                 if (comparison != null && outcome.scope == BoltRouteScope.FULL) {
