@@ -73,10 +73,12 @@ internal object OfferOverlayBitmapMask {
         if (width <= 0 || height <= 0) return false
 
         val fallback = medianBorderColor(bitmap, Rect(left, top, right, bottom))
-        val topEdge = IntArray(width) { i -> edgeAverage(bitmap, left + i, top - 1, dx = 0, dy = -1, fallback) }
-        val bottomEdge = IntArray(width) { i -> edgeAverage(bitmap, left + i, bottom, dx = 0, dy = 1, fallback) }
-        val leftEdge = IntArray(height) { j -> edgeAverage(bitmap, left - 1, top + j, dx = -1, dy = 0, fallback) }
-        val rightEdge = IntArray(height) { j -> edgeAverage(bitmap, right, top + j, dx = 1, dy = 0, fallback) }
+        // Edges are heavily smoothed: a road, pin or notification banner touching one edge pixel
+        // must not be dragged across the whole patch as a streak (seen on the 0.17.2 device trace).
+        val topEdge = smooth(IntArray(width) { i -> edgeAverage(bitmap, left + i, top - 1, dx = 0, dy = -1, fallback) })
+        val bottomEdge = smooth(IntArray(width) { i -> edgeAverage(bitmap, left + i, bottom, dx = 0, dy = 1, fallback) })
+        val leftEdge = smooth(IntArray(height) { j -> edgeAverage(bitmap, left - 1, top + j, dx = -1, dy = 0, fallback) })
+        val rightEdge = smooth(IntArray(height) { j -> edgeAverage(bitmap, right, top + j, dx = 1, dy = 0, fallback) })
 
         val row = IntArray(width)
         for (j in 0 until height) {
@@ -90,6 +92,34 @@ internal object OfferOverlayBitmapMask {
         return true
     }
 
+    /** Two passes of a wide box blur (radius ≈ 1/4 of the edge) over packed RGB colours. */
+    private fun smooth(colors: IntArray): IntArray {
+        if (colors.size < 3) return colors
+        val radius = (colors.size / 4).coerceAtLeast(2)
+        var current = colors
+        repeat(2) {
+            val red = LongArray(current.size + 1)
+            val green = LongArray(current.size + 1)
+            val blue = LongArray(current.size + 1)
+            for (i in current.indices) {
+                red[i + 1] = red[i] + Color.red(current[i])
+                green[i + 1] = green[i] + Color.green(current[i])
+                blue[i + 1] = blue[i] + Color.blue(current[i])
+            }
+            current = IntArray(current.size) { i ->
+                val from = (i - radius).coerceAtLeast(0)
+                val to = (i + radius + 1).coerceAtMost(current.size)
+                val count = to - from
+                Color.rgb(
+                    ((red[to] - red[from]) / count).toInt(),
+                    ((green[to] - green[from]) / count).toInt(),
+                    ((blue[to] - blue[from]) / count).toInt(),
+                )
+            }
+        }
+        return current
+    }
+
     private fun blend(l: Int, r: Int, u: Float, t: Int, b: Int, v: Float): Int {
         fun channel(shift: Int): Int {
             val horizontal = ((l shr shift) and 0xFF) * (1 - u) + ((r shr shift) and 0xFF) * u
@@ -99,13 +129,13 @@ internal object OfferOverlayBitmapMask {
         return Color.rgb(channel(16), channel(8), channel(0))
     }
 
-    /** Mean of up to four pixels stepping away from the card; off-bitmap edges use [fallback]. */
+    /** Mean of up to eight pixels stepping away from the card; off-bitmap edges use [fallback]. */
     private fun edgeAverage(bitmap: Bitmap, x: Int, y: Int, dx: Int, dy: Int, fallback: Int): Int {
         var red = 0
         var green = 0
         var blue = 0
         var count = 0
-        for (step in 0 until 4) {
+        for (step in 0 until 8) {
             val px = x + dx * step
             val py = y + dy * step
             if (px !in 0 until bitmap.width || py !in 0 until bitmap.height) break

@@ -42,6 +42,8 @@ internal object LiveAdvisorHub {
         val dismissedAtElapsed: Long,
     )
     private var userDismissedOffer: UserDismissedOffer? = null
+    /** Set once the user leaves the courier app after swiping the card away. */
+    private var userLeftCourierAppAfterDismissal = false
     private val WOLT_BASELINE_CANDIDATE_STATES = setOf(
         // Wolt can replace the offer with the task map before Accessibility catches an explicit
         // acceptance cue. An incremental `+... extra` card itself proves an active route exists, so
@@ -341,6 +343,7 @@ internal object LiveAdvisorHub {
             notificationKey = notificationKey,
             dismissedAtElapsed = android.os.SystemClock.elapsedRealtime(),
         )
+        userLeftCourierAppAfterDismissal = false
         // This is a fallback tombstone only. Keep pending/persisted owner and route callbacks
         // alive so a late price or completed route can populate the same hidden session.
         CaptureEventLog.append(
@@ -790,6 +793,25 @@ internal object LiveAdvisorHub {
 
     fun onForegroundWindowChanged(context: Context, packageName: String) {
         attach(context)
+        userDismissedOffer?.let { dismissed ->
+            when (LiveOfferUserDismissalPolicy.foregroundTransition(
+                dismissedPackage = dismissed.identity.packageName,
+                foregroundPackage = packageName,
+                ownPackage = context.packageName,
+                leftCourierApp = userLeftCourierAppAfterDismissal,
+            )) {
+                DismissalForegroundTransition.LEFT -> userLeftCourierAppAfterDismissal = true
+                DismissalForegroundTransition.RETURNED -> {
+                    // A swipe hides the card for the offer on screen. Leaving the courier app and
+                    // coming back (or relaunching it) is an explicit request to see the card again;
+                    // keeping the tombstone made the card flash in and vanish on return.
+                    clearUserDismissal(context, packageName, "User returned to the courier app after dismissing the card")
+                    userLeftCourierAppAfterDismissal = false
+                    advisor?.clearUserHiddenOnReturn()
+                }
+                DismissalForegroundTransition.NONE -> Unit
+            }
+        }
         advisor?.onForegroundWindowChanged(packageName)
     }
 

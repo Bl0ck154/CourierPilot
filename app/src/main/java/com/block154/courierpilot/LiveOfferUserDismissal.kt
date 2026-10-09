@@ -17,7 +17,31 @@ internal data class LiveOfferDismissalIdentity(
     val merchantKey: String? = null,
 )
 
+internal enum class DismissalForegroundTransition { NONE, LEFT, RETURNED }
+
 internal object LiveOfferUserDismissalPolicy {
+    private val TRANSIENT_PACKAGES = setOf(
+        "com.android.systemui", "com.oplus.screenshot", "com.coloros.screenshot",
+    )
+
+    /**
+     * Foreground changes after a manual swipe. System UI (shade, screenshot) is not "leaving";
+     * a launcher or any other app is. Returning to the dismissed courier app after leaving it ends
+     * the dismissal.
+     */
+    fun foregroundTransition(
+        dismissedPackage: String,
+        foregroundPackage: String,
+        ownPackage: String,
+        leftCourierApp: Boolean,
+    ): DismissalForegroundTransition = when {
+        foregroundPackage.isBlank() -> DismissalForegroundTransition.NONE
+        foregroundPackage == dismissedPackage ->
+            if (leftCourierApp) DismissalForegroundTransition.RETURNED else DismissalForegroundTransition.NONE
+        foregroundPackage == ownPackage || foregroundPackage in TRANSIENT_PACKAGES -> DismissalForegroundTransition.NONE
+        else -> DismissalForegroundTransition.LEFT
+    }
+
     fun identity(packageName: String, parsed: ParsedOffer): LiveOfferDismissalIdentity {
         val merchantKey = merchantIdentity(parsed.merchantNames.firstOrNull() ?: parsed.restaurant)
         return LiveOfferDismissalIdentity(
