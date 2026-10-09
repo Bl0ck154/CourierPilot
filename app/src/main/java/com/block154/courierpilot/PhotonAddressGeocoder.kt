@@ -1,6 +1,8 @@
 package com.block154.courierpilot
 
 import org.json.JSONObject
+import java.util.LinkedHashMap
+import java.util.Locale
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -44,6 +46,51 @@ internal object PhotonAddressGeocoder {
         } finally {
             connection?.disconnect()
         }
+    }
+
+    private val reverseCache = object : LinkedHashMap<String, String>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean =
+            size > 64
+    }
+
+    /**
+     * Developer-only background call. The returned customer address is never logged or uploaded.
+     * Photon reverse is used only for the on-screen debug overlay.
+     */
+    fun reverse(latitude: Double, longitude: Double): String? {
+        if (!latitude.isFinite() || !longitude.isFinite() ||
+            latitude !in -90.0..90.0 || longitude !in -180.0..180.0) return null
+        val key = String.format(Locale.US, "%.5f,%.5f", latitude, longitude)
+        synchronized(reverseCache) { reverseCache[key]?.let { return it } }
+        val url = URL("https://photon.komoot.io/reverse?lat=$latitude&lon=$longitude&limit=1")
+        var connection: HttpURLConnection? = null
+        return try {
+            connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = REVERSE_TIMEOUT_MS
+                readTimeout = REVERSE_TIMEOUT_MS
+                setRequestProperty("Accept", "application/json")
+                setRequestProperty("User-Agent", "CourierPilot/${BuildConfig.VERSION_NAME}")
+            }
+            if (connection.responseCode !in 200..299) null else {
+                val result = parseReverseAddress(connection.inputStream.bufferedReader().use { it.readText() })
+                if (!result.isNullOrBlank()) synchronized(reverseCache) { reverseCache[key] = result }
+                result
+            }
+        } catch (_: Exception) {
+            null
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
+    internal fun parseReverseAddress(body: String): String? {
+        val features = runCatching { JSONObject(body).optJSONArray("features") }.getOrNull() ?: return null
+        val props = features.optJSONObject(0)?.optJSONObject("properties") ?: return null
+        val street = props.optString("street").ifBlank { props.optString("name") }.trim()
+        val house = props.optString("housenumber").trim()
+        if (street.isBlank()) return null
+        return listOf(street, house).filter(String::isNotBlank).joinToString(" ")
     }
 
     internal fun parsePoint(body: String, countryCode: String?): RoutePoint? =
@@ -171,6 +218,7 @@ internal object PhotonAddressGeocoder {
         }.joinToString(", ")
     }
 
+    private const val REVERSE_TIMEOUT_MS = 1_500
     private const val CONNECT_TIMEOUT_MS = 2_500
     private const val READ_TIMEOUT_MS = 2_500
 }
