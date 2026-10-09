@@ -64,10 +64,22 @@ internal object BoltRecoveryTruth {
         if (diagnostics.projectedDropoffs.isEmpty()) return
         offers[outcome.offerId] = Pending(diagnostics, etaMinutes)
         while (offers.size > 24) offers.remove(offers.keys.first())
+        pruneArchives(context)
         archiveMatchingSample(context, outcome.offerId)
     }
 
     /** Archive only the research sample captured alongside this offer; never a later offer's. */
+    /** Mirror existing screenshot retention (0 means keep indefinitely). */
+    private fun pruneArchives(context: Context) {
+        val days = CaptureStorageSettings.retentionDays(context)
+        if (days == 0) return
+        val cutoff = System.currentTimeMillis() - days * 86_400_000L
+        File(context.filesDir, "diagnostics/bolt-truth").listFiles()
+            ?.filter(File::isDirectory)
+            ?.filter { it.lastModified() < cutoff }
+            ?.forEach(File::deleteRecursively)
+    }
+
     private fun archiveMatchingSample(context: Context, offerId: Long) {
         val recordedAt = runCatching { OfferDatabase.get(context).findById(offerId)?.capturedAt }
             .getOrNull() ?: return
