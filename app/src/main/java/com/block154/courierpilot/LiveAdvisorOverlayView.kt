@@ -60,6 +60,8 @@ internal class LiveAdvisorOverlayView(
     private var routeText: TextView? = null
     private var debugText: TextView? = null
     private var captureSuppressed = false
+    /** Display screenshots in flight that need the card invisible (see [hideForScreenshot]). */
+    private var screenshotHolds = 0
     private var velocityTracker: VelocityTracker? = null
 
     var isSwipeExitRunning: Boolean = false
@@ -290,13 +292,19 @@ internal class LiveAdvisorOverlayView(
                 root = container
                 captureSuppressed = false
                 container.alpha = 0f
-                container.translationY = -dp(FADE_OFFSET_DP).toFloat()
-                container.animate()
-                    .alpha(1f)
-                    .translationY(0f)
-                    .setInterpolator(DecelerateInterpolator())
-                    .setDuration(FADE_IN_MS)
-                    .start()
+                if (screenshotHolds > 0) {
+                    // A display screenshot is in flight: stay invisible until it is taken;
+                    // revealAfterScreenshot() shows the card right after.
+                    container.translationY = 0f
+                } else {
+                    container.translationY = -dp(FADE_OFFSET_DP).toFloat()
+                    container.animate()
+                        .alpha(1f)
+                        .translationY(0f)
+                        .setInterpolator(DecelerateInterpolator())
+                        .setDuration(FADE_IN_MS)
+                        .start()
+                }
                 container.post {
                     val current = windowParams ?: return@post
                     current.y = clampY(current.y, container)
@@ -405,6 +413,30 @@ internal class LiveAdvisorOverlayView(
             visibility = if (visible) View.VISIBLE else View.INVISIBLE
             this.text = text
         }
+    }
+
+    /**
+     * Makes the card invisible for one display screenshot so the proof image and OCR frame show
+     * only the courier app. Returns false when the card cannot be hidden right now (the courier is
+     * dragging or swiping it); the caller then masks its pixels instead.
+     */
+    fun hideForScreenshot(): Boolean {
+        val view = root
+        if (view != null && (gestureTouchActive || isSwipeExitRunning)) return false
+        screenshotHolds += 1
+        if (view != null) {
+            view.animate().cancel()
+            view.alpha = 0f
+            view.translationY = 0f
+        }
+        return true
+    }
+
+    fun revealAfterScreenshot() {
+        if (screenshotHolds == 0) return
+        screenshotHolds -= 1
+        if (screenshotHolds > 0) return
+        root?.alpha = 1f
     }
 
     fun setCaptureSuppressed(suppressed: Boolean, cleanFrame: Boolean = false) {

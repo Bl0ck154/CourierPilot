@@ -189,7 +189,8 @@ internal class OfferScreenshotCapture(
     private val service: AccessibilityService,
     private val handler: Handler,
 ) {
-    private enum class Source { DISPLAY, WINDOW }
+    /** DISPLAY = card may be in the pixels (masked); CLEAN_DISPLAY = card was hidden; WINDOW = app only. */
+    private enum class Source { DISPLAY, CLEAN_DISPLAY, WINDOW }
     private val sourceByResult = IdentityHashMap<ScreenshotResult, Source>()
 
     fun takeTargetScreenshot(windowId: Int, callback: TakeScreenshotCallback, preferDisplay: Boolean = false) {
@@ -223,14 +224,9 @@ internal class OfferScreenshotCapture(
             }
     }
 
-    /** Recovery-only: hide for one frame, request a display screenshot, then reveal unconditionally. */
-    fun takeCleanDisplayScreenshot(callback: TakeScreenshotCallback) {
-        LiveAdvisorHub.setCaptureSuppressed(service, true, cleanFrame = true)
-        handler.postDelayed({ requestDisplayScreenshot(callback, fallback = false) }, ONE_FRAME_MS)
-        handler.postDelayed({
-            LiveAdvisorHub.setCaptureSuppressed(service, false, cleanFrame = true)
-        }, ONE_FRAME_MS * 2)
-    }
+    /** Every display capture already hides the card; kept for the Bolt map recovery call site. */
+    fun takeCleanDisplayScreenshot(callback: TakeScreenshotCallback) =
+        requestDisplayScreenshot(callback, fallback = false)
 
     fun discard(screenshot: ScreenshotResult) {
         sourceByResult.remove(screenshot)
@@ -245,6 +241,8 @@ internal class OfferScreenshotCapture(
     ) {
         val source = sourceByResult.remove(screenshot) ?: Source.DISPLAY
         val dimensions = screenDimensions()
+        // Only a capture taken while the card could not be hidden (finger on the card) needs the
+        // pixel mask; a hidden-card or window capture is already clean.
         val screenRect = if (source == Source.DISPLAY) LiveAdvisorHub.overlayScreenRect() else null
         val padding = (12 * service.resources.displayMetrics.density + 0.5f).toInt()
         val job = Runnable {
@@ -301,10 +299,28 @@ internal class OfferScreenshotCapture(
         return size
     }
 
+    /**
+     * A display screenshot includes CourierPilot's own overlay. The card is made invisible for the
+     * capture (one frame to reach the compositor, revealed in the callback), so proof screenshots
+     * and OCR show only the courier app. If the courier is dragging the card it stays visible and
+     * its pixels are masked instead. A watchdog reveals the card even if Android never answers.
+     */
     private fun requestDisplayScreenshot(callback: TakeScreenshotCallback, fallback: Boolean) {
+        val hidden = LiveAdvisorHub.hideOverlayForScreenshot(service)
+        var revealed = false
+        fun reveal() {
+            if (revealed) return
+            revealed = true
+            if (hidden) LiveAdvisorHub.revealOverlayAfterScreenshot(service)
+        }
+        val watchdog = Runnable { reveal() }
+        handler.postDelayed(watchdog, HIDE_WATCHDOG_MS)
+
         val displayCallback = object : TakeScreenshotCallback {
             override fun onSuccess(screenshot: ScreenshotResult) {
-                sourceByResult[screenshot] = Source.DISPLAY
+                handler.removeCallbacks(watchdog)
+                reveal()
+                sourceByResult[screenshot] = if (hidden) Source.CLEAN_DISPLAY else Source.DISPLAY
                 CaptureEventLog.append(service,
                     if (fallback) "screenshot_display_fallback_ok" else "screenshot_display_direct_ok",
                     if (fallback) "Display screenshot fallback succeeded" else "Direct display screenshot succeeded",
@@ -312,18 +328,25 @@ internal class OfferScreenshotCapture(
                 callback.onSuccess(screenshot)
             }
             override fun onFailure(errorCode: Int) {
+                handler.removeCallbacks(watchdog)
+                reveal()
                 CaptureEventLog.append(service,
                     if (fallback) "screenshot_display_fallback_failed" else "screenshot_display_direct_failed",
                     "Display screenshot failed with Android error $errorCode", dedupeWindowMs = 3_000L)
                 callback.onFailure(errorCode)
             }
         }
-        runCatching { service.takeScreenshot(Display.DEFAULT_DISPLAY, service.mainExecutor, displayCallback) }
-            .onFailure {
-                CaptureEventLog.append(service, "screenshot_display_exception",
-                    "Display capture threw", dedupeWindowMs = 3_000L)
-                callback.onFailure(AccessibilityService.ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR)
-            }
+        val request = Runnable {
+            runCatching { service.takeScreenshot(Display.DEFAULT_DISPLAY, service.mainExecutor, displayCallback) }
+                .onFailure {
+                    handler.removeCallbacks(watchdog)
+                    reveal()
+                    CaptureEventLog.append(service, "screenshot_display_exception",
+                        "Display capture threw", dedupeWindowMs = 3_000L)
+                    callback.onFailure(AccessibilityService.ERROR_TAKE_SCREENSHOT_INTERNAL_ERROR)
+                }
+        }
+        if (hidden) handler.postDelayed(request, HIDE_SETTLE_MS) else request.run()
     }
 
     private fun shouldFallbackToDisplayScreenshot(code: Int): Boolean {
@@ -335,7 +358,9 @@ internal class OfferScreenshotCapture(
     companion object {
         const val RATE_LIMIT_RETRY_MS = 750L
         private const val DISPLAY_FALLBACK_DELAY_MS = 120L
-        private const val ONE_FRAME_MS = 16L
+        /** Two frames at 60 Hz for the invisible card to reach the compositor. */
+        private const val HIDE_SETTLE_MS = 34L
+        private const val HIDE_WATCHDOG_MS = 1_500L
         private val WORKER = Executors.newSingleThreadExecutor { task ->
             Thread(task, "CourierPilot-CaptureBitmap").apply { isDaemon = true }
         }
