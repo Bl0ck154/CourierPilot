@@ -7,6 +7,7 @@ import android.graphics.Rect
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
 import java.util.Collections
 import java.util.Locale
@@ -33,6 +34,7 @@ internal data class AutomaticBoltRouteOutcome(
     val etaEstimateMeters: Int? = null,
     val recoveryConfidence: Double? = null,
     val diagnostics: BoltRecoveryDiagnostics? = null,
+    val etaToCustomerMinutes: Int? = null,
 )
 
 internal data class BoltSemanticMarkers(
@@ -531,6 +533,7 @@ internal object AutomaticBoltRouteCoordinator {
         onComplete: (AutomaticBoltRouteOutcome) -> Unit,
     ) {
         val app = context.applicationContext
+        val startedAt = SystemClock.elapsedRealtime()
         if (!platform.equals("Bolt", ignoreCase = true)) return
         if (!LiveAdvisorSettings.automaticBoltRouting(app)) return
         if (!inFlight.add(offerId)) return
@@ -559,11 +562,13 @@ internal object AutomaticBoltRouteCoordinator {
         // Bolt keeps location hot while a courier is online. Reuse a very fresh accurate fix instead
         // of waiting up to eight seconds for a new GPS callback on every incoming offer.
         RouteResearchLocation.requestForLiveOffer(app) { locationResult ->
+            val gpsMs = SystemClock.elapsedRealtime() - startedAt
             val fix = locationResult.getOrElse {
                 completeFailure(app, offerId, platform, parsed, emptyList(), null, "current location unavailable", onComplete)
                 return@requestForLiveOffer
             }
-            resolvePickups(app, parsed, supplementalPickupAddresses) { knownPickups ->
+            resolvePickups(app, parsed, supplementalPickupAddresses) { knownPickups, geocodeTimes ->
+                val geocodeDoneAt = SystemClock.elapsedRealtime()
                 if (knownPickups.isEmpty()) {
                     completeFailure(
                         app,
@@ -582,6 +587,7 @@ internal object AutomaticBoltRouteCoordinator {
                     ?: captureMapMarkers(context, parsed)?.takeIf(::hasUsefulMarkers)
 
                 executor.execute {
+                    val markersStarted = SystemClock.elapsedRealtime()
                     val screenshotMarkers = if (lateSemanticMarkers == null) loadScreenshotMarkers(app, offerId, mapBottomScreenPx) else null
                     val mapMarkers = lateSemanticMarkers ?: screenshotMarkers
                     val markerSource = when {
@@ -598,6 +604,7 @@ internal object AutomaticBoltRouteCoordinator {
                         bitmapWidthPx = mapMarkers?.bitmapWidthPx ?: app.resources.displayMetrics.widthPixels,
                         etaToCustomerMeters = toCustomerEtaMeters,
                     )
+                    val markersMs = SystemClock.elapsedRealtime() - markersStarted
                     val recovery = recovered.recovery
                     val expectedDropoffs = parsed.deliveryCount?.takeIf { it > 0 }
                     val fullDropoffSet = recovery?.orderedDropoffs?.takeIf { recovered ->
@@ -635,11 +642,22 @@ internal object AutomaticBoltRouteCoordinator {
                         dedupeWindowMs = 2_000L,
                     )
 
+                    val valhallaStarted = SystemClock.elapsedRealtime()
                     val comparison = runCatching {
                         RouteComparisonEngine(ValhallaRouteProvider(config)).compare(waypoints.map { it.point })
                     }.getOrElse { failure ->
                         RouteComparison(Result.failure(failure), Result.failure(failure))
                     }
+                    val valhallaMs = SystemClock.elapsedRealtime() - valhallaStarted
+                    CaptureEventLog.append(
+                        app,
+                        stage = "bolt_route_timing",
+                        platform = "Bolt",
+                        message = "gps_ms=$gpsMs; geocode_ms=${geocodeTimes.joinToString(",")}; " +
+                            "markers_ms=$markersMs; valhalla_ms=$valhallaMs; " +
+                            "total_ms=${SystemClock.elapsedRealtime() - startedAt}",
+                        dedupeWindowMs = 500L,
+                    )
                     val anySuccess = comparison.pedestrian.isSuccess || comparison.cycleway.isSuccess
                     val reason = if (anySuccess) null else comparison.pedestrian.exceptionOrNull()?.javaClass?.simpleName ?: "route failed"
                     runCatching {
@@ -666,6 +684,7 @@ internal object AutomaticBoltRouteCoordinator {
                                 etaEstimateMeters = etaEstimateMeters,
                                 recoveryConfidence = recovered.confidence,
                                 diagnostics = recovered.diagnostics,
+                                etaToCustomerMinutes = eta.toCustomerMin ?: eta.totalMin,
                             )
                         )
                     }
@@ -674,43 +693,71 @@ internal object AutomaticBoltRouteCoordinator {
         }
     }
 
+    /**
+     * Parallel geocoding with stable source order, seven-second per-address limit and an eight-
+     * second global deadline. Each callback can finish only once, even on late geocoder responses.
+     */
     private fun resolvePickups(
         context: Context,
         parsed: ParsedOffer,
         supplementalPickupAddresses: List<String>,
-        callback: (List<ResolvedWaypoint>) -> Unit,
+        callback: (List<ResolvedWaypoint>, List<Long>) -> Unit,
     ) {
         val addresses = BoltPickupAddressPlanner.routeAnchors(supplementalPickupAddresses, parsed.pickupAddresses)
-        val result = mutableListOf<ResolvedWaypoint>()
+        if (addresses.isEmpty()) { callback(emptyList(), emptyList()); return }
+        val handler = Handler(Looper.getMainLooper())
+        val startedAt = SystemClock.elapsedRealtime()
+        val lock = Any()
+        val resolved = arrayOfNulls<ResolvedWaypoint>(addresses.size)
+        val durations = LongArray(addresses.size) { -1L }
+        var outstanding = addresses.size
+        var delivered = false
 
-        fun next(index: Int) {
-            if (index >= addresses.size) {
-                callback(result.toList())
-                return
-            }
-            val address = addresses[index]
-            resolveStopWithTimeout(context, address) { resolution ->
-                resolution.getOrNull()?.let { point ->
-                    val offeredIndex = parsed.pickupAddresses.indexOfFirst { offered ->
-                        BoltPickupAddressPlanner.sameAddress(offered, address)
-                    }
-                    val label = if (offeredIndex >= 0) {
-                        parsed.merchantNames.getOrNull(offeredIndex) ?: address
-                    } else {
-                        "Active Bolt pickup · $address"
-                    }
-                    result += ResolvedWaypoint(
-                        kind = WaypointKind.PICKUP,
-                        point = point,
-                        label = label,
-                        provenance = CoordinateProvenance.GEOCODED_ADDRESS,
-                        confidence = if (offeredIndex >= 0) 0.85 else 0.82,
-                    )
+        fun emit() {
+            val snapshot = synchronized(lock) {
+                if (delivered) null else {
+                    delivered = true
+                    resolved.filterNotNull() to durations.toList()
                 }
-                next(index + 1)
+            }
+            snapshot?.let { (waypoints, times) -> callback(waypoints, times) }
+        }
+        val timeout = Runnable { emit() }
+        handler.postDelayed(timeout, PICKUP_BATCH_TIMEOUT_MS)
+
+        addresses.forEachIndexed { index, address ->
+            val sentAt = SystemClock.elapsedRealtime()
+            resolveStopWithTimeout(context, address) { result ->
+                val ready = synchronized(lock) {
+                    if (delivered || durations[index] >= 0L) false else {
+                        durations[index] = SystemClock.elapsedRealtime() - sentAt
+                        result.getOrNull()?.let { point ->
+                            val offeredIndex = parsed.pickupAddresses.indexOfFirst {
+                                BoltPickupAddressPlanner.sameAddress(it, address)
+                            }
+                            val label = if (offeredIndex >= 0) {
+                                parsed.merchantNames.getOrNull(offeredIndex) ?: address
+                            } else {
+                                "Active Bolt pickup · $address"
+                            }
+                            resolved[index] = ResolvedWaypoint(
+                                kind = WaypointKind.PICKUP,
+                                point = point,
+                                label = label,
+                                provenance = CoordinateProvenance.GEOCODED_ADDRESS,
+                                confidence = if (offeredIndex >= 0) 0.85 else 0.82,
+                            )
+                        }
+                        outstanding -= 1
+                        outstanding == 0
+                    }
+                }
+                if (ready) {
+                    handler.removeCallbacks(timeout)
+                    emit()
+                }
             }
         }
-        next(0)
     }
 
     private fun captureMapMarkers(
@@ -868,4 +915,5 @@ internal object AutomaticBoltRouteCoordinator {
     }
 
     private const val GEOCODER_TIMEOUT_MS = 7_000L
+    private const val PICKUP_BATCH_TIMEOUT_MS = 8_000L
 }
