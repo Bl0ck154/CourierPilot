@@ -25,6 +25,7 @@ internal class RouteResearchDatabase private constructor(context: Context) :
     override fun onCreate(db: SQLiteDatabase) {
         createV1Tables(db)
         createV2Tables(db)
+        createV3Tables(db)
     }
 
     private fun createV1Tables(db: SQLiteDatabase) {
@@ -182,6 +183,30 @@ internal class RouteResearchDatabase private constructor(context: Context) :
         db.execSQL("CREATE INDEX idx_live_advisor_candidates_run ON live_advisor_candidates(run_id)")
     }
 
+    private fun createV3Tables(db: SQLiteDatabase) {
+        db.execSQL("""
+            CREATE TABLE bolt_recovery_truth (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                offer_id INTEGER NOT NULL,
+                recovered_lat REAL NOT NULL,
+                recovered_lon REAL NOT NULL,
+                truth_lat REAL NOT NULL,
+                truth_lon REAL NOT NULL,
+                error_m REAL NOT NULL,
+                scale REAL,
+                baseline_px REAL,
+                baseline_m REAL,
+                pickup_markers INTEGER NOT NULL,
+                dropoff_markers INTEGER NOT NULL,
+                eta_min INTEGER,
+                route_meters INTEGER,
+                created_at INTEGER NOT NULL,
+                UNIQUE(offer_id, truth_lat, truth_lon)
+            )
+        """.trimIndent())
+        db.execSQL("CREATE INDEX idx_bolt_truth_offer ON bolt_recovery_truth(offer_id, created_at)")
+    }
+
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
         db.setForeignKeyConstraintsEnabled(true)
@@ -189,6 +214,76 @@ internal class RouteResearchDatabase private constructor(context: Context) :
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         if (oldVersion < 2) createV2Tables(db)
+        if (oldVersion < 3) createV3Tables(db)
+    }
+
+    /** Local research only. No sensitive values are forwarded to CaptureEventLog. */
+    fun recordBoltRecoveryTruth(row: BoltRecoveryTruthRow) {
+        writableDatabase.insertWithOnConflict(
+            "bolt_recovery_truth", null, ContentValues().apply {
+                put("offer_id", row.offerId)
+                put("recovered_lat", row.recovered.latitude)
+                put("recovered_lon", row.recovered.longitude)
+                put("truth_lat", row.truth.latitude)
+                put("truth_lon", row.truth.longitude)
+                put("error_m", row.errorMeters)
+                row.scaleMetersPerPixel?.let { put("scale", it) }
+                row.anchorBaselinePx?.let { put("baseline_px", it) }
+                row.anchorBaselineMeters?.let { put("baseline_m", it) }
+                put("pickup_markers", row.pickupMarkerCount)
+                put("dropoff_markers", row.dropoffMarkerCount)
+                row.etaMinutes?.let { put("eta_min", it) }
+                row.routeMeters?.let { put("route_meters", it) }
+                put("created_at", row.createdAt)
+            },
+            SQLiteDatabase.CONFLICT_IGNORE,
+        )
+    }
+
+    fun pruneBoltRecoveryTruth(retentionDays: Int) {
+        if (retentionDays <= 0) return // Follow the user's existing retention choice.
+        writableDatabase.delete(
+            "bolt_recovery_truth", "created_at < ?",
+            arrayOf((System.currentTimeMillis() - retentionDays * 86_400_000L).toString()),
+        )
+    }
+
+    fun boltRecoveryTruthRows(limit: Int = 20): List<BoltRecoveryTruthRow> {
+        val result = mutableListOf<BoltRecoveryTruthRow>()
+        readableDatabase.rawQuery(
+            """SELECT offer_id,recovered_lat,recovered_lon,truth_lat,truth_lon,error_m,
+               scale,baseline_px,baseline_m,pickup_markers,dropoff_markers,eta_min,route_meters,created_at
+               FROM bolt_recovery_truth ORDER BY created_at DESC LIMIT ?""",
+            arrayOf(limit.coerceIn(1, 1000).toString()),
+        ).use { cursor ->
+            fun optionalDouble(index: Int): Double? = if (cursor.isNull(index)) null else cursor.getDouble(index)
+            fun optionalInt(index: Int): Int? = if (cursor.isNull(index)) null else cursor.getInt(index)
+            while (cursor.moveToNext()) {
+                result += BoltRecoveryTruthRow(
+                    offerId = cursor.getLong(0),
+                    recovered = RoutePoint(cursor.getDouble(1), cursor.getDouble(2)),
+                    truth = RoutePoint(cursor.getDouble(3), cursor.getDouble(4)),
+                    errorMeters = cursor.getDouble(5),
+                    scaleMetersPerPixel = optionalDouble(6),
+                    anchorBaselinePx = optionalDouble(7),
+                    anchorBaselineMeters = optionalDouble(8),
+                    pickupMarkerCount = cursor.getInt(9),
+                    dropoffMarkerCount = cursor.getInt(10),
+                    etaMinutes = optionalInt(11),
+                    routeMeters = optionalInt(12),
+                    createdAt = cursor.getLong(13),
+                )
+            }
+        }
+        return result
+    }
+
+    fun boltRecoveryStats(): BoltRecoveryTruthStats {
+        val errors = mutableListOf<Double>()
+        readableDatabase.rawQuery("SELECT error_m FROM bolt_recovery_truth", null).use { cursor ->
+            while (cursor.moveToNext()) errors += cursor.getDouble(0)
+        }
+        return BoltRecoveryTruthMath.stats(errors)
     }
 
     fun recordComparison(
@@ -391,7 +486,7 @@ internal class RouteResearchDatabase private constructor(context: Context) :
 
     companion object {
         private const val DB_NAME = "route_research.db"
-        private const val DB_VERSION = 2
+        private const val DB_VERSION = 3
         @Volatile private var instance: RouteResearchDatabase? = null
         fun get(context: Context): RouteResearchDatabase = instance ?: synchronized(this) {
             instance ?: RouteResearchDatabase(context).also { instance = it }
