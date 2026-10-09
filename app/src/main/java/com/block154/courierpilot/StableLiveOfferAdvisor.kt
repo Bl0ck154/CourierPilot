@@ -661,6 +661,7 @@ internal class StableLiveOfferAdvisor(
         pedestrianRoute: RouteResult?,
         cyclewayRoute: RouteResult?,
     ) {
+        if (restoreLockedVerdict(currentPlatform, parsed)) return
         val currencyCode = parsed.money?.currencyCode
         val thresholdSnapshot = currencyCode?.let(decisionThresholds::snapshotFor)
         val decision = OfferDecisionEngine.evaluate(
@@ -687,7 +688,40 @@ internal class StableLiveOfferAdvisor(
         // First trustworthy route verdict wins for this offer. Late GPS/geocoder/retry callbacks may
         // still finish in the background, but they must never repaint the number or emoji mid-decision.
         finalPresentationLocked = true
-        applyDecisionPresentation()
+        // Capture the route row with the first verified verdict, before any late GPS retry.
+        cachedRouteLine = LiveAdvisorPresentation.routeLine(pedestrianRoute, cyclewayRoute)
+        cachedRouteVisible = true
+        val chosen = verdictCache.remember(
+            currentPlatform,
+            parsed,
+            currentOfferId,
+            LiveOfferVerdictCache.Verdict(
+                rateLine = cachedDecisionLine,
+                band = cachedDecisionBand,
+                routeLine = cachedRouteLine,
+                walkingMeters = pedestrianRoute?.distanceMeters,
+                cyclingMeters = cyclewayRoute?.distanceMeters,
+                thresholdSource = thresholdSnapshot?.source ?: "none",
+                createdAtMs = SystemClock.elapsedRealtime(),
+            ),
+        )
+        applyLockedVerdict(chosen)
+    }
+
+    private fun restoreLockedVerdict(platform: String, parsed: ParsedOffer): Boolean {
+        val verdict = verdictCache.find(platform, parsed, currentOfferId) ?: return false
+        applyLockedVerdict(verdict)
+        return true
+    }
+
+    private fun applyLockedVerdict(verdict: LiveOfferVerdictCache.Verdict) {
+        cachedDecisionLine = verdict.rateLine
+        cachedDecisionBand = verdict.band
+        cachedDecisionLoading = false
+        cachedRouteLine = verdict.routeLine
+        cachedRouteVisible = true
+        finalPresentationLocked = true
+        applyCachedPresentation()
     }
 
     private fun renderRouteLoadingState() {
