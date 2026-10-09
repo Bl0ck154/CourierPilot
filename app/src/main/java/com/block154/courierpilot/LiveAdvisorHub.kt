@@ -115,7 +115,9 @@ internal object LiveAdvisorHub {
         if (!transactionStillCurrent) return
         val platform = OfferState.platformLabel(pending.packageName)
         observeIncomingCapture(pending)
-        if (isUserDismissedOffer(pending.packageName, parsed, pending.notificationKey)) {
+        if (isUserDismissedOffer(pending.packageName, parsed, pending.notificationKey) &&
+            !(advisor?.isUserHidden() == true && advisor?.isSameTrackedOffer(pending.packageName, parsed) == true)
+        ) {
             CaptureEventLog.append(
                 service,
                 stage = "overlay_user_dismiss_suppressed_reopen",
@@ -261,6 +263,13 @@ internal object LiveAdvisorHub {
             isIncrementalOffer = visible.isIncrementalOffer || parsedFromHistory.isIncrementalOffer,
             incrementalStopCount = visible.incrementalStopCount ?: parsedFromHistory.incrementalStopCount,
         )
+        if (currentAdvisor.isUserHidden() &&
+            currentAdvisor.isSameTrackedOffer(historical.packageName, merged)
+        ) {
+            // The same offer is already tracked, including its in-flight route. A history
+            // restore must not replace the hidden session or spin up another route.
+            return
+        }
         if (isUserDismissedOffer(historical.packageName, merged)) {
             CaptureEventLog.append(
                 service,
@@ -289,7 +298,7 @@ internal object LiveAdvisorHub {
         currentOfferHasResolvedRoute = false
         currentWoltRouteRetryCount = 0
 
-        currentAdvisor.showBase(historical.platform, merged, syntheticCaptureKey)
+        currentAdvisor.showBase(historical.platform, merged, syntheticCaptureKey, historical.id)
         // Older route snapshots do not persist whether an incremental offer was routed as the
         // paid dropoff tail or as the full remaining chain. Reusing one as €/km would be unsafe.
         // Recompute incremental offers under the current scope policy instead.
@@ -332,16 +341,13 @@ internal object LiveAdvisorHub {
             notificationKey = notificationKey,
             dismissedAtElapsed = android.os.SystemClock.elapsedRealtime(),
         )
-        pendingPreview = null
-        currentOffer = null
-        captureOfferKey = null
-        currentOfferHasResolvedRoute = false
-        currentWoltRouteRetryCount = 0
+        // This is a fallback tombstone only. Keep pending/persisted owner and route callbacks
+        // alive so a late price or completed route can populate the same hidden session.
         CaptureEventLog.append(
             service,
             stage = "overlay_user_dismissed",
             platform = OfferState.platformLabel(packageName),
-            message = "Suppressed this live offer until a genuinely different offer or home screen appears",
+            message = "Recorded visual-only dismissal for active offer session",
             dedupeWindowMs = 500L,
         )
     }
@@ -492,7 +498,9 @@ internal object LiveAdvisorHub {
             estimatedMinutesMax = record.estimatedMinutesMax ?: parsedFromScreen.estimatedMinutesMax,
         )
 
-        if (isUserDismissedOffer(record.packageName, parsed, record.captureKey)) {
+        if (isUserDismissedOffer(record.packageName, parsed, record.captureKey) &&
+            !(currentAdvisor.isUserHidden() && currentAdvisor.isSameTrackedOffer(record.packageName, parsed))
+        ) {
             pendingPreview = null
             currentOffer = null
             captureOfferKey = null
@@ -545,8 +553,10 @@ internal object LiveAdvisorHub {
 
         // The card shell is rendered synchronously before any route/geocoder work starts. Routing
         // only updates rows inside this already-visible card; it never controls whether the card exists.
-        currentAdvisor.showBase(record.platform, parsed, record.captureKey)
-        startRouteForOffer(service, current, preparedKey)
+        currentAdvisor.showBase(record.platform, parsed, record.captureKey, offerId)
+        if (!currentAdvisor.hasLockedVerdict(record.platform, parsed, offerId)) {
+            startRouteForOffer(service, current, preparedKey)
+        }
     }
 
     private fun startRouteForOffer(
@@ -556,6 +566,7 @@ internal object LiveAdvisorHub {
     ) {
         val record = current.record
         val parsed = current.parsed
+        if (advisor?.hasLockedVerdict(record.platform, parsed, current.offerId) == true) return
         if (!LiveAdvisorSettings.routeEnabled(service, record.platform)) return
 
         // With experimental Bolt routing enabled, preserve a clean research bundle automatically.
@@ -743,6 +754,12 @@ internal object LiveAdvisorHub {
     fun isCurrentTrackedOfferScreen(packageName: String, parsed: ParsedOffer): Boolean {
         val currentAdvisor = advisor ?: return false
         if (!currentAdvisor.isTrackingOffer(packageName)) return false
+        // An invisible session still owns the courier screen. Only confirmed replacement evidence
+        // can re-enable passive OCR; a swipe is never such evidence.
+        if (currentAdvisor.isUserHidden()) {
+            return currentAdvisor.isSameTrackedOffer(packageName, parsed) ||
+                !currentAdvisor.isConfirmedDifferentOffer(packageName, parsed)
+        }
         currentOffer?.takeIf { it.record.packageName == packageName }?.let {
             if (LiveOfferResumePolicy.hasCompatibleCoreIdentity(it.parsed, parsed)) return true
             return !currentAdvisor.isConfirmedDifferentOffer(packageName, parsed)
@@ -751,7 +768,7 @@ internal object LiveAdvisorHub {
             if (LiveOfferResumePolicy.hasCompatibleCoreIdentity(it.parsed, parsed)) return true
             return !currentAdvisor.isConfirmedDifferentOffer(packageName, parsed)
         }
-        return false
+        return currentAdvisor.isSameTrackedOffer(packageName, parsed)
     }
 
     fun onForegroundWindowChanged(context: Context, packageName: String) {

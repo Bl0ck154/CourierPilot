@@ -33,6 +33,9 @@ internal class StableLiveOfferAdvisor(
     private var currentNotificationKey = ""
     private var currentNotificationRemoved = false
     private var dismissed = false
+    private var userHidden = false
+    private var currentOfferId: Long? = null
+    private val verdictCache = LiveOfferVerdictCache.shared
     private var temporarilyHidden = false
     private var temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
     private var generation = 0L
@@ -47,6 +50,7 @@ internal class StableLiveOfferAdvisor(
     private var cachedDecisionBand = OfferDecisionBand.UNKNOWN
     private var cachedDecisionLoading = true
     private var finalPresentationLocked = false
+    private var currentLockedVerdict: LiveOfferVerdictCache.Verdict? = null
     private var cachedRouteLine = ""
     private var cachedRouteVisible = true
     private var cachedPedestrianRoute: RouteResult? = null
@@ -102,8 +106,11 @@ internal class StableLiveOfferAdvisor(
             incomingNotificationKey = notificationKey,
             compatibleOfferEvidence = compatibleOfferEvidence,
         )
-        val createdSurface = !sameSurface
-        if (!sameSurface) {
+        val confirmedSameSurface = LiveOfferSessionVisibilityPolicy.sameSession(
+            sameSurface, currentParsed, parsed,
+        )
+        val createdSurface = !confirmedSameSurface
+        if (!confirmedSameSurface) {
             generation += 1
             offerVisualStartedAtElapsed = SystemClock.elapsedRealtime()
             currentPlatform = platform
@@ -111,12 +118,15 @@ internal class StableLiveOfferAdvisor(
             currentNotificationKey = notificationKey
             currentNotificationRemoved = notificationIsAlreadyRemoved(packageName, notificationKey)
             dismissed = false
+            userHidden = false
+            currentOfferId = null
             temporarilyHidden = false
             temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
             cachedDecisionLine = ""
             cachedDecisionBand = OfferDecisionBand.UNKNOWN
             cachedDecisionLoading = true
             finalPresentationLocked = false
+            currentLockedVerdict = null
             decisionThresholds.beginOffer(platform, generation)
             cachedRouteLine = ""
             cachedRouteVisible = true
@@ -133,12 +143,24 @@ internal class StableLiveOfferAdvisor(
             currentNotificationKey = notificationKey
             currentNotificationRemoved = notificationIsAlreadyRemoved(packageName, notificationKey)
         }
-        currentParsed = parsed
-        decisionThresholds.prewarm()
+        // A later sparse OCR frame must not erase priced evidence from a hidden session.
+        val stableParsed = if (confirmedSameSurface && userHidden) {
+            val previous = currentParsed
+            parsed.copy(
+                priceCents = parsed.priceCents ?: previous?.priceCents,
+                money = parsed.money ?: previous?.money,
+                distanceMeters = parsed.distanceMeters ?: previous?.distanceMeters,
+                pickupAddresses = parsed.pickupAddresses.ifEmpty { previous?.pickupAddresses.orEmpty() },
+                dropoffAddresses = parsed.dropoffAddresses.ifEmpty { previous?.dropoffAddresses.orEmpty() },
+                deliveryCount = parsed.deliveryCount ?: previous?.deliveryCount,
+            )
+        } else parsed
+        currentParsed = stableParsed
+        restoreLockedVerdict(platform, stableParsed)
         differentOfferConfirmation.reset()
-        if (!finalPresentationLocked) renderProgressiveDecision(parsed)
+        if (!finalPresentationLocked) renderProgressiveDecision(stableParsed)
         if (cachedRouteLine.isBlank()) renderRouteLoadingState()
-        if (!temporarilyHidden) {
+        if (LiveOfferSessionVisibilityPolicy.shouldAttach(userHidden, temporarilyHidden)) {
             ensureView()
             applyCachedPresentation()
             if (createdSurface && overlayView.isAttached) {
@@ -153,7 +175,7 @@ internal class StableLiveOfferAdvisor(
         startVisibilityWatchdog()
     }
 
-    fun showBase(platform: String, parsed: ParsedOffer, notificationKey: String = "") {
+    fun showBase(platform: String, parsed: ParsedOffer, notificationKey: String = "", offerId: Long? = null) {
         if (!LiveAdvisorSettings.enabled(service)) {
             suppressCurrentOffer("advisor disabled")
             return
@@ -165,7 +187,7 @@ internal class StableLiveOfferAdvisor(
                 (LiveOfferResumePolicy.hasCompatibleCoreIdentity(expected, parsed) ||
                     LiveOfferResumePolicy.hasMatchingIdentity(expected, parsed))
         } == true
-        val samePreviewSurface = previewMode && LiveOfferTransactionPolicy.isSameSurface(
+        val samePreviewSurface = LiveOfferTransactionPolicy.isSameSurface(
             dismissed = dismissed,
             hasCurrentOffer = currentParsed != null,
             expectedPackageName = expectedPackageName,
@@ -174,33 +196,42 @@ internal class StableLiveOfferAdvisor(
             incomingNotificationKey = notificationKey,
             compatibleOfferEvidence = compatibleOfferEvidence,
         )
-        if (samePreviewSurface) {
+        if (LiveOfferSessionVisibilityPolicy.sameSession(samePreviewSurface, currentParsed, parsed)) {
             val previousPrice = currentParsed?.priceCents
+            val wasPreview = previewMode
             currentPlatform = platform
             currentParsed = parsed
+            if (offerId != null) {
+                currentOfferId = offerId
+                // Preview scoring can finish before persistence enriches the parsed identity.
+                // Bind that identical verdict to the durable ID without evaluating again.
+                currentLockedVerdict?.let { verdictCache.remember(platform, parsed, offerId, it) }
+            }
             if (notificationKey.isNotBlank()) {
                 currentNotificationKey = notificationKey
                 currentNotificationRemoved = notificationIsAlreadyRemoved(packageName, notificationKey)
             }
             previewMode = false
-            decisionThresholds.prewarm()
+            restoreLockedVerdict(platform, parsed)
             differentOfferConfirmation.reset()
             if (!finalPresentationLocked && (cachedDecisionLoading || previousPrice != parsed.priceCents)) {
                 renderProgressiveDecision(parsed)
             }
             if (cachedRouteLine.isBlank()) renderRouteLoadingState()
-            if (!temporarilyHidden) {
+            if (LiveOfferSessionVisibilityPolicy.shouldAttach(userHidden, temporarilyHidden)) {
                 ensureView()
                 applyCachedPresentation()
             }
-            CaptureEventLog.append(
-                service,
-                stage = "overlay_promote",
-                platform = platform,
-                message = "Pending advisor promoted in place after price capture",
-                dedupeWindowMs = 1_000L,
-            )
-            if (LiveAdvisorSettings.voiceEnabled(service)) speech.announceOffer(platform, parsed)
+            if (wasPreview) {
+                CaptureEventLog.append(
+                    service,
+                    stage = "overlay_promote",
+                    platform = platform,
+                    message = "Pending advisor promoted in place after price capture",
+                    dedupeWindowMs = 1_000L,
+                )
+                if (!userHidden && LiveAdvisorSettings.voiceEnabled(service)) speech.announceOffer(platform, parsed)
+            }
             startVisibilityWatchdog()
             return
         }
@@ -210,10 +241,12 @@ internal class StableLiveOfferAdvisor(
         val expectedGeneration = generation
         currentPlatform = platform
         currentParsed = parsed
+        currentOfferId = offerId
         expectedPackageName = packageForPlatform(platform)
         currentNotificationKey = notificationKey
         currentNotificationRemoved = notificationIsAlreadyRemoved(expectedPackageName, notificationKey)
         dismissed = false
+        userHidden = false
         temporarilyHidden = false
         temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
         previewMode = false
@@ -221,6 +254,7 @@ internal class StableLiveOfferAdvisor(
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
         cachedDecisionLoading = true
         finalPresentationLocked = false
+        currentLockedVerdict = null
         decisionThresholds.beginOffer(platform, generation)
         cachedRouteLine = ""
         cachedRouteVisible = true
@@ -231,7 +265,7 @@ internal class StableLiveOfferAdvisor(
         val initialSurface = findVisiblePackageRoot(expectedPackageName)?.let { inspectVisibleSurface(it).snapshot }
         boltBaselineSurface = if (platform.equals("Bolt", ignoreCase = true)) initialSurface else null
         woltBaselineSurface = if (platform.equals("Wolt", ignoreCase = true)) initialSurface else null
-        decisionThresholds.prewarm()
+        restoreLockedVerdict(platform, parsed)
 
         handler.post {
             if (dismissed || expectedGeneration != generation) return@post
@@ -239,7 +273,7 @@ internal class StableLiveOfferAdvisor(
             // offer warm without recreating an overlay on top of another app.
             if (!finalPresentationLocked) renderProgressiveDecision(parsed)
             if (cachedRouteLine.isBlank()) renderRouteLoadingState()
-            if (!temporarilyHidden) {
+            if (LiveOfferSessionVisibilityPolicy.shouldAttach(userHidden, temporarilyHidden)) {
                 ensureView()
                 if (overlayView.isAttached) {
                     applyCachedPresentation()
@@ -258,6 +292,23 @@ internal class StableLiveOfferAdvisor(
 
     fun isTrackingOffer(packageName: String): Boolean =
         !dismissed && currentParsed != null && expectedPackageName == packageName
+
+    /** User dismissal only changes visibility, never the tracked offer lifetime. */
+    fun isUserHidden(): Boolean = userHidden && !dismissed && currentParsed != null
+
+    fun isSameTrackedOffer(packageName: String, parsed: ParsedOffer): Boolean {
+        if (!isTrackingOffer(packageName)) return false
+        val current = currentParsed ?: return false
+        return !LiveOfferResumePolicy.definitelyDifferent(current, parsed) &&
+            (LiveOfferResumePolicy.hasMatchingIdentity(current, parsed) ||
+                LiveOfferUserDismissalPolicy.isSameOffer(
+                    LiveOfferUserDismissalPolicy.identity(packageName, current),
+                    LiveOfferUserDismissalPolicy.identity(packageName, parsed),
+                ))
+    }
+
+    fun hasLockedVerdict(platform: String, parsed: ParsedOffer, offerId: Long? = null): Boolean =
+        verdictCache.find(platform, parsed, offerId) != null
 
     /**
      * Coalesce notification churn only when the courier screen itself still shows this advisor's
@@ -433,7 +484,12 @@ internal class StableLiveOfferAdvisor(
             )
             cachedPedestrianRoute = null
             cachedCyclewayRoute = route
-            currentParsed?.let { parsed -> renderProfitability(parsed, null, route) }
+            currentParsed?.let { parsed ->
+                renderProfitability(
+                    parsed, null, route,
+                    routeLine = LiveAdvisorPresentation.platformDistanceLine(routeMeters),
+                )
+            }
             setRouteContent(LiveAdvisorPresentation.platformDistanceLine(routeMeters))
             CaptureEventLog.append(
                 service,
@@ -507,6 +563,8 @@ internal class StableLiveOfferAdvisor(
     }
 
     private fun dismissCurrentOfferByUser(reason: String) {
+        if (dismissed || currentParsed == null || userHidden) return
+        userHidden = true
         currentParsed?.let { parsed ->
             LiveAdvisorHub.onUserDismissedOffer(
                 service,
@@ -515,7 +573,15 @@ internal class StableLiveOfferAdvisor(
                 parsed,
             )
         }
-        suppressCurrentOffer(reason)
+        CaptureEventLog.append(
+            service,
+            stage = "overlay_user_hidden",
+            platform = currentPlatform,
+            message = reason,
+            dedupeWindowMs = 500L,
+        )
+        // WS-B owns the swipe exit animation and detaches at its end. Never cancel it here.
+        if (!overlayView.isSwipeExitRunning) detachView(animate = false)
     }
 
     fun suppressCurrentOffer(reason: String = "superseded", animate: Boolean = true) {
@@ -529,6 +595,7 @@ internal class StableLiveOfferAdvisor(
             )
         }
         dismissed = true
+        userHidden = false
         temporarilyHidden = false
         generation += 1
         clearOfferViewState(animate = animate)
@@ -617,7 +684,9 @@ internal class StableLiveOfferAdvisor(
         parsed: ParsedOffer,
         pedestrianRoute: RouteResult?,
         cyclewayRoute: RouteResult?,
+        routeLine: String = LiveAdvisorPresentation.routeLine(pedestrianRoute, cyclewayRoute),
     ) {
+        if (restoreLockedVerdict(currentPlatform, parsed)) return
         val currencyCode = parsed.money?.currencyCode
         val thresholdSnapshot = currencyCode?.let(decisionThresholds::snapshotFor)
         val decision = OfferDecisionEngine.evaluate(
@@ -644,7 +713,41 @@ internal class StableLiveOfferAdvisor(
         // First trustworthy route verdict wins for this offer. Late GPS/geocoder/retry callbacks may
         // still finish in the background, but they must never repaint the number or emoji mid-decision.
         finalPresentationLocked = true
-        applyDecisionPresentation()
+        // Capture the route row with the first verified verdict, before any late GPS retry.
+        cachedRouteLine = routeLine
+        cachedRouteVisible = true
+        val chosen = verdictCache.remember(
+            currentPlatform,
+            parsed,
+            currentOfferId,
+            LiveOfferVerdictCache.Verdict(
+                rateLine = cachedDecisionLine,
+                band = cachedDecisionBand,
+                routeLine = cachedRouteLine,
+                walkingMeters = pedestrianRoute?.distanceMeters,
+                cyclingMeters = cyclewayRoute?.distanceMeters,
+                thresholdSource = thresholdSnapshot?.source ?: "none",
+                createdAtMs = SystemClock.elapsedRealtime(),
+            ),
+        )
+        applyLockedVerdict(chosen)
+    }
+
+    private fun restoreLockedVerdict(platform: String, parsed: ParsedOffer): Boolean {
+        val verdict = verdictCache.find(platform, parsed, currentOfferId) ?: return false
+        applyLockedVerdict(verdict)
+        return true
+    }
+
+    private fun applyLockedVerdict(verdict: LiveOfferVerdictCache.Verdict) {
+        currentLockedVerdict = verdict
+        cachedDecisionLine = verdict.rateLine
+        cachedDecisionBand = verdict.band
+        cachedDecisionLoading = false
+        cachedRouteLine = verdict.routeLine
+        cachedRouteVisible = true
+        finalPresentationLocked = true
+        applyCachedPresentation()
     }
 
     private fun renderRouteLoadingState() {
@@ -674,7 +777,19 @@ internal class StableLiveOfferAdvisor(
         overlayView.applyDecision(cachedDecisionLine, cachedDecisionBand, cachedDecisionLoading)
     }
 
-    private fun ensureView() = overlayView.ensure()
+    private fun ensureView() {
+        if (!LiveOfferSessionVisibilityPolicy.shouldAttach(userHidden, temporarilyHidden)) return
+        if (overlayView.isSwipeExitRunning) {
+            // A real replacement can arrive during the outgoing 160 ms swipe. Attach it only
+            // after WS-B has removed the old window, not into the disappearing view.
+            val expectedGeneration = generation
+            handler.postDelayed({
+                if (generation == expectedGeneration && !dismissed && !userHidden) ensureView()
+            }, 50L)
+            return
+        }
+        overlayView.ensure()
+    }
 
     private fun detachView(animate: Boolean = true) = overlayView.detach(animate)
 
@@ -717,6 +832,14 @@ internal class StableLiveOfferAdvisor(
 
     private fun restoreFromCache(reason: String) {
         if (dismissed || currentParsed == null || !temporarilyHidden) return
+        if (userHidden) {
+            // A stale restore deadline is not end-of-offer evidence after a manual swipe.
+            // Continue watching the screen, but never reattach the hidden window.
+            temporarilyHidden = false
+            temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
+            resetMissingEvidence()
+            return
+        }
         if (SystemClock.elapsedRealtime() > temporaryRestoreDeadlineElapsed) {
             // A short Compose gap may recover, but a Wolt card that resurfaces tens of seconds after
             // becoming unconfirmed is stale Accessibility state, not a live offer.
@@ -724,7 +847,7 @@ internal class StableLiveOfferAdvisor(
             return
         }
         val pending = OfferState.pending(service)
-        if (pending != null && pending.packageName == expectedPackageName && !previewMode) return
+        if (pending != null && pending.packageName == expectedPackageName && !previewMode && !userHidden) return
         ensureView()
         if (!overlayView.isAttached) return
         temporarilyHidden = false
@@ -747,6 +870,8 @@ internal class StableLiveOfferAdvisor(
         courierEventCheckDeferred = false
         overlayView.resetInteraction()
         detachView(animate = animate)
+        userHidden = false
+        currentOfferId = null
         resetMissingEvidence()
         boltBaselineSurface = null
         woltBaselineSurface = null
@@ -761,6 +886,7 @@ internal class StableLiveOfferAdvisor(
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
         cachedDecisionLoading = true
         finalPresentationLocked = false
+        currentLockedVerdict = null
         decisionThresholds.clearOffer()
         cachedRouteLine = ""
         cachedRouteVisible = true

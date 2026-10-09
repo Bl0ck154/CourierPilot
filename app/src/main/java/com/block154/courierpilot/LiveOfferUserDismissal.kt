@@ -1,10 +1,10 @@
 package com.block154.courierpilot
 
+import java.util.Locale
+
 /**
- * Identity of the live courier offer that the user explicitly removed from the screen.
- *
- * It intentionally ignores merchant text: Wolt can expose the merchant only after OCR settles, so
- * adding a title must not resurrect an offer the courier already dismissed.
+ * Screen-only Bolt discovery rarely provides distance or delivery count. Keep the pickup/merchant
+ * identity when the courier hides the card; Wolt retains its original numeric/route guard.
  */
 internal data class LiveOfferDismissalIdentity(
     val packageName: String,
@@ -12,11 +12,15 @@ internal data class LiveOfferDismissalIdentity(
     val distanceMeters: Int?,
     val deliveryCount: Int?,
     val routeFingerprint: String?,
+    val pickupKey: String? = null,
+    val estimatedMinutesMin: Int? = null,
+    val merchantKey: String? = null,
 )
 
 internal object LiveOfferUserDismissalPolicy {
-    fun identity(packageName: String, parsed: ParsedOffer): LiveOfferDismissalIdentity =
-        LiveOfferDismissalIdentity(
+    fun identity(packageName: String, parsed: ParsedOffer): LiveOfferDismissalIdentity {
+        val merchantKey = merchantIdentity(parsed.merchantNames.firstOrNull() ?: parsed.restaurant)
+        return LiveOfferDismissalIdentity(
             packageName = packageName,
             priceCents = parsed.priceCents,
             distanceMeters = parsed.distanceMeters,
@@ -26,21 +30,30 @@ internal object LiveOfferUserDismissalPolicy {
             } else {
                 null
             },
+            pickupKey = parsed.pickupAddresses.firstOrNull()
+                ?.let { DeliveryAddressNormalizer.identity(it)?.key } ?: merchantKey,
+            estimatedMinutesMin = parsed.estimatedMinutesMin,
+            merchantKey = merchantKey,
         )
+    }
 
     fun isSameOffer(dismissed: LiveOfferDismissalIdentity, incoming: LiveOfferDismissalIdentity): Boolean {
         if (dismissed.packageName != incoming.packageName) return false
         if (!sameWhenKnown(dismissed.priceCents, incoming.priceCents)) return false
-        if (!sameWhenKnown(dismissed.distanceMeters, incoming.distanceMeters)) return false
         if (!sameWhenKnown(dismissed.deliveryCount, incoming.deliveryCount)) return false
 
+        if (dismissed.packageName == CourierSignals.BOLT_PACKAGE) {
+            if (!sameWhenKnown(dismissed.estimatedMinutesMin, incoming.estimatedMinutesMin)) return false
+            val samePickup = dismissed.pickupKey != null && dismissed.pickupKey == incoming.pickupKey
+            val sameMerchant = dismissed.merchantKey != null && dismissed.merchantKey == incoming.merchantKey
+            return samePickup || sameMerchant
+        }
+
+        // Preserve Wolt's existing strict numeric/route fingerprint guard.
+        if (!sameWhenKnown(dismissed.distanceMeters, incoming.distanceMeters)) return false
         val dismissedRoute = dismissed.routeFingerprint
         val incomingRoute = incoming.routeFingerprint
         if (dismissedRoute != null && incomingRoute != null && dismissedRoute != incomingRoute) return false
-
-        // Require at least two stable offer fields, or a verified route identity. This keeps sparse
-        // transitional frames from suppressing an unrelated future offer merely because one number
-        // happens to match.
         val comparableFields = listOf(
             dismissed.priceCents to incoming.priceCents,
             dismissed.distanceMeters to incoming.distanceMeters,
@@ -48,6 +61,12 @@ internal object LiveOfferUserDismissalPolicy {
         ).count { (first, second) -> first != null && second != null }
         return (dismissedRoute != null && incomingRoute != null) || comparableFields >= 2
     }
+
+    internal fun merchantIdentity(raw: String?): String? = raw
+        ?.lowercase(Locale.ROOT)
+        ?.replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
 
     private fun <T> sameWhenKnown(first: T?, second: T?): Boolean =
         first == null || second == null || first == second
