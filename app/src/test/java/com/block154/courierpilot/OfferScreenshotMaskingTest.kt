@@ -29,7 +29,7 @@ class OfferScreenshotMaskingTest {
     @Test
     fun screenToBitmapMappingInflatesAndClampsToPhysicalBounds() {
         assertEquals(
-            Rect(35, 145, 210, 235),
+            Rect(35, 150, 205, 225),
             OfferOverlayBitmapMask.mapRect(Rect(80, 310, 400, 440), 800, 1600, 400, 800, 10),
         )
         assertEquals(
@@ -53,7 +53,7 @@ class OfferScreenshotMaskingTest {
                 textSize = 32f
             })
         }
-        assertEquals(Color.WHITE, Color.WHITE) // Synthetic glyph and dark card exist before masking.
+        assertEquals(Color.rgb(20, 30, 50), bitmap.getPixel(52, 170))
         val mapped = OfferOverlayBitmapMask.mapRect(
             Rect(100, 330, 500, 480), 800, 1600, 400, 800, 12,
         )
