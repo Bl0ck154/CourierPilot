@@ -4,13 +4,21 @@ import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.os.Build
 import android.os.SystemClock
+import android.text.SpannableString
+import android.text.TextUtils
+import android.text.style.AbsoluteSizeSpan
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
+import android.view.VelocityTracker
+import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.animation.AccelerateInterpolator
 import android.view.animation.DecelerateInterpolator
@@ -35,6 +43,9 @@ internal class LiveAdvisorOverlayView(
 ) {
     private val windowManager = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val touchSlop = ViewConfiguration.get(service).scaledTouchSlop
+    private val obstacleFinder = OverlayObstacleFinder(service)
+    private var screenHeightPx = 0
+    private var topInsetPx = 0
 
     private var root: LinearLayout? = null
     private var windowParams: WindowManager.LayoutParams? = null
@@ -42,7 +53,12 @@ internal class LiveAdvisorOverlayView(
     private var decisionText: TextView? = null
     private var decisionSpinner: ProgressBar? = null
     private var routeText: TextView? = null
+    private var debugText: TextView? = null
     private var captureSuppressed = false
+    private var velocityTracker: VelocityTracker? = null
+
+    var isSwipeExitRunning: Boolean = false
+        private set
 
     private var gestureDownX = 0f
     private var gestureDownY = 0f
@@ -80,12 +96,34 @@ internal class LiveAdvisorOverlayView(
     val isGestureTouchActive: Boolean
         get() = gestureTouchActive
 
+    /** Actual window coordinates; excludes detached and not-yet-laid-out views. */
+    fun screenRect(): Rect? {
+        val view = root ?: return null
+        if (!view.isAttachedToWindow || view.width <= 0 || view.height <= 0) return null
+        val location = IntArray(2)
+        view.getLocationOnScreen(location)
+        return Rect(location[0], location[1], location[0] + view.width, location[1] + view.height)
+    }
+
+    fun applyDebugLines(lines: List<String>) {
+        debugText?.apply {
+            text = lines.filter { it.isNotBlank() }.take(3).joinToString("\n")
+            visibility = if (text.isEmpty()) View.GONE else View.VISIBLE
+        }
+    }
+
     fun ensure() {
-        if (root != null) return
+        if (root != null) {
+            refreshWidth()
+            return
+        }
+        screenHeightPx = screenHeight()
+        topInsetPx = topInset()
+        obstacleFinder.reset()
 
         val container = LinearLayout(service).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(10), dp(5), dp(10), dp(7))
+            setPadding(dp(8), dp(4), dp(8), dp(4))
             background = GradientDrawable().apply {
                 shape = GradientDrawable.RECTANGLE
                 cornerRadius = dp(12).toFloat()
@@ -96,43 +134,18 @@ internal class LiveAdvisorOverlayView(
         }
         installGestureSurface(container)
 
-        val topRow = LinearLayout(service).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        installGestureSurface(topRow)
-
-        val title = TextView(service).apply {
-            text = "CourierPilot · ${BuildConfig.VERSION_NAME}"
-            setTextColor(Color.rgb(148, 163, 184))
-            textSize = 9.5f
-            includeFontPadding = false
-            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-        }
-        installGestureSurface(title)
-        topRow.addView(title, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-
-        topRow.addView(TextView(service).apply {
-            text = "×"
-            setTextColor(Color.rgb(148, 163, 184))
-            textSize = 17f
-            includeFontPadding = false
-            gravity = Gravity.CENTER
-            setPadding(dp(8), 0, 0, 0)
-            setOnClickListener { onDismiss("closed by user") }
-        })
-        container.addView(topRow)
-
+        // The old title/header row wasted a full line above every offer.
+        val body = FrameLayout(service)
         val mainRow = LinearLayout(service).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(2), 0, 0)
+            setPadding(0, 0, dp(CLOSE_TOUCH_DP), 0)
         }
         installGestureSurface(mainRow)
 
         routeText = TextView(service).apply {
             setTextColor(Color.rgb(190, 200, 214))
-            textSize = 11.5f
+            textSize = 11f
             includeFontPadding = false
             typeface = Typeface.create("sans-serif", Typeface.NORMAL)
             gravity = Gravity.START or Gravity.CENTER_VERTICAL
@@ -142,7 +155,7 @@ internal class LiveAdvisorOverlayView(
             mainRow.addView(
                 view,
                 LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginEnd = dp(8)
+                    marginEnd = dp(3)
                 },
             )
         }
@@ -160,8 +173,12 @@ internal class LiveAdvisorOverlayView(
             includeFontPadding = false
             typeface = Typeface.create("monospace", Typeface.BOLD)
             gravity = Gravity.END or Gravity.CENTER_VERTICAL
-            setPadding(dp(9), dp(3), dp(9), dp(3))
-            maxLines = 1
+            setPadding(dp(1), 0, dp(1), 0)
+            setSingleLine(true)
+            ellipsize = TextUtils.TruncateAt.END
+            setAutoSizeTextTypeUniformWithConfiguration(
+                16, 24, 1, TypedValue.COMPLEX_UNIT_SP,
+            )
         }.also { view ->
             installGestureSurface(view)
             rateFrame.addView(
@@ -180,19 +197,48 @@ internal class LiveAdvisorOverlayView(
         }.also { spinner ->
             rateFrame.addView(
                 spinner,
-                FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER),
+                FrameLayout.LayoutParams(dp(16), dp(16), Gravity.CENTER),
             )
         }
 
         mainRow.addView(
             rateFrame,
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, dp(RATE_MIN_HEIGHT_DP)),
+            LinearLayout.LayoutParams(0, dp(RATE_MIN_HEIGHT_DP), 0.55f),
         )
-        container.addView(mainRow)
+        body.addView(
+            mainRow,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+            ),
+        )
+        body.addView(
+            TextView(service).apply {
+                text = "×"
+                setTextColor(Color.rgb(148, 163, 184))
+                textSize = 14f
+                includeFontPadding = false
+                gravity = Gravity.CENTER
+                contentDescription = "Close live advisor"
+                setOnClickListener { onDismiss("closed by user") }
+            },
+            FrameLayout.LayoutParams(dp(CLOSE_TOUCH_DP), dp(CLOSE_TOUCH_DP), Gravity.TOP or Gravity.END),
+        )
+        container.addView(body)
 
-        val screenWidth = service.resources.displayMetrics.widthPixels
+        debugText = TextView(service).apply {
+            textSize = 8.5f
+            includeFontPadding = false
+            typeface = Typeface.MONOSPACE
+            maxLines = 3
+            ellipsize = TextUtils.TruncateAt.END
+            setTextColor(Color.rgb(148, 163, 184))
+            visibility = View.GONE
+        }.also { container.addView(it) }
+
+        val screenWidth = screenWidth()
         val params = WindowManager.LayoutParams(
-            (screenWidth - dp(HORIZONTAL_MARGIN_DP * 2)).coerceAtLeast(1),
+            OverlayGeometryPolicy.widthPx(screenWidth, service.resources.displayMetrics.density),
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
@@ -203,7 +249,12 @@ internal class LiveAdvisorOverlayView(
         ).apply {
             gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
             x = 0
-            y = LiveAdvisorSettings.overlayYPx(service) ?: dp(DEFAULT_Y_DP)
+            y = LiveAdvisorSettings.overlayYPx(service) ?: OverlayGeometryPolicy.defaultYPx(
+                obstacleFinder.topClickableBottomPx(screenHeightPx),
+                topInsetPx,
+                screenHeightPx,
+                service.resources.displayMetrics.density,
+            )
         }
         windowParams = params
 
@@ -230,6 +281,7 @@ internal class LiveAdvisorOverlayView(
                 decisionText = null
                 decisionSpinner = null
                 routeText = null
+                debugText = null
                 windowParams = null
                 CaptureEventLog.append(
                     service,
@@ -241,6 +293,9 @@ internal class LiveAdvisorOverlayView(
     }
 
     fun detach(animate: Boolean = true) {
+        // WS-A may hide the session synchronously inside onDismiss. Never cancel the
+        // exit animation or snap the just-swiped window back onto the display.
+        if (isSwipeExitRunning) return
         val view = root
         root = null
         windowParams = null
@@ -248,8 +303,13 @@ internal class LiveAdvisorOverlayView(
         decisionText = null
         decisionSpinner = null
         routeText = null
+        debugText = null
         gestureMode = GESTURE_NONE
+        gestureTouchActive = false
+        velocityTracker?.recycle()
+        velocityTracker = null
         captureSuppressed = false
+        obstacleFinder.reset()
         if (view == null) return
         view.animate().cancel()
         if (!animate || !view.isAttachedToWindow) {
@@ -288,13 +348,28 @@ internal class LiveAdvisorOverlayView(
     }
 
     fun applyRoute(text: String, visible: Boolean) {
+        val routeLine = text
         routeText?.apply {
             visibility = if (visible) View.VISIBLE else View.INVISIBLE
-            this.text = text
+            if (DeveloperModeSettings.enabled(service) && visible) {
+                val suffix = " · v${BuildConfig.VERSION_NAME}"
+                this.text = SpannableString(routeLine + suffix).apply {
+                    setSpan(
+                        AbsoluteSizeSpan(8, true),
+                        routeLine.length,
+                        length,
+                        android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
+                    )
+                }
+            } else {
+                this.text = routeLine
+            }
         }
     }
 
     fun setCaptureSuppressed(suppressed: Boolean) {
+        // A screenshot callback can arrive in the middle of the courier's finger movement.
+        if (gestureTouchActive || isSwipeExitRunning) return
         if (!LiveAdvisorCapturePolicy.shouldSuppressOverlay(platformProvider())) {
             captureSuppressed = false
             root?.apply {
@@ -322,9 +397,13 @@ internal class LiveAdvisorOverlayView(
     }
 
     private fun handleGesture(event: MotionEvent): Boolean {
+        if (isSwipeExitRunning) return true
         val view = root
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                velocityTracker?.recycle()
+                velocityTracker = VelocityTracker.obtain()
+                recordRawMotion(event)
                 gestureDownX = event.rawX
                 gestureDownY = event.rawY
                 gestureStartY = windowParams?.y ?: dp(DEFAULT_Y_DP)
@@ -345,6 +424,7 @@ internal class LiveAdvisorOverlayView(
                 view?.alpha = 1f
             }
             MotionEvent.ACTION_MOVE -> {
+                recordRawMotion(event)
                 val now = SystemClock.elapsedRealtime()
                 if (gestureMoveEvents > 0) {
                     gestureMaxMoveGapMs = maxOf(gestureMaxMoveGapMs, now - gestureLastMoveAtElapsed)
@@ -370,6 +450,11 @@ internal class LiveAdvisorOverlayView(
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                recordRawMotion(event)
+                velocityTracker?.computeCurrentVelocity(1000)
+                val horizontalVelocity = velocityTracker?.xVelocity ?: 0f
+                velocityTracker?.recycle()
+                velocityTracker = null
                 val dx = event.rawX - gestureDownX
                 val dy = event.rawY - gestureDownY
                 val mode = gestureMode
@@ -378,14 +463,33 @@ internal class LiveAdvisorOverlayView(
                 gestureMode = GESTURE_NONE
                 gestureTouchActive = false
                 if (mode == GESTURE_HORIZONTAL) {
-                    val threshold = maxOf(dp(SWIPE_MIN_DP).toFloat(), (view?.width ?: 1) * SWIPE_FRACTION)
-                    if (event.actionMasked == MotionEvent.ACTION_UP && abs(dx) >= threshold) {
-                        logGesturePerformance(mode, dy, event.actionMasked == MotionEvent.ACTION_CANCEL)
+                    if (event.actionMasked == MotionEvent.ACTION_UP && view != null &&
+                        OverlaySwipePolicy.shouldDismiss(
+                            dx, horizontalVelocity, view.width, service.resources.displayMetrics.density,
+                        )
+                    ) {
+                        logGesturePerformance(mode, dy, cancelled = false)
+                        isSwipeExitRunning = true
+                        // The window remains attached until the exit animation has finished.
+                        val direction = if (dx >= 0f) 1f else -1f
+                        view.animate().cancel()
+                        view.animate()
+                            .translationX(direction * (view.width + dp(SWIPE_EXIT_MARGIN_DP)))
+                            .alpha(0f)
+                            .setInterpolator(DecelerateInterpolator())
+                            .setDuration(SWIPE_EXIT_MS)
+                            .withEndAction { finishSwipeExit(view) }
+                            .start()
                         onGestureFinished()
                         onDismiss("swiped by user")
                         return true
                     }
-                    view?.animate()?.translationX(0f)?.alpha(1f)?.setDuration(SNAP_BACK_MS)?.start()
+                    view?.animate()
+                        ?.translationX(0f)
+                        ?.alpha(1f)
+                        ?.setInterpolator(DecelerateInterpolator())
+                        ?.setDuration(SNAP_BACK_MS)
+                        ?.start()
                 } else if (mode == GESTURE_VERTICAL) {
                     commitVerticalDrag(gesturePendingY)
                 }
@@ -394,6 +498,24 @@ internal class LiveAdvisorOverlayView(
             }
         }
         return true
+    }
+
+    private fun recordRawMotion(event: MotionEvent) {
+        // Raw coordinates are stable even while translationX moves the touched view.
+        val raw = MotionEvent.obtain(event)
+        raw.setLocation(event.rawX, event.rawY)
+        velocityTracker?.addMovement(raw)
+        raw.recycle()
+    }
+
+    private fun finishSwipeExit(view: View) {
+        if (!isSwipeExitRunning) return
+        isSwipeExitRunning = false
+        if (root === view) {
+            detach(animate = false)
+        } else {
+            runCatching { windowManager.removeView(view) }
+        }
     }
 
     private fun logGesturePerformance(mode: Int, dy: Float, cancelled: Boolean) {
@@ -441,9 +563,48 @@ internal class LiveAdvisorOverlayView(
     }
 
     private fun clampY(targetY: Int, view: View): Int {
-        val min = dp(MIN_Y_DP)
-        val max = (service.resources.displayMetrics.heightPixels - view.height - dp(BOTTOM_MARGIN_DP)).coerceAtLeast(min)
+        val min = topInsetPx + dp(4)
+        val max = (screenHeightPx - view.height - dp(BOTTOM_MARGIN_DP)).coerceAtLeast(min)
         return targetY.coerceIn(min, max)
+    }
+
+    private fun screenWidth(): Int = runCatching {
+        if (Build.VERSION.SDK_INT >= 30) windowManager.currentWindowMetrics.bounds.width()
+        else service.resources.displayMetrics.widthPixels
+    }.getOrDefault(service.resources.displayMetrics.widthPixels).coerceAtLeast(1)
+
+    private fun screenHeight(): Int = runCatching {
+        if (Build.VERSION.SDK_INT >= 30) windowManager.currentWindowMetrics.bounds.height()
+        else service.resources.displayMetrics.heightPixels
+    }.getOrDefault(service.resources.displayMetrics.heightPixels).coerceAtLeast(1)
+
+    private fun topInset(): Int {
+        val measured = runCatching {
+            if (Build.VERSION.SDK_INT >= 30) {
+                windowManager.currentWindowMetrics.windowInsets.getInsetsIgnoringVisibility(
+                    WindowInsets.Type.statusBars() or WindowInsets.Type.displayCutout(),
+                ).top
+            } else 0
+        }.getOrDefault(0)
+        if (measured > 0) return measured
+        val statusBarId = service.resources.getIdentifier("status_bar_height", "dimen", "android")
+        return if (statusBarId != 0) {
+            runCatching { service.resources.getDimensionPixelSize(statusBarId) }.getOrDefault(0)
+        } else 0
+    }
+
+    private fun refreshWidth() {
+        if (gestureTouchActive || isSwipeExitRunning) return
+        val view = root ?: return
+        val params = windowParams ?: return
+        val width = OverlayGeometryPolicy.widthPx(
+            screenWidth(), service.resources.displayMetrics.density,
+        )
+        if (params.width == width) return
+        params.width = width
+        screenHeightPx = screenHeight()
+        topInsetPx = topInset()
+        runCatching { windowManager.updateViewLayout(view, params) }
     }
 
     private fun decisionColor(band: OfferDecisionBand): Int = when (band) {
@@ -462,14 +623,13 @@ internal class LiveAdvisorOverlayView(
         const val FADE_OUT_MS = 280L
         const val FADE_OFFSET_DP = 10
         const val DEFAULT_Y_DP = 48
-        const val MIN_Y_DP = 12
         const val BOTTOM_MARGIN_DP = 16
-        const val HORIZONTAL_MARGIN_DP = 12
-        const val RATE_MIN_WIDTH_DP = 176
-        const val RATE_MIN_HEIGHT_DP = 44
-        const val SWIPE_MIN_DP = 44
-        const val SWIPE_FRACTION = 0.16f
-        const val SNAP_BACK_MS = 140L
+        const val CLOSE_TOUCH_DP = 32
+        const val RATE_MIN_WIDTH_DP = 112
+        const val RATE_MIN_HEIGHT_DP = 36
+        const val SWIPE_EXIT_MARGIN_DP = 24
+        const val SWIPE_EXIT_MS = 160L
+        const val SNAP_BACK_MS = 180L
         const val GESTURE_WINDOW_RELAYOUT_MIN_INTERVAL_MS = 16L
         const val GESTURE_NONE = 0
         const val GESTURE_HORIZONTAL = 1
