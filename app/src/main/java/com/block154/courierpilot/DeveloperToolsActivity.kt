@@ -1,6 +1,12 @@
 package com.block154.courierpilot
 
 import android.content.Intent
+import android.net.Uri
+import java.io.File
+import org.json.JSONArray
+import org.json.JSONObject
+import androidx.core.content.FileProvider
+import java.util.Locale
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
@@ -60,6 +66,9 @@ private fun DeveloperToolsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val routeReady = runCatching { RouteEndpointSettings.load(context).validated() }.isSuccess
     val boltSample = BoltAccessibilityDiagnostics.summary(context)
+    val truthDb = runCatching { RouteResearchDatabase.get(context) }.getOrNull()
+    val truthStats = runCatching { truthDb?.boltRecoveryStats() }.getOrNull()
+    val truthRows = runCatching { truthDb?.boltRecoveryTruthRows(20).orEmpty() }.getOrDefault(emptyList())
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -138,6 +147,30 @@ private fun DeveloperToolsScreen(onBack: () -> Unit) {
         }
 
         item {
+            Card(shape = RoundedCornerShape(20.dp)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Bolt recovery accuracy · local only", fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
+                    val count = truthStats?.count ?: 0
+                    fun metres(value: Double?): String =
+                        value?.let { String.format(Locale.US, "%.0f m", it) } ?: "—"
+                    Text("$count matched deliveries · median ${metres(truthStats?.medianMeters)} · p80 ${metres(truthStats?.p80Meters)}",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                    truthRows.forEach { item ->
+                        Text("Offer #${item.offerId} · error ${metres(item.errorMeters)} · markers ${item.pickupMarkerCount}/${item.dropoffMarkerCount} · ETA ${item.etaMinutes ?: "?"} min",
+                            fontSize = 11.sp)
+                    }
+                    Text("Export includes local coordinates and may include the saved research screenshot/tree. Share only deliberately.",
+                        fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    FilledTonalButton(
+                        onClick = { exportBoltRecoveryTruth(context) },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = count > 0,
+                    ) { Text("Export private Bolt research (share sheet)") }
+                }
+            }
+        }
+
+        item {
             TextButton(
                 onClick = {
                     DeveloperModeSettings.setEnabled(context, false)
@@ -149,4 +182,43 @@ private fun DeveloperToolsScreen(onBack: () -> Unit) {
             }
         }
     }
+}
+
+/** Explicit manual share only. Never an automatic diagnostics upload. */
+private fun exportBoltRecoveryTruth(context: android.content.Context) {
+    val rows = runCatching { RouteResearchDatabase.get(context).boltRecoveryTruthRows(1000) }
+        .getOrDefault(emptyList())
+    if (rows.isEmpty()) return
+    val directory = File(context.filesDir, "diagnostics/bolt-research").apply { mkdirs() }
+    val json = JSONArray()
+    rows.forEach { row ->
+        json.put(JSONObject().apply {
+            put("offer_id", row.offerId)
+            put("recovered_lat", row.recovered.latitude)
+            put("recovered_lon", row.recovered.longitude)
+            put("truth_lat", row.truth.latitude)
+            put("truth_lon", row.truth.longitude)
+            put("error_m", row.errorMeters)
+            put("scale_m_per_px", row.scaleMetersPerPixel)
+            put("baseline_px", row.anchorBaselinePx)
+            put("baseline_m", row.anchorBaselineMeters)
+            put("pickup_markers", row.pickupMarkerCount)
+            put("dropoff_markers", row.dropoffMarkerCount)
+            put("eta_min", row.etaMinutes)
+            put("route_meters", row.routeMeters)
+            put("created_at", row.createdAt)
+        })
+    }
+    val export = File(directory, "bolt-recovery-truth.json")
+    runCatching { export.writeText(json.toString(2)) }.getOrElse { return }
+    val files = listOf(export) + BoltAccessibilityDiagnostics.sampleFiles(context)
+    val uris = ArrayList<Uri>(files.map {
+        FileProvider.getUriForFile(context, "${context.packageName}.researchfiles", it)
+    })
+    val share = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+        type = "*/*"
+        putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(Intent.createChooser(share, "Share private Bolt recovery research"))
 }
