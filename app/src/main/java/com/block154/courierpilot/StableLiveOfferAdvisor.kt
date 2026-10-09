@@ -828,6 +828,14 @@ internal class StableLiveOfferAdvisor(
 
     private fun restoreFromCache(reason: String) {
         if (dismissed || currentParsed == null || !temporarilyHidden) return
+        if (userHidden) {
+            // A stale restore deadline is not end-of-offer evidence after a manual swipe.
+            // Continue watching the screen, but never reattach the hidden window.
+            temporarilyHidden = false
+            temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
+            resetMissingEvidence()
+            return
+        }
         if (SystemClock.elapsedRealtime() > temporaryRestoreDeadlineElapsed) {
             // A short Compose gap may recover, but a Wolt card that resurfaces tens of seconds after
             // becoming unconfirmed is stale Accessibility state, not a live offer.
@@ -836,12 +844,6 @@ internal class StableLiveOfferAdvisor(
         }
         val pending = OfferState.pending(service)
         if (pending != null && pending.packageName == expectedPackageName && !previewMode && !userHidden) return
-        if (userHidden) {
-            temporarilyHidden = false
-            temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
-            resetMissingEvidence()
-            return
-        }
         ensureView()
         if (!overlayView.isAttached) return
         temporarilyHidden = false
