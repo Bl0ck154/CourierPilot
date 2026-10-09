@@ -38,6 +38,18 @@ internal object DeliveryLifecycleTracking {
         if (text.isBlank()) return
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val prefix = keyPrefix(packageName)
+        // Accepted-task addresses are visible after offer capture; never forward them to logs.
+        if (packageName == CourierSignals.BOLT_PACKAGE &&
+            currentState(context, packageName)?.let {
+                it != DeliveryEventType.OFFER_CAPTURED &&
+                    it != DeliveryEventType.CANCELLED && it != DeliveryEventType.DELIVERED
+            } == true &&
+            isAcceptedTaskWithoutOfferControls(text)
+        ) {
+            prefs.getLong("${prefix}_offer", -1L).takeIf { it > 0L }?.let { id ->
+                BoltRecoveryTruth.observeAcceptedScreen(context, id, text)
+            }
+        }
         val evidence = detect(text) ?: return
         // Pickup completion can belong to an older Bolt task while an add-on offer is currently
         // tracked as the latest offer. Update the independent active-pickup fallback before the
@@ -66,6 +78,12 @@ internal object DeliveryLifecycleTracking {
                 confidence = 1.0,
             ),
         )
+        if (packageName == CourierSignals.BOLT_PACKAGE &&
+            evidence.type == DeliveryEventType.ACCEPTED &&
+            isAcceptedTaskWithoutOfferControls(text)
+        ) {
+            BoltRecoveryTruth.observeAcceptedScreen(context, offerId, text)
+        }
         prefs.edit()
             .putString("${prefix}_last_event", evidence.type.name)
             .putLong("${prefix}_last_event_at", now)
