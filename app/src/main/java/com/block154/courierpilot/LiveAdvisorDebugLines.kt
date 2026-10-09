@@ -53,3 +53,17 @@ internal object LiveAdvisorTerminalPolicy {
     fun expired(startElapsedMs: Long, nowElapsedMs: Long, isTerminal: Boolean): Boolean =
         !isTerminal && startElapsedMs > 0 && nowElapsedMs - startElapsedMs >= VERDICT_TIMEOUT_MS
 }
+
+internal data class BoltTerminalPresentation(val rateLine: String, val routeLine: String)
+
+/** Fallback never evaluates a scored verdict or enters LiveOfferVerdictCache. */
+internal object BoltTerminalPresentationPolicy {
+    fun present(money: MoneyAmount?, etaMeters: Int?, etaMinutes: Int?): BoltTerminalPresentation {
+        val metres = etaMeters?.takeIf { it > 0 }
+        if (metres == null) return BoltTerminalPresentation("?/km", "⚠️ Route unavailable")
+        val rate = money?.let { LiveAdvisorPresentation.provisionalRateLine(it, metres) } ?: "?/km"
+        val minutes = etaMinutes?.let { "~$it min " } ?: ""
+        val distance = "%.1f".format(Locale.US, metres / 1000.0)
+        return BoltTerminalPresentation(rate, "🕒 $minutes≈ $distance km")
+    }
+}
