@@ -597,7 +597,12 @@ internal object LiveAdvisorHub {
                 val comparison = outcome.comparison
                 // Score/render the candidate against the existing reference corpus before inserting
                 // this offer into local/server market history.
-                if (isCurrentOffer(current)) advisor?.updateBoltRoute(outcome)
+                // The courier may accept the offer before routing finishes. Retain local
+                // research evidence by offer ID even when the on-screen advisor has ended.
+                BoltRecoveryTruth.remember(service, outcome, outcome.etaToCustomerMinutes)
+                if (isCurrentOffer(current)) {
+                    advisor?.updateBoltRoute(outcome)
+                }
                 if (comparison != null && outcome.scope == BoltRouteScope.FULL) {
                     MarketIntelligence.onRouteResolved(
                         service,
@@ -612,6 +617,7 @@ internal object LiveAdvisorHub {
         }
 
         if (record.platform.equals("Wolt", ignoreCase = true)) {
+            val startedAt = android.os.SystemClock.elapsedRealtime()
             AutomaticWoltRouteCoordinator.start(
                 service,
                 current.offerId,
@@ -621,6 +627,14 @@ internal object LiveAdvisorHub {
                 preparedKey = preparedKey,
             ) { outcome ->
                 val comparison = outcome.comparison
+                CaptureEventLog.append(
+                    service,
+                    stage = "wolt_route_timing",
+                    platform = "Wolt",
+                    message = "gps_ms=-1; geocode_ms=-1; markers_ms=-1; valhalla_ms=-1; " +
+                        "total_ms=${android.os.SystemClock.elapsedRealtime() - startedAt}",
+                    dedupeWindowMs = 500L,
+                )
                 if (isCurrentOffer(current)) {
                     if (comparison != null) {
                         currentOfferHasResolvedRoute = true

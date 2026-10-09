@@ -6,6 +6,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityNodeInfo
 import java.util.Locale
+import java.util.concurrent.Executors
 
 /**
  * Stable live card: the shell appears first with profitability data, then routing updates the same
@@ -45,6 +46,26 @@ internal class StableLiveOfferAdvisor(
     private var woltBaselineSurface: LiveOfferSurfaceSnapshot? = null
     private var previewMode = false
     private var offerVisualStartedAtElapsed = 0L
+    private var verdictTimedOut = false
+    private var cachedDebugLines = emptyList<String>()
+    private val reverseWorker = Executors.newSingleThreadExecutor()
+    private val verdictTimeoutRunnable = Runnable {
+        if (!dismissed && !finalPresentationLocked && cachedDecisionLoading && currentParsed != null &&
+            LiveAdvisorTerminalPolicy.expired(offerVisualStartedAtElapsed, SystemClock.elapsedRealtime(), false)
+        ) {
+            verdictTimedOut = true
+            cachedDecisionLine = "?/km"
+            cachedDecisionBand = OfferDecisionBand.UNKNOWN
+            cachedDecisionLoading = false
+            applyDecisionPresentation()
+            CaptureEventLog.append(
+                service,
+                stage = "verdict_timeout",
+                platform = currentPlatform,
+                message = "stage=${if (previewMode) "price" else "route"}; elapsed_ms=${LiveAdvisorTerminalPolicy.VERDICT_TIMEOUT_MS}",
+            )
+        }
+    }
 
     private var cachedDecisionLine = ""
     private var cachedDecisionBand = OfferDecisionBand.UNKNOWN
@@ -125,6 +146,8 @@ internal class StableLiveOfferAdvisor(
             cachedDecisionLine = ""
             cachedDecisionBand = OfferDecisionBand.UNKNOWN
             cachedDecisionLoading = true
+            verdictTimedOut = false
+            cachedDebugLines = emptyList()
             finalPresentationLocked = false
             currentLockedVerdict = null
             decisionThresholds.beginOffer(platform, generation)
@@ -156,6 +179,7 @@ internal class StableLiveOfferAdvisor(
             )
         } else parsed
         currentParsed = stableParsed
+        refreshBasicDebugLines()
         restoreLockedVerdict(platform, stableParsed)
         differentOfferConfirmation.reset()
         if (!finalPresentationLocked) renderProgressiveDecision(stableParsed)
@@ -201,6 +225,7 @@ internal class StableLiveOfferAdvisor(
             val wasPreview = previewMode
             currentPlatform = platform
             currentParsed = parsed
+            refreshBasicDebugLines()
             if (offerId != null) {
                 currentOfferId = offerId
                 // Preview scoring can finish before persistence enriches the parsed identity.
@@ -241,6 +266,7 @@ internal class StableLiveOfferAdvisor(
         val expectedGeneration = generation
         currentPlatform = platform
         currentParsed = parsed
+        refreshBasicDebugLines()
         currentOfferId = offerId
         expectedPackageName = packageForPlatform(platform)
         currentNotificationKey = notificationKey
@@ -250,6 +276,8 @@ internal class StableLiveOfferAdvisor(
         temporarilyHidden = false
         temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
         previewMode = false
+        verdictTimedOut = false
+        cachedDebugLines = emptyList()
         cachedDecisionLine = ""
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
         cachedDecisionLoading = true
@@ -425,43 +453,80 @@ internal class StableLiveOfferAdvisor(
     }
 
     fun updateBoltRoute(outcome: AutomaticBoltRouteOutcome) {
-        if (dismissed || finalPresentationLocked || !LiveAdvisorSettings.enabled(service)) return
+        if (dismissed || !LiveAdvisorSettings.enabled(service)) return
         val expectedGeneration = generation
         handler.post {
-            if (dismissed || finalPresentationLocked || generation != expectedGeneration) return@post
+            if (dismissed || generation != expectedGeneration) return@post
+            updateBoltDebugLines(outcome, expectedGeneration)
+            if (finalPresentationLocked) return@post
             val comparison = outcome.comparison
-            if (comparison == null) {
-                setDecisionUnavailable()
-                setRouteContent("⚠️ Route unavailable")
-                CaptureEventLog.append(
-                    service,
-                    stage = "bolt_route_failed",
-                    platform = "Bolt",
-                    message = outcome.failureReason ?: "unknown route failure",
-                )
-                return@post
-            }
-
-            val walking = comparison.pedestrian.getOrNull()
-            val cycling = comparison.cycleway.getOrNull()
-            if (outcome.scope == BoltRouteScope.FULL) {
+            val full = outcome.scope == BoltRouteScope.FULL && comparison != null
+            if (full) {
+                val walking = comparison!!.pedestrian.getOrNull()
+                val cycling = comparison.cycleway.getOrNull()
                 cachedPedestrianRoute = walking
                 cachedCyclewayRoute = cycling
                 currentParsed?.let { parsed -> renderProfitability(parsed, walking, cycling) }
+                setRouteContent(LiveAdvisorPresentation.routeLine(walking, cycling))
             } else {
-                // A pickup-only route is useful context, but it is not the full paid delivery.
-                // Never turn that partial distance into a misleading €/km verdict.
+                // A pickup-only route is not the paid delivery distance. Prefer the ETA-based
+                // provisional rate (never a cached verdict); without ETA fail closed to ?/km.
                 cachedPedestrianRoute = null
                 cachedCyclewayRoute = null
-                currentParsed?.let(::renderProgressiveDecision)
+                verdictTimedOut = true // late sparse OCR must not restart the spinner
+                val terminal = BoltTerminalPresentationPolicy.present(
+                    currentParsed?.money, outcome.etaEstimateMeters, outcome.etaToCustomerMinutes,
+                )
+                cachedDecisionLine = terminal.rateLine
+                cachedDecisionBand = OfferDecisionBand.UNKNOWN
+                cachedDecisionLoading = false
+                applyDecisionPresentation()
+                setRouteContent(terminal.routeLine)
             }
-            setRouteContent(LiveAdvisorPresentation.routeLine(walking, cycling))
             CaptureEventLog.append(
                 service,
-                stage = "bolt_route_ready",
+                stage = if (comparison == null) "bolt_route_failed" else "bolt_route_ready",
                 platform = "Bolt",
-                message = "Updated existing card; scope=${outcome.scope}; waypoints=${outcome.waypoints.size}",
+                message = "scope=${outcome.scope}; waypoints=${outcome.waypoints.size}; eta_available=${outcome.etaEstimateMeters != null}",
             )
+        }
+    }
+
+    /** Debug strings are never submitted to CaptureEventLog, market scoring or remote diagnostics. */
+    private fun refreshBasicDebugLines() {
+        if (!DeveloperModeSettings.enabled(service)) {
+            cachedDebugLines = emptyList()
+        } else {
+            val parsed = currentParsed
+            cachedDebugLines = if (parsed == null) emptyList() else if (currentPlatform.equals("Wolt", true)) {
+                LiveAdvisorDebugLines.wolt(parsed.pickupAddresses, parsed.dropoffAddresses)
+            } else {
+                LiveAdvisorDebugLines.bolt(parsed.pickupAddresses, emptyList(), null, null, null, null)
+            }
+        }
+        overlayView.applyDebugLines(cachedDebugLines)
+    }
+
+    private fun updateBoltDebugLines(outcome: AutomaticBoltRouteOutcome, expectedGeneration: Long) {
+        if (!DeveloperModeSettings.enabled(service)) return
+        val points = outcome.diagnostics?.projectedDropoffs.orEmpty().take(3)
+        val initial = points.map(LiveAdvisorDebugLines::coordinate)
+        fun present(labels: List<String>) {
+            if (dismissed || generation != expectedGeneration || !currentPlatform.equals("Bolt", true)) return
+            cachedDebugLines = LiveAdvisorDebugLines.bolt(
+                currentParsed?.pickupAddresses.orEmpty(), labels, outcome.recoveryConfidence,
+                outcome.diagnostics, outcome.etaToCustomerMinutes, outcome.etaEstimateMeters,
+            )
+            overlayView.applyDebugLines(cachedDebugLines)
+        }
+        present(initial)
+        if (points.isEmpty()) return
+        reverseWorker.execute {
+            val labels = points.map { point ->
+                PhotonAddressGeocoder.reverse(point.latitude, point.longitude)
+                    ?: LiveAdvisorDebugLines.coordinate(point)
+            }
+            handler.post { present(labels) }
         }
     }
 
@@ -603,6 +668,7 @@ internal class StableLiveOfferAdvisor(
 
     fun destroy() {
         suppressCurrentOffer("advisor destroyed", animate = false)
+        reverseWorker.shutdownNow()
         speech.destroy()
     }
 
@@ -667,6 +733,7 @@ internal class StableLiveOfferAdvisor(
     }
 
     private fun setDecisionLoading() {
+        if (verdictTimedOut) return
         cachedDecisionLine = ""
         cachedDecisionBand = OfferDecisionBand.UNKNOWN
         cachedDecisionLoading = true
@@ -771,6 +838,7 @@ internal class StableLiveOfferAdvisor(
     private fun applyCachedPresentation() {
         applyDecisionPresentation()
         overlayView.applyRoute(cachedRouteLine, cachedRouteVisible)
+        overlayView.applyDebugLines(cachedDebugLines)
     }
 
     private fun applyDecisionPresentation() {
@@ -863,6 +931,7 @@ internal class StableLiveOfferAdvisor(
     }
 
     private fun clearOfferViewState(animate: Boolean = true) {
+        handler.removeCallbacks(verdictTimeoutRunnable)
         handler.removeCallbacks(visibilityWatchdog)
         handler.removeCallbacks(courierWindowCheck)
         courierEventCheckScheduled = false
@@ -877,6 +946,9 @@ internal class StableLiveOfferAdvisor(
         previewMode = false
         temporaryRestoreDeadlineElapsed = Long.MAX_VALUE
         offerVisualStartedAtElapsed = 0L
+        verdictTimedOut = false
+        cachedDebugLines = emptyList()
+        overlayView.applyDebugLines(emptyList())
         currentParsed = null
         expectedPackageName = ""
         currentNotificationKey = ""
@@ -938,6 +1010,12 @@ internal class StableLiveOfferAdvisor(
     }
 
     private fun startVisibilityWatchdog() {
+        handler.removeCallbacks(verdictTimeoutRunnable)
+        if (!finalPresentationLocked && !verdictTimedOut && currentParsed != null) {
+            val remaining = (offerVisualStartedAtElapsed + LiveAdvisorTerminalPolicy.VERDICT_TIMEOUT_MS -
+                SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+            handler.postDelayed(verdictTimeoutRunnable, remaining)
+        }
         handler.removeCallbacks(visibilityWatchdog)
         handler.postDelayed(visibilityWatchdog, VISIBILITY_CHECK_MS)
     }
