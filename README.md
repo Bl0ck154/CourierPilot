@@ -37,6 +37,26 @@ The card appears while the offer is on screen and disappears when the offer ends
   <img src="docs/assets/live-card-states.svg" alt="Every live card state, from gold Fire to faint Terrible, plus estimate, calculating and unknown" width="820" />
 </p>
 
+## The app
+
+Home, History and Addresses are grouped lists that reuse the live card's colours: every offer's €/km is graded from gold (🔥) to clay (💩), venues of stacked orders are shown together (`Burger Lab + Green Bowl`), and saved door codes sit right next to the address. Light, dark or follow the phone — your choice in **Settings → Appearance**; the live card itself always stays dark so it reads over any map.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/app-screens-dark.png" />
+    <img src="docs/assets/app-screens-light.png" alt="CourierPilot Home, History, Addresses and Appearance settings" width="900" />
+  </picture>
+</p>
+
+<p align="center"><sub>Rendered from the real app with invented venues, customers and codes.</sub></p>
+
+<details>
+<summary>Dark theme</summary>
+<p align="center">
+  <img src="docs/assets/app-screens-dark.png" alt="CourierPilot screens in the dark theme" width="900" />
+</p>
+</details>
+
 ## How it works
 
 <p align="center">
@@ -76,6 +96,7 @@ In developer mode the card also shows tiny debug lines (the pickup address and t
 | 🔐 **Access codes** | Remembers door codes and arrival hints per address |
 | 🛰 **Ride traces** | Explicit GPS recording of real rides for future personal route learning |
 | 🔊 **Voice** | Optional spoken offer summary, off by default |
+| 🌗 **Light & dark** | System, Light or Dark theme; the live card always stays dark |
 | 🩺 **Reliability screen** | Privacy-safe capture diagnostics and an exportable report |
 
 ## Local data and privacy
@@ -112,6 +133,8 @@ Release signing is documented in [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNIN
 
 ## Releases and roadmap
 
+- **0.17.0** — new grouped-list design for Home/History/Addresses, System/Light/Dark theme, every venue of stacked Wolt orders. See [`docs/RELEASE_0.17.0.md`](docs/RELEASE_0.17.0.md).
+- **0.16.2** — full Bolt venue names, new Wolt "Deliver to" screen, door-code reminders. See [`docs/RELEASE_0.16.2.md`](docs/RELEASE_0.16.2.md).
 - **0.16.1** — live card redesign (gold → grey), Bolt map anchoring fix, ETA sanity gate, no card restarts while an offer rings. See [`docs/RELEASE_0.16.1.md`](docs/RELEASE_0.16.1.md).
 - **0.16.0** — live advisor overhaul: stable sessions, compact card, flicker-free capture, Bolt north-up recovery. See [`docs/RELEASE_0.16.0.md`](docs/RELEASE_0.16.0.md).
 - **Next** — map-label registration for Bolt (OCR of street and place names as extra anchors) and line-graph pairing for multi-stop orders, gated on measured accuracy. See [`docs/LIVE_ADVISOR_OVERHAUL_PLAN.md`](docs/LIVE_ADVISOR_OVERHAUL_PLAN.md) and [`docs/ROUTE_INTELLIGENCE_ROADMAP.md`](docs/ROUTE_INTELLIGENCE_ROADMAP.md).
