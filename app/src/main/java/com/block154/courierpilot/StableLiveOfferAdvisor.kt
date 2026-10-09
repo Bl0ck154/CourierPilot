@@ -105,8 +105,11 @@ internal class StableLiveOfferAdvisor(
             incomingNotificationKey = notificationKey,
             compatibleOfferEvidence = compatibleOfferEvidence,
         )
-        val createdSurface = !sameSurface
-        if (!sameSurface) {
+        val confirmedSameSurface = sameSurface && currentParsed?.let {
+            !LiveOfferResumePolicy.definitelyDifferent(it, parsed)
+        } == true
+        val createdSurface = !confirmedSameSurface
+        if (!confirmedSameSurface) {
             generation += 1
             offerVisualStartedAtElapsed = SystemClock.elapsedRealtime()
             currentPlatform = platform
@@ -139,7 +142,7 @@ internal class StableLiveOfferAdvisor(
             currentNotificationRemoved = notificationIsAlreadyRemoved(packageName, notificationKey)
         }
         currentParsed = parsed
-        decisionThresholds.prewarm()
+        restoreLockedVerdict(platform, parsed)
         differentOfferConfirmation.reset()
         if (!finalPresentationLocked) renderProgressiveDecision(parsed)
         if (cachedRouteLine.isBlank()) renderRouteLoadingState()
@@ -460,7 +463,12 @@ internal class StableLiveOfferAdvisor(
             )
             cachedPedestrianRoute = null
             cachedCyclewayRoute = route
-            currentParsed?.let { parsed -> renderProfitability(parsed, null, route) }
+            currentParsed?.let { parsed ->
+                renderProfitability(
+                    parsed, null, route,
+                    routeLine = LiveAdvisorPresentation.platformDistanceLine(routeMeters),
+                )
+            }
             setRouteContent(LiveAdvisorPresentation.platformDistanceLine(routeMeters))
             CaptureEventLog.append(
                 service,
@@ -660,6 +668,7 @@ internal class StableLiveOfferAdvisor(
         parsed: ParsedOffer,
         pedestrianRoute: RouteResult?,
         cyclewayRoute: RouteResult?,
+        routeLine: String = LiveAdvisorPresentation.routeLine(pedestrianRoute, cyclewayRoute),
     ) {
         if (restoreLockedVerdict(currentPlatform, parsed)) return
         val currencyCode = parsed.money?.currencyCode
@@ -689,7 +698,7 @@ internal class StableLiveOfferAdvisor(
         // still finish in the background, but they must never repaint the number or emoji mid-decision.
         finalPresentationLocked = true
         // Capture the route row with the first verified verdict, before any late GPS retry.
-        cachedRouteLine = LiveAdvisorPresentation.routeLine(pedestrianRoute, cyclewayRoute)
+        cachedRouteLine = routeLine
         cachedRouteVisible = true
         val chosen = verdictCache.remember(
             currentPlatform,
