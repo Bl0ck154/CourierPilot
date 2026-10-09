@@ -211,7 +211,7 @@ private fun exportBoltRecoveryTruth(context: android.content.Context) {
     }
     val export = File(directory, "bolt-recovery-truth.json")
     runCatching { export.writeText(json.toString(2)) }.getOrElse { return }
-    val files = listOf(export) + BoltAccessibilityDiagnostics.sampleFiles(context)
+    val files = listOf(export) + BoltRecoveryTruth.matchingResearchFiles(context, rows.map { it.offerId })
     val uris = ArrayList<Uri>(files.map {
         FileProvider.getUriForFile(context, "${context.packageName}.researchfiles", it)
     })
