@@ -348,20 +348,21 @@ internal class LiveAdvisorOverlayView(
     }
 
     fun applyRoute(text: String, visible: Boolean) {
+        val routeLine = text
         routeText?.apply {
             visibility = if (visible) View.VISIBLE else View.INVISIBLE
             if (DeveloperModeSettings.enabled(service) && visible) {
                 val suffix = " · v${BuildConfig.VERSION_NAME}"
-                this.text = SpannableString(text + suffix).apply {
+                this.text = SpannableString(routeLine + suffix).apply {
                     setSpan(
                         AbsoluteSizeSpan(8, true),
-                        text.length,
+                        routeLine.length,
                         length,
                         android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE,
                     )
                 }
             } else {
-                this.text = text
+                this.text = routeLine
             }
         }
     }
