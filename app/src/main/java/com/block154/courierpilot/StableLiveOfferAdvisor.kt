@@ -796,13 +796,12 @@ internal class StableLiveOfferAdvisor(
     /** Lightweight main-thread state used by capture polling to avoid competing with a finger drag. */
     fun isGestureTouchActive(): Boolean = overlayView.isGestureTouchActive
 
-    /**
-     * Keep Wolt visible during display fallback captures. Before price the card contains no money
-     * token, and after price the final proof capture is not reparsed; hiding it was pure user-visible
-     * flicker on Realme/ColorOS. Bolt keeps the conservative suppression path because its OCR is more
-     * spatially fragile on Android versions that cannot capture a single app window.
-     */
-    fun setCaptureSuppressed(suppressed: Boolean) = overlayView.setCaptureSuppressed(suppressed)
+    /** Window geometry is captured on main before bitmap work moves to the worker. */
+    fun overlayScreenRect(): android.graphics.Rect? = overlayView.screenRect()
+
+    /** Routine capture never hides a card. Only one-frame Bolt recovery can request suppression. */
+    fun setCaptureSuppressed(suppressed: Boolean, cleanFrame: Boolean = false) =
+        overlayView.setCaptureSuppressed(suppressed, cleanFrame)
 
     private fun temporarilyHide(reason: String) {
         if (dismissed || currentParsed == null) return
