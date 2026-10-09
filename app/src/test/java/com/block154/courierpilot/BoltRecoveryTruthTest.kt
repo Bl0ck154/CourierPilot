@@ -21,6 +21,18 @@ class BoltRecoveryTruthTest {
         assertNull(BoltRecoveryTruthMath.nearest(emptyList(), actual))
     }
 
+    @Test fun consecutiveCustomersNeverReuseTheSameProjectedMarker() {
+        val candidates = listOf(RoutePoint(54.6801, 25.28), RoutePoint(54.7001, 25.28))
+        val first = BoltRecoveryTruthMath.nearestUnusedIndex(
+            candidates, RoutePoint(54.6802, 25.28), emptySet(),
+        )
+        assertEquals(0, first)
+        val second = BoltRecoveryTruthMath.nearestUnusedIndex(
+            candidates, RoutePoint(54.6803, 25.28), setOf(first!!),
+        )
+        assertEquals(1, second)
+    }
+
     @Test fun medianAndP80AreStable() {
         val stats = BoltRecoveryTruthMath.stats(listOf(50.0, 30.0, 20.0, 10.0, 40.0))
         assertEquals(5, stats.count)
