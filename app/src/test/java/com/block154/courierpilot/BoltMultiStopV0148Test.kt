@@ -90,7 +90,7 @@ class BoltMultiStopV0148Test {
         val current = RoutePoint(54.6800000, 25.2800000)
         val metersPerPixel = 5.0
         val currentScreen = ScreenPoint(100.0, 100.0)
-        val knownPickupScreen = ScreenPoint(200.0, 100.0)
+        val knownPickupScreen = ScreenPoint(250.0, 100.0)
         val hiddenPickupScreen = ScreenPoint(200.0, 200.0)
         val dropoff1Screen = ScreenPoint(300.0, 180.0)
         val dropoff2Screen = ScreenPoint(330.0, 250.0)
@@ -119,7 +119,7 @@ class BoltMultiStopV0148Test {
         val current = RoutePoint(54.6800000, 25.2800000)
         val metersPerPixel = 4.0
         val currentScreen = ScreenPoint(120.0, 120.0)
-        val firstScreen = ScreenPoint(230.0, 150.0)
+        val firstScreen = ScreenPoint(260.0, 150.0)
         val secondScreen = ScreenPoint(330.0, 260.0)
         val first = screenToGeoNorthUp(current, currentScreen, firstScreen, metersPerPixel)
         val second = screenToGeoNorthUp(current, currentScreen, secondScreen, metersPerPixel)
@@ -184,7 +184,7 @@ class BoltMultiStopV0148Test {
         val current = RoutePoint(54.6800000, 25.2800000)
         val metersPerPixel = 5.0
         val currentScreen = ScreenPoint(100.0, 100.0)
-        val pickupScreen = ScreenPoint(200.0, 100.0)
+        val pickupScreen = ScreenPoint(230.0, 100.0)
         val pickupPoint = screenToGeoNorthUp(current, currentScreen, pickupScreen, metersPerPixel)
 
         val recovery = BoltMultiStopMapRecovery.recover(

@@ -30,6 +30,9 @@ internal data class AutomaticBoltRouteOutcome(
     val scope: BoltRouteScope?,
     val note: String? = null,
     val failureReason: String? = null,
+    val etaEstimateMeters: Int? = null,
+    val recoveryConfidence: Double? = null,
+    val diagnostics: BoltRecoveryDiagnostics? = null,
 )
 
 internal data class BoltSemanticMarkers(
@@ -37,6 +40,7 @@ internal data class BoltSemanticMarkers(
     val pickups: List<BoltMarkerEvidence>,
     val dropoffs: List<BoltMarkerEvidence>,
     val unknown: List<BoltMarkerEvidence>,
+    val bitmapWidthPx: Int? = null,
 ) {
     val pickup: BoltMarkerEvidence?
         get() = pickups.maxByOrNull { it.confidence }
@@ -195,14 +199,19 @@ internal data class BoltMapStopRecovery(
     val matchedPickupMarkerIndices: Set<Int>,
 )
 
-/** Pure multi-marker recovery, separated from Android I/O so real stacked Bolt cases can be tested. */
+/**
+ * Conservative north-up map recovery. Short GPS-to-restaurant baselines cannot supply a stable
+ * metres/pixel scale: estimate it from the independent Bolt ETA or refuse to project customers.
+ */
 internal object BoltMultiStopMapRecovery {
     private data class Candidate(
         val transform: LocalMapTransform,
+        val fit: NorthUpAnchorFit,
         val anchorKnownIndex: Int,
         val anchorMarkerIndex: Int,
+        val weak: Boolean,
+        val etaConflict: Boolean,
         val score: Double,
-        val residualMeters: Double?,
     )
 
     fun recover(
@@ -210,22 +219,120 @@ internal object BoltMultiStopMapRecovery {
         current: RoutePoint,
         knownPickups: List<ResolvedWaypoint>,
         expectedDropoffs: Int?,
-    ): BoltMapStopRecovery? {
-        val evidence = markers ?: return null
-        val currentMarker = evidence.currentLocation ?: return null
-        if (knownPickups.isEmpty() || evidence.pickups.isEmpty()) return null
+        bitmapWidthPx: Int? = null,
+        etaToCustomerMeters: Int? = null,
+    ): BoltMapStopRecovery? = recoverDetailed(
+        markers, current, knownPickups, expectedDropoffs, bitmapWidthPx, etaToCustomerMeters
+    ).recovery
 
-        val selected = selectTransform(currentMarker, current, knownPickups, evidence.pickups) ?: return null
-        val transform = selected.transform
-        val matched = matchKnownPickups(
-            transform = transform,
-            knownPickups = knownPickups,
-            pickupMarkers = evidence.pickups,
-            anchorKnownIndex = selected.anchorKnownIndex,
-            anchorMarkerIndex = selected.anchorMarkerIndex,
+    fun recoverDetailed(
+        markers: BoltSemanticMarkers?,
+        current: RoutePoint,
+        knownPickups: List<ResolvedWaypoint>,
+        expectedDropoffs: Int?,
+        bitmapWidthPx: Int? = null,
+        etaToCustomerMeters: Int? = null,
+    ): BoltRecoveryResult {
+        val emptyDiagnostics = BoltRecoveryDiagnostics(
+            pickupMarkerCount = markers?.pickups?.size ?: 0,
+            dropoffMarkerCount = markers?.dropoffs?.size ?: 0,
         )
+        val currentMarker = markers?.currentLocation
+            ?: return BoltRecoveryResult(null, emptyDiagnostics.copy(weakAnchorReason = "current_marker_missing"), null)
+        if (knownPickups.isEmpty() || markers.pickups.isEmpty()) {
+            return BoltRecoveryResult(null, emptyDiagnostics.copy(weakAnchorReason = "pickup_anchor_missing"), null)
+        }
 
-        val inferredPickups = evidence.pickups.mapIndexedNotNull { index, marker ->
+        val screenChainPx = screenRouteLength(currentMarker.screenCenter, markers.pickups, markers.dropoffs)
+        val candidates = mutableListOf<Candidate>()
+        var bestRejectedFit: NorthUpAnchorFit? = null
+        var rejectedRotation = false
+        var rejectedRotationDegrees: Double? = null
+        var rejectedWeak = false
+        val minimumBaselinePx = maxOf(MIN_STRONG_BASELINE_PX, (bitmapWidthPx ?: 0) * STRONG_WIDTH_FRACTION)
+        knownPickups.forEachIndexed { knownIndex, known ->
+            markers.pickups.forEachIndexed { markerIndex, marker ->
+                // Measure pairing rotation before solving the constrained scale. At ~90 degrees
+                // the least-squares dot product approaches zero and may fail positivity first.
+                val rawAngle = runCatching {
+                    LocalMapTransform.fromTwoAnchors(
+                        KnownMapAnchor(currentMarker.screenCenter, current),
+                        KnownMapAnchor(marker.screenCenter, known.point),
+                    ).clockwiseRotationDegrees
+                }.getOrNull()
+                if (rawAngle != null && abs(rawAngle) > MAX_ABS_ROTATION_DEGREES) {
+                    rejectedRotation = true
+                    rejectedRotationDegrees = rawAngle
+                    return@forEachIndexed
+                }
+                val fit = runCatching {
+                    LocalMapTransform.fitNorthUp(
+                        KnownMapAnchor(currentMarker.screenCenter, current),
+                        KnownMapAnchor(marker.screenCenter, known.point),
+                    )
+                }.getOrNull() ?: return@forEachIndexed
+                if (bestRejectedFit == null || fit.baselinePx > bestRejectedFit!!.baselinePx) {
+                    bestRejectedFit = fit
+                }
+                if (abs(fit.measuredRotationDegrees) > MAX_ABS_ROTATION_DEGREES) {
+                    rejectedRotation = true
+                    return@forEachIndexed
+                }
+                val weak = fit.baselinePx < minimumBaselinePx || fit.baselineMeters < MIN_STRONG_BASELINE_METERS
+                val transform = if (weak) {
+                    val prior = etaToCustomerMeters?.takeIf { it > 0 }
+                    if (prior == null || screenChainPx <= 1.0) {
+                        rejectedWeak = true
+                        return@forEachIndexed
+                    }
+                    val scale = prior / (screenChainPx * DETOUR_FACTOR)
+                    if (!scale.isFinite() || scale !in MIN_METERS_PER_PIXEL..MAX_METERS_PER_PIXEL) {
+                        rejectedWeak = true
+                        return@forEachIndexed
+                    }
+                    LocalMapTransform(KnownMapAnchor(currentMarker.screenCenter, current), scale)
+                } else {
+                    fit.transform
+                }
+                if (transform.metersPerPixel !in MIN_METERS_PER_PIXEL..MAX_METERS_PER_PIXEL) {
+                    return@forEachIndexed
+                }
+                val residual = validationResidual(
+                    transform, knownPickups, markers.pickups, knownIndex, markerIndex
+                )
+                if (residual != null && residual > MAX_KNOWN_PICKUP_RESIDUAL_METERS) {
+                    return@forEachIndexed
+                }
+                val etaConflict = !weak && etaToCustomerMeters != null && etaToCustomerMeters > 0 &&
+                    screenChainPx > 0 &&
+                    abs(screenChainPx * transform.metersPerPixel * DETOUR_FACTOR - etaToCustomerMeters) /
+                    etaToCustomerMeters > ETA_CONFLICT_FRACTION
+                val score = (if (weak) 1_000.0 else 0.0) +
+                    abs(fit.measuredRotationDegrees) * ROTATION_PENALTY_PER_DEGREE +
+                    (residual ?: 0.0) + (if (etaConflict) 100.0 else 0.0)
+                candidates += Candidate(transform, fit, knownIndex, markerIndex, weak, etaConflict, score)
+            }
+        }
+        val chosen = candidates.minByOrNull { it.score }
+        if (chosen == null) {
+            val why = when {
+                rejectedWeak -> "anchor_baseline_too_short"
+                rejectedRotation -> "anchor_rotation_mismatch"
+                else -> "anchor_transform_unreliable"
+            }
+            return BoltRecoveryResult(null, emptyDiagnostics.copy(
+                scaleMetersPerPixel = bestRejectedFit?.transform?.metersPerPixel,
+                measuredRotationDegrees = bestRejectedFit?.measuredRotationDegrees ?: rejectedRotationDegrees,
+                anchorBaselinePx = bestRejectedFit?.baselinePx,
+                anchorBaselineMeters = bestRejectedFit?.baselineMeters,
+                weakAnchorReason = why,
+            ), null)
+        }
+        val transform = chosen.transform
+        val matched = matchKnownPickups(
+            transform, knownPickups, markers.pickups, chosen.anchorKnownIndex, chosen.anchorMarkerIndex
+        )
+        val inferredPickups = markers.pickups.mapIndexedNotNull { index, marker ->
             if (index in matched.values) return@mapIndexedNotNull null
             val projected = projectValidated(transform, marker.screenCenter, current, knownPickups.map { it.point })
                 ?: return@mapIndexedNotNull null
@@ -233,93 +340,69 @@ internal object BoltMultiStopMapRecovery {
                 return@mapIndexedNotNull null
             }
             ResolvedWaypoint(
-                kind = WaypointKind.PICKUP,
-                point = projected,
-                label = "Bolt pickup map marker",
-                provenance = CoordinateProvenance.BOLT_MAP_RECOVERY,
-                confidence = minOf(marker.confidence, 0.72),
+                WaypointKind.PICKUP, projected, "Bolt pickup map marker",
+                CoordinateProvenance.BOLT_MAP_RECOVERY, minOf(marker.confidence, if (chosen.weak) 0.45 else 0.72)
             )
         }.dedupeByDistance()
-
-        val allPickups = if (inferredPickups.isEmpty()) {
-            knownPickups
-        } else {
-            nearestNeighborOrder(current, knownPickups + inferredPickups)
-        }
-
-        val projectedDropoffs = evidence.dropoffs.mapNotNull { marker ->
+        val allPickups = if (inferredPickups.isEmpty()) knownPickups
+            else nearestNeighborOrder(current, knownPickups + inferredPickups)
+        val projectedDropoffs = markers.dropoffs.mapNotNull { marker ->
             val projected = projectValidated(transform, marker.screenCenter, current, allPickups.map { it.point })
                 ?: return@mapNotNull null
             ResolvedWaypoint(
-                kind = WaypointKind.DROPOFF,
-                point = projected,
-                label = "Bolt customer map marker",
-                provenance = CoordinateProvenance.BOLT_MAP_RECOVERY,
-                confidence = minOf(marker.confidence, 0.72),
+                WaypointKind.DROPOFF, projected, "Bolt customer map marker",
+                CoordinateProvenance.BOLT_MAP_RECOVERY, minOf(marker.confidence, if (chosen.weak) 0.45 else 0.72)
             )
         }
-        // Every surviving screen marker is separate evidence. For a stacked order, never collapse
-        // two customer pins merely because their projected coordinates are <35 m apart: two flats
-        // or neighbouring buildings can legitimately be almost on top of each other. If Bolt says
-        // there is only one delivery, tiny projected duplicates are still removed.
         var dropoffs = if ((expectedDropoffs ?: 0) > 1) {
             projectedDropoffs
         } else {
             projectedDropoffs.dedupeByDistance()
         }
-
         expectedDropoffs?.takeIf { it > 0 }?.let { expected ->
             if (dropoffs.size > expected) dropoffs = dropoffs.take(expected)
         }
-        val startForDropoffs = allPickups.lastOrNull()?.point ?: current
-        dropoffs = nearestNeighborOrder(startForDropoffs, dropoffs)
-
-        return BoltMapStopRecovery(
-            orderedPickups = allPickups,
-            orderedDropoffs = dropoffs,
-            transform = transform,
-            matchedPickupMarkerIndices = matched.values.toSet(),
+        dropoffs = nearestNeighborOrder(allPickups.lastOrNull()?.point ?: current, dropoffs)
+        val confidence = when {
+            chosen.etaConflict -> 0.4
+            chosen.weak -> 0.45
+            else -> 0.72
+        }
+        val diagnostics = emptyDiagnostics.copy(
+            scaleMetersPerPixel = transform.metersPerPixel,
+            measuredRotationDegrees = chosen.fit.measuredRotationDegrees,
+            anchorBaselinePx = chosen.fit.baselinePx,
+            anchorBaselineMeters = chosen.fit.baselineMeters,
+            projectedPickups = inferredPickups.map { it.point },
+            projectedDropoffs = dropoffs.map { it.point },
+            weakAnchorReason = if (chosen.weak) "anchor_baseline_too_short_eta_prior" else null,
+            etaConflict = chosen.etaConflict,
+        )
+        return BoltRecoveryResult(
+            BoltMapStopRecovery(allPickups, dropoffs, transform, matched.values.toSet()),
+            diagnostics,
+            confidence,
         )
     }
 
-    private fun selectTransform(
-        currentMarker: BoltMarkerEvidence,
-        current: RoutePoint,
-        knownPickups: List<ResolvedWaypoint>,
-        pickupMarkers: List<BoltMarkerEvidence>,
-    ): Candidate? {
-        val candidates = mutableListOf<Candidate>()
-        knownPickups.forEachIndexed { knownIndex, known ->
-            pickupMarkers.forEachIndexed { markerIndex, marker ->
-                val transform = runCatching {
-                    LocalMapTransform.fromTwoAnchors(
-                        KnownMapAnchor(currentMarker.screenCenter, current),
-                        KnownMapAnchor(marker.screenCenter, known.point),
-                    )
-                }.getOrNull() ?: return@forEachIndexed
-                if (transform.metersPerPixel !in MIN_METERS_PER_PIXEL..MAX_METERS_PER_PIXEL) return@forEachIndexed
-                if (abs(transform.clockwiseRotationDegrees) > MAX_ABS_ROTATION_DEGREES) return@forEachIndexed
-
-                val residual = validationResidual(
-                    transform,
-                    knownPickups,
-                    pickupMarkers,
-                    knownIndex,
-                    markerIndex,
-                )
-                if (residual != null && residual > MAX_KNOWN_PICKUP_RESIDUAL_METERS) return@forEachIndexed
-
-                val scalePenalty = when {
-                    transform.metersPerPixel < 0.10 -> 500.0
-                    transform.metersPerPixel > 50.0 -> 500.0
-                    else -> 0.0
-                }
-                val score = abs(transform.clockwiseRotationDegrees) * ROTATION_PENALTY_PER_DEGREE +
-                    (residual ?: 0.0) + scalePenalty
-                candidates += Candidate(transform, knownIndex, markerIndex, score, residual)
+    /** The ETA prior applies to the full visible pin chain including extra pickups and customers. */
+    private fun screenRouteLength(
+        current: ScreenPoint,
+        pickups: List<BoltMarkerEvidence>,
+        dropoffs: List<BoltMarkerEvidence>,
+    ): Double {
+        var cursor = current
+        var length = 0.0
+        for (group in listOf(pickups, dropoffs)) {
+            val left = group.map { it.screenCenter }.toMutableList()
+            while (left.isNotEmpty()) {
+                val next = left.minByOrNull { kotlin.math.hypot(it.x - cursor.x, it.y - cursor.y) } ?: break
+                length += kotlin.math.hypot(next.x - cursor.x, next.y - cursor.y)
+                cursor = next
+                left.remove(next)
             }
         }
-        return candidates.minByOrNull { it.score }
+        return length
     }
 
     private fun validationResidual(
@@ -333,22 +416,17 @@ internal object BoltMultiStopMapRecovery {
         val remainingMarkers = pickupMarkers.indices.filter { it != anchorMarkerIndex }.toMutableSet()
         var total = 0.0
         var matchedCount = 0
-        knownPickups.indices
-            .filter { it != anchorKnownIndex }
-            .forEach { knownIndex ->
-                val best = remainingMarkers
-                    .map { markerIndex ->
-                        val projected = runCatching { transform.screenToGeo(pickupMarkers[markerIndex].screenCenter) }
-                            .getOrNull() ?: return@map markerIndex to Double.POSITIVE_INFINITY
-                        markerIndex to distanceMeters(knownPickups[knownIndex].point, projected)
-                    }
-                    .minByOrNull { it.second }
-                    ?: return@forEach
-                if (!best.second.isFinite()) return@forEach
-                total += best.second
-                matchedCount++
-                remainingMarkers.remove(best.first)
-            }
+        knownPickups.indices.filter { it != anchorKnownIndex }.forEach { knownIndex ->
+            val best = remainingMarkers.map { index ->
+                val projected = runCatching { transform.screenToGeo(pickupMarkers[index].screenCenter) }
+                    .getOrNull() ?: return@map index to Double.POSITIVE_INFINITY
+                index to distanceMeters(knownPickups[knownIndex].point, projected)
+            }.minByOrNull { it.second } ?: return@forEach
+            if (!best.second.isFinite()) return@forEach
+            total += best.second
+            matchedCount++
+            remainingMarkers.remove(best.first)
+        }
         return if (matchedCount > 0) total / matchedCount else null
     }
 
@@ -360,23 +438,18 @@ internal object BoltMultiStopMapRecovery {
         anchorMarkerIndex: Int,
     ): Map<Int, Int> {
         val result = mutableMapOf(anchorKnownIndex to anchorMarkerIndex)
-        val unusedMarkers = pickupMarkers.indices.filter { it != anchorMarkerIndex }.toMutableSet()
-        knownPickups.indices
-            .filter { it != anchorKnownIndex }
-            .forEach { knownIndex ->
-                val best = unusedMarkers
-                    .map { markerIndex ->
-                        val projected = runCatching { transform.screenToGeo(pickupMarkers[markerIndex].screenCenter) }
-                            .getOrNull() ?: return@map markerIndex to Double.POSITIVE_INFINITY
-                        markerIndex to distanceMeters(knownPickups[knownIndex].point, projected)
-                    }
-                    .minByOrNull { it.second }
-                    ?: return@forEach
-                if (best.second <= MAX_KNOWN_PICKUP_RESIDUAL_METERS) {
-                    result[knownIndex] = best.first
-                    unusedMarkers.remove(best.first)
-                }
+        val unused = pickupMarkers.indices.filter { it != anchorMarkerIndex }.toMutableSet()
+        knownPickups.indices.filter { it != anchorKnownIndex }.forEach { knownIndex ->
+            val best = unused.map { index ->
+                val projected = runCatching { transform.screenToGeo(pickupMarkers[index].screenCenter) }
+                    .getOrNull() ?: return@map index to Double.POSITIVE_INFINITY
+                index to distanceMeters(knownPickups[knownIndex].point, projected)
+            }.minByOrNull { it.second } ?: return@forEach
+            if (best.second <= MAX_KNOWN_PICKUP_RESIDUAL_METERS) {
+                result[knownIndex] = best.first
+                unused.remove(best.first)
             }
+        }
         return result
     }
 
@@ -400,10 +473,7 @@ internal object BoltMultiStopMapRecovery {
         return result
     }
 
-    private fun nearestNeighborOrder(
-        start: RoutePoint,
-        points: List<ResolvedWaypoint>,
-    ): List<ResolvedWaypoint> {
+    private fun nearestNeighborOrder(start: RoutePoint, points: List<ResolvedWaypoint>): List<ResolvedWaypoint> {
         if (points.size <= 1) return points
         val remaining = points.toMutableList()
         val ordered = mutableListOf<ResolvedWaypoint>()
@@ -429,13 +499,16 @@ internal object BoltMultiStopMapRecovery {
 
     private const val MIN_METERS_PER_PIXEL = 0.05
     private const val MAX_METERS_PER_PIXEL = 100.0
-    private const val MAX_ABS_ROTATION_DEGREES = 45.0
+    private const val MAX_ABS_ROTATION_DEGREES = 20.0
     private const val ROTATION_PENALTY_PER_DEGREE = 8.0
+    private const val MIN_STRONG_BASELINE_PX = 120.0
+    private const val STRONG_WIDTH_FRACTION = 0.11
+    private const val MIN_STRONG_BASELINE_METERS = 250.0
     private const val MAX_KNOWN_PICKUP_RESIDUAL_METERS = 400.0
     private const val MIN_PROJECTED_DISTANCE_METERS = 20.0
     private const val MAX_PROJECTED_DISTANCE_METERS = 40_000.0
-    // Only collapse effectively identical projected points. Screen-marker identity is stronger
-    // evidence than geographic proximity for stacked orders.
+    private const val DETOUR_FACTOR = 1.3
+    private const val ETA_CONFLICT_FRACTION = 0.45
     private const val DUPLICATE_STOP_METERS = 3.0
 }
 
@@ -475,6 +548,12 @@ internal object AutomaticBoltRouteCoordinator {
             return
         }
 
+        val mapBottomScreenPx = captureMapBottomPx(context, parsed)
+        val eta = etaFor(app, offerId, parsed)
+        val etaModel = BoltEtaDistanceModel(app)
+        val toCustomerEtaMeters = (eta.toCustomerMin ?: eta.totalMin)?.let(etaModel::estimateMeters)
+        val etaEstimateMeters = (eta.toCustomerMin ?: eta.totalMin ?: eta.toPickupMin ?: parsed.estimatedMinutesMin)
+            ?.let(etaModel::estimateMeters)
         val initialSemanticMarkers = captureMapMarkers(context, parsed)?.takeIf(::hasUsefulMarkers)
 
         // Bolt keeps location hot while a courier is online. Reuse a very fresh accurate fix instead
@@ -503,7 +582,7 @@ internal object AutomaticBoltRouteCoordinator {
                     ?: captureMapMarkers(context, parsed)?.takeIf(::hasUsefulMarkers)
 
                 executor.execute {
-                    val screenshotMarkers = if (lateSemanticMarkers == null) loadScreenshotMarkers(app, offerId) else null
+                    val screenshotMarkers = if (lateSemanticMarkers == null) loadScreenshotMarkers(app, offerId, mapBottomScreenPx) else null
                     val mapMarkers = lateSemanticMarkers ?: screenshotMarkers
                     val markerSource = when {
                         lateSemanticMarkers != null -> "Accessibility semantics"
@@ -511,12 +590,15 @@ internal object AutomaticBoltRouteCoordinator {
                         else -> null
                     }
 
-                    val recovery = BoltMultiStopMapRecovery.recover(
+                    val recovered = BoltMultiStopMapRecovery.recoverDetailed(
                         markers = mapMarkers,
                         current = fix.point,
                         knownPickups = knownPickups,
                         expectedDropoffs = parsed.deliveryCount,
+                        bitmapWidthPx = mapMarkers?.bitmapWidthPx ?: app.resources.displayMetrics.widthPixels,
+                        etaToCustomerMeters = toCustomerEtaMeters,
                     )
+                    val recovery = recovered.recovery
                     val expectedDropoffs = parsed.deliveryCount?.takeIf { it > 0 }
                     val fullDropoffSet = recovery?.orderedDropoffs?.takeIf { recovered ->
                         recovered.isNotEmpty() && (expectedDropoffs == null || recovered.size >= expectedDropoffs)
@@ -581,6 +663,9 @@ internal object AutomaticBoltRouteCoordinator {
                                 scope = scope.takeIf { anySuccess },
                                 note = note.takeIf { anySuccess },
                                 failureReason = reason,
+                                etaEstimateMeters = etaEstimateMeters,
+                                recoveryConfidence = recovered.confidence,
+                                diagnostics = recovered.diagnostics,
                             )
                         )
                     }
@@ -638,7 +723,11 @@ internal object AutomaticBoltRouteCoordinator {
         return runCatching { BoltMarkerSemanticExtractor.extract(root, parsed) }.getOrNull()
     }
 
-    private fun loadScreenshotMarkers(context: Context, offerId: Long): BoltSemanticMarkers? {
+    private fun loadScreenshotMarkers(
+        context: Context,
+        offerId: Long,
+        mapBottomScreenPx: Int?,
+    ): BoltSemanticMarkers? {
         val screenshotUri = runCatching { OfferDatabase.get(context).findById(offerId)?.screenshotUri }
             .getOrNull()
             ?.takeIf { it.isNotBlank() }
@@ -647,10 +736,59 @@ internal object AutomaticBoltRouteCoordinator {
             context.contentResolver.openInputStream(Uri.parse(screenshotUri))?.use(BitmapFactory::decodeStream)
         }.getOrNull() ?: return null
         return try {
-            BoltScreenshotMarkerExtractor.extract(bitmap)
+            val screenHeight = context.resources.displayMetrics.heightPixels.coerceAtLeast(1)
+            val bottom = mapBottomScreenPx?.let { (it.toLong() * bitmap.height / screenHeight).toInt() }
+            BoltScreenshotMarkerExtractor.extract(bitmap, mapBottomPx = bottom)
         } finally {
             bitmap.recycle()
         }
+    }
+
+    /**
+     * Accessibility's offer-sheet header gives a much more reliable map boundary than 72%
+     * of the bitmap. Retain the legacy crop when the sheet is not semantically exposed.
+     */
+    private fun captureMapBottomPx(context: Context, parsed: ParsedOffer): Int? {
+        val service = context as? AccessibilityService ?: return null
+        val root = service.rootInActiveWindow ?: return null
+        if (root.packageName?.toString() != CourierSignals.BOLT_PACKAGE) return null
+        val height = context.resources.displayMetrics.heightPixels
+        val pickups = parsed.pickupAddresses.filter { it.length >= 5 }
+            .map { it.lowercase(Locale.ROOT).take(24) }
+        var best: Int? = null
+        var inspected = 0
+        fun visit(node: AccessibilityNodeInfo, depth: Int) {
+            if (depth > 24 || inspected++ > 400) return
+            val label = listOfNotNull(
+                runCatching { node.text?.toString() }.getOrNull(),
+                runCatching { node.contentDescription?.toString() }.getOrNull(),
+            ).joinToString(" ").lowercase(Locale.ROOT)
+            val isSheet = pickups.any { label.contains(it) } ||
+                (label.contains("min") && (label.contains("€") || label.contains("accept") || label.contains("priim")))
+            if (isSheet) {
+                val rect = Rect()
+                runCatching { node.getBoundsInScreen(rect) }
+                if (!rect.isEmpty && rect.top in (height * 0.30).toInt()..height) {
+                    best = minOf(best ?: rect.top, rect.top)
+                }
+            }
+            for (index in 0 until node.childCount) {
+                if (inspected > 400) break
+                val child = runCatching { node.getChild(index) }.getOrNull() ?: continue
+                visit(child, depth + 1)
+            }
+        }
+        visit(root, 0)
+        return best
+    }
+
+    private fun etaFor(context: Context, offerId: Long, parsed: ParsedOffer): BoltEtas {
+        // Text comes from the local offer record only; never emit its address rows into telemetry.
+        val rawText = runCatching {
+            OfferDatabase.get(context).findById(offerId)?.rawText.orEmpty()
+        }.getOrDefault("")
+        val etas = BoltEtaExtractor.extract(rawText)
+        return etas.copy(totalMin = etas.totalMin ?: parsed.estimatedMinutesMin)
     }
 
     private fun hasUsefulMarkers(markers: BoltSemanticMarkers): Boolean =
@@ -709,7 +847,15 @@ internal object AutomaticBoltRouteCoordinator {
         }
         inFlight.remove(offerId)
         context.mainExecutor.execute {
-            onComplete(AutomaticBoltRouteOutcome(offerId, waypoints, null, null, failureReason = reason))
+            val eta = etaFor(context, offerId, parsed)
+            val etaMinutes = eta.toCustomerMin ?: eta.totalMin ?: eta.toPickupMin
+            onComplete(
+                AutomaticBoltRouteOutcome(
+                    offerId, waypoints, null, null, failureReason = reason,
+                    etaEstimateMeters = etaMinutes?.let { BoltEtaDistanceModel(context).estimateMeters(it) },
+                    diagnostics = BoltRecoveryDiagnostics(weakAnchorReason = reason),
+                )
+            )
         }
     }
 

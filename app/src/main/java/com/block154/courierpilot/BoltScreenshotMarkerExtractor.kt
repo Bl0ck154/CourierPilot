@@ -1,6 +1,7 @@
 package com.block154.courierpilot
 
 import android.graphics.Bitmap
+import android.graphics.Rect
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
@@ -18,14 +19,18 @@ internal object BoltScreenshotMarkerExtractor {
     private const val MAX_MARKERS_PER_KIND = 4
     private const val RELATIVE_PEAK_THRESHOLD = 0.50
 
-    fun extract(bitmap: Bitmap): BoltSemanticMarkers? {
+    fun extract(
+        bitmap: Bitmap,
+        mapBottomPx: Int? = null,
+        excludeRects: List<Rect> = emptyList(),
+    ): BoltSemanticMarkers? {
         if (bitmap.width < 200 || bitmap.height < 300) return null
-        val mapBottom = (bitmap.height * MAP_BOTTOM_FRACTION).roundToInt()
+        val mapBottom = (mapBottomPx ?: (bitmap.height * MAP_BOTTOM_FRACTION).roundToInt())
             .coerceIn(1, bitmap.height)
 
-        val currentCluster = findClusters(bitmap, mapBottom, Palette.CYAN, 1).firstOrNull() ?: return null
-        val pickupClusters = findClusters(bitmap, mapBottom, Palette.BLUE, MAX_MARKERS_PER_KIND)
-        val dropoffClusters = findClusters(bitmap, mapBottom, Palette.GREEN, MAX_MARKERS_PER_KIND)
+        val currentCluster = findClusters(bitmap, mapBottom, Palette.CYAN, 1, excludeRects).firstOrNull() ?: return null
+        val pickupClusters = findClusters(bitmap, mapBottom, Palette.BLUE, MAX_MARKERS_PER_KIND, excludeRects)
+        val dropoffClusters = findClusters(bitmap, mapBottom, Palette.GREEN, MAX_MARKERS_PER_KIND, excludeRects)
         if (pickupClusters.isEmpty() || dropoffClusters.isEmpty()) return null
 
         val currentPoint = ScreenPoint(currentCluster.centerX, currentCluster.centerY)
@@ -37,6 +42,7 @@ internal object BoltScreenshotMarkerExtractor {
             clusters = pickupClusters,
             duplicateTipDistancePx = 40.0,
             label = "pickup",
+            excludeRects = excludeRects,
         )
         val dropoffs = markerEvidence(
             bitmap = bitmap,
@@ -48,6 +54,7 @@ internal object BoltScreenshotMarkerExtractor {
             // are nearly identical. Duplicate density peaks from one icon converge to the same tip.
             duplicateTipDistancePx = 24.0,
             label = "customer",
+            excludeRects = excludeRects,
         )
         if (pickups.isEmpty() || dropoffs.isEmpty()) return null
 
@@ -61,6 +68,7 @@ internal object BoltScreenshotMarkerExtractor {
             pickups = pickups,
             dropoffs = dropoffs,
             unknown = emptyList(),
+            bitmapWidthPx = bitmap.width,
         )
     }
 
@@ -73,6 +81,7 @@ internal object BoltScreenshotMarkerExtractor {
         val centerY: Double,
         val binSize: Int,
         val score: Int,
+        val bodyDiameterPx: Int,
     )
 
     private data class Peak(val column: Int, val row: Int, val score: Int)
@@ -82,6 +91,7 @@ internal object BoltScreenshotMarkerExtractor {
         mapBottom: Int,
         palette: Palette,
         maxMarkers: Int,
+        excludeRects: List<Rect>,
     ): List<Cluster> {
         val width = bitmap.width
         val binSize = maxOf(12, width / 45)
@@ -95,7 +105,7 @@ internal object BoltScreenshotMarkerExtractor {
             bitmap.getPixels(pixels, 0, width, 0, y, width, 1)
             var x = 0
             while (x < width) {
-                if (matches(pixels[x], palette)) {
+                if (!excluded(x, y, excludeRects) && matches(pixels[x], palette)) {
                     bins[(y / binSize) * columns + (x / binSize)]++
                 }
                 x += SAMPLE_STEP
@@ -137,7 +147,7 @@ internal object BoltScreenshotMarkerExtractor {
             val seedY = (peak.row + 0.5) * binSize
             if (accepted.any { hypot(it.centerX - seedX, it.centerY - seedY) < minimumSeparationPx }) continue
 
-            val refined = refineCluster(bitmap, mapBottom, palette, peak, binSize, width)
+            val refined = refineCluster(bitmap, mapBottom, palette, peak, binSize, width, excludeRects)
                 ?: continue
             if (accepted.any { hypot(it.centerX - refined.centerX, it.centerY - refined.centerY) < minimumSeparationPx }) continue
             accepted += refined
@@ -154,6 +164,7 @@ internal object BoltScreenshotMarkerExtractor {
         peak: Peak,
         binSize: Int,
         width: Int,
+        excludeRects: List<Rect>,
     ): Cluster? {
         val radius = maxOf(14, (binSize * 1.35).roundToInt())
         val seedX = ((peak.column + 0.5) * binSize).roundToInt()
@@ -167,13 +178,21 @@ internal object BoltScreenshotMarkerExtractor {
         var count = 0L
         var sumX = 0L
         var sumY = 0L
+        var minX = Int.MAX_VALUE
+        var maxX = Int.MIN_VALUE
+        var minY = Int.MAX_VALUE
+        var maxY = Int.MIN_VALUE
         for (row in top..bottom) {
             bitmap.getPixels(rowPixels, 0, width, 0, row, width, 1)
             for (column in left..right) {
-                if (!matches(rowPixels[column], palette)) continue
+                if (excluded(column, row, excludeRects) || !matches(rowPixels[column], palette)) continue
                 count++
                 sumX += column
                 sumY += row
+                minX = minOf(minX, column)
+                maxX = maxOf(maxX, column)
+                minY = minOf(minY, row)
+                maxY = maxOf(maxY, row)
             }
         }
         val minimumPixels = maxOf(20, binSize * binSize / 8)
@@ -183,6 +202,7 @@ internal object BoltScreenshotMarkerExtractor {
             centerY = sumY.toDouble() / count,
             binSize = binSize,
             score = peak.score,
+            bodyDiameterPx = minOf(maxX - minX + 1, maxY - minY + 1),
         )
     }
 
@@ -194,12 +214,20 @@ internal object BoltScreenshotMarkerExtractor {
         clusters: List<Cluster>,
         duplicateTipDistancePx: Double,
         label: String,
+        excludeRects: List<Rect>,
     ): List<BoltMarkerEvidence> {
         if (clusters.isEmpty()) return emptyList()
         val strongest = clusters.first()
         val accepted = mutableListOf<Pair<ScreenPoint, Cluster>>()
         for (cluster in clusters) {
-            val tip = pinTip(bitmap, mapBottom, palette, cluster)
+            val bodyThreshold = maxOf(
+                (strongest.bodyDiameterPx * 0.6).roundToInt(),
+                (bitmap.width * 0.04).roundToInt(),
+            )
+            val isPinShape = cluster.bodyDiameterPx >= bodyThreshold ||
+                hasStem(bitmap, mapBottom, palette, cluster, excludeRects)
+            if (!isPinShape) continue
+            val tip = pinTip(bitmap, mapBottom, palette, cluster, excludeRects)
             if (accepted.any { (existing, _) -> hypot(existing.x - tip.x, existing.y - tip.y) < duplicateTipDistancePx }) {
                 continue
             }
@@ -229,6 +257,7 @@ internal object BoltScreenshotMarkerExtractor {
         mapBottom: Int,
         palette: Palette,
         cluster: Cluster,
+        excludeRects: List<Rect>,
     ): ScreenPoint {
         val halfWidth = maxOf(10, cluster.binSize * 3 / 2)
         val left = maxOf(0, cluster.centerX.roundToInt() - halfWidth)
@@ -245,7 +274,8 @@ internal object BoltScreenshotMarkerExtractor {
             var count = 0
             var sumX = 0
             for (x in left..right) {
-                if (!matches(rowPixels[x], palette)) continue
+                // Cyan GPS pixels covering a blue pickup never contribute to that pickup's tip.
+                if (excluded(x, y, excludeRects) || !matches(rowPixels[x], palette)) continue
                 count++
                 sumX += x
             }
@@ -260,6 +290,43 @@ internal object BoltScreenshotMarkerExtractor {
         } else {
             ScreenPoint(cluster.centerX, cluster.centerY)
         }
+    }
+
+    /** Excluded overlay pixels must not contribute to density, centroid, shape or pin tip. */
+    private fun excluded(x: Int, y: Int, rects: List<Rect>): Boolean =
+        rects.any { it.contains(x, y) }
+
+    /** A small park/POI circle needs a genuine narrow stem before it counts as a customer pin. */
+    private fun hasStem(
+        bitmap: Bitmap,
+        mapBottom: Int,
+        palette: Palette,
+        cluster: Cluster,
+        excludeRects: List<Rect>,
+    ): Boolean {
+        val diameter = cluster.bodyDiameterPx
+        if (diameter < 8) return false
+        val xCenter = cluster.centerX.roundToInt()
+        val yCenter = cluster.centerY.roundToInt()
+        val start = yCenter + diameter / 2
+        val needed = maxOf(3, (diameter * 0.25).roundToInt())
+        val row = IntArray(bitmap.width)
+        var run = 0
+        for (y in start until minOf(mapBottom, start + needed * 3 + 2)) {
+            if (y < 0) continue
+            bitmap.getPixels(row, 0, bitmap.width, 0, y, bitmap.width, 1)
+            val left = maxOf(0, xCenter - diameter / 3)
+            val right = minOf(bitmap.width - 1, xCenter + diameter / 3)
+            val matchCount = (left..right).count { x ->
+                !excluded(x, y, excludeRects) && matches(row[x], palette)
+            }
+            if (matchCount in 1..maxOf(2, diameter / 3)) {
+                if (++run >= needed) return true
+            } else {
+                run = 0
+            }
+        }
+        return false
     }
 
     private fun matches(color: Int, palette: Palette): Boolean {
