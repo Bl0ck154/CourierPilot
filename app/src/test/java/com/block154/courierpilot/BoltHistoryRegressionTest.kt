@@ -145,6 +145,53 @@ class BoltHistoryRegressionTest {
     }
 
     @Test
+    fun wrappedLongBoltVenueNameKeepsBothCardLines() {
+        val raw = """
+            Example Kitchen & Noodle
+            Sushi (Palangos str.)
+            Palangos g. 2, Vilnius
+            ~7 min
+            ~12 min
+            18 min, 2,76 €
+            Decline
+        """.trimIndent()
+        val parsed = OfferParser.parse(BoltOfferTextSanitizer.sanitizeStoredRawText(raw))
+        assertEquals(listOf("Example Kitchen & Noodle Sushi (Palangos str.)"), parsed.merchantNames)
+    }
+
+    @Test
+    fun mapButtonAndDistrictLabelsAreNeverGluedOntoTheVenueName() {
+        listOf("Map", "SENAMIESTIS").forEach { above ->
+            val raw = """
+                $above
+                Hesburger (Vokiečių str.)
+                Vokiečių g. 12, Vilnius
+                ~4 min
+                ~14 min
+                18 min, 3,41 €
+                Decline
+            """.trimIndent()
+            val parsed = OfferParser.parse(BoltOfferTextSanitizer.sanitizeStoredRawText(raw))
+            assertEquals(listOf("Hesburger (Vokiečių str.)"), parsed.merchantNames)
+        }
+    }
+
+    @Test
+    fun loneForkAndKnifeGlyphIsRemovedFromPickupAddress() {
+        mapOf(
+            "Y Vokiečių g. 12, Vilnius, 01130 Vilniaus m. sav." to "Vokiečių g. 12, Vilnius, 01130 Vilniaus m. sav.",
+            "W4 Antakalnio gatvė 71 10200 Vilnius" to "Antakalnio gatvė 71 10200 Vilnius",
+        ).forEach { (rawAddress, expected) ->
+            assertEquals(expected, BoltOfferTextSanitizer.stripLeadingMapMarkerFromAddress(rawAddress))
+        }
+        // A dotted initial is a real street name, never a map glyph.
+        assertEquals(
+            "V. Kudirkos g. 5, Vilnius",
+            BoltOfferTextSanitizer.stripLeadingMapMarkerFromAddress("V. Kudirkos g. 5, Vilnius"),
+        )
+    }
+
+    @Test
     fun markerPrefixIsNotRemovedFromLegitimateLeadingHouseNumberWithoutAnotherHouseNumber() {
         assertEquals(
             "4 Gedimino pr., Vilnius",

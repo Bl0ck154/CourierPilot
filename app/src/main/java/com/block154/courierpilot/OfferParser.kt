@@ -480,13 +480,35 @@ internal object OfferParser {
             // card-title candidate for an address row.
             val chosen = bestCandidate?.takeIf { it.score >= BOLT_MIN_MERCHANT_SCORE }
                 ?: candidates.singleOrNull()
-            chosen?.name?.let { merchant ->
+            chosen?.let { pick -> joinWrappedBoltTitle(lines, pick.lineIndex, start, address) }?.let { merchant ->
                 if (merchants.none { namesEquivalent(it, merchant) }) merchants += merchant
             }
 
             previousCardAddressIndex = addressIndex
         }
         return merchants
+    }
+
+    /**
+     * Long Bolt venue names wrap onto two card lines, e.g. "Eat More Chinese & Shimai" over
+     * "Sushi (Palangos str.)"; only the branch line used to survive. Join the line above only when
+     * the chosen line carries Bolt's "(Street str.)" branch suffix and the line above is plain
+     * title text from the same card (not a map label, button or district name).
+     */
+    private fun joinWrappedBoltTitle(lines: List<String>, titleIndex: Int, cardStart: Int, address: String): String {
+        val title = lines[titleIndex]
+        val aboveIndex = titleIndex - 1
+        if (aboveIndex < cardStart || !boltBranchNameRegex.matches(title)) return title
+        val above = lines[aboveIndex]
+        val letters = above.filter(Char::isLetter)
+        val joinable = isStopNameCandidate(above) &&
+            !above.contains('(') &&
+            !boltBranchNameRegex.matches(above) &&
+            !looksLikeBoltMapLabel(above, address) &&
+            above.lowercase(Locale.ROOT) !in BOLT_TITLE_JOIN_BLOCKLIST &&
+            !above.lowercase(Locale.ROOT).contains("earnings") &&
+            !(letters.length > 3 && letters.all(Char::isUpperCase))
+        return if (joinable) "$above $title" else title
     }
 
     private fun boltCardAddressScore(lines: List<String>, addressIndex: Int): Int {
@@ -728,6 +750,7 @@ internal object OfferParser {
     )
 
     private const val BOLT_NAME_LOOKBACK_LINES = 6
+    private val BOLT_TITLE_JOIN_BLOCKLIST = setOf("map", "show map", "today", "online", "offline", "new order")
     private const val BOLT_NEARBY_NAME_SCORE = 18
     private const val BOLT_BRANCH_NAME_BONUS = 100
     private const val BOLT_ADJACENT_NAME_BONUS = 8
