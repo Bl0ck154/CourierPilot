@@ -25,6 +25,22 @@ class LiveOfferVerdictCacheTest {
     }
 
     @Test
+    fun sameHiddenSessionSurvivesPendingAndBaseButDifferentOfferIsNewSession() {
+        val same = bolt.copy(restaurant = "Casa Della Pasta (Vokiečių str.)")
+        val different = bolt.copy(
+            priceCents = 398,
+            pickupAddresses = listOf("Vilniaus g. 47, Vilnius"),
+            restaurant = "Sushi Square",
+        )
+        assertTrue(LiveOfferSessionVisibilityPolicy.sameSession(true, bolt, same))
+        assertTrue(LiveOfferSessionVisibilityPolicy.sameSession(true, bolt, same)) // base/persist
+        assertFalse(LiveOfferSessionVisibilityPolicy.shouldAttach(true, false))
+        assertFalse(LiveOfferSessionVisibilityPolicy.sameSession(true, bolt, different))
+        assertFalse(LiveOfferSessionVisibilityPolicy.sameSession(false, bolt, same))
+        assertTrue(LiveOfferSessionVisibilityPolicy.shouldAttach(false, false))
+    }
+
+    @Test
     fun sameOfferAndHistoryIdRestoreIdenticalLineBandAndThresholdSource() {
         var time = 100L
         val cache = LiveOfferVerdictCache(nowMs = { time })
