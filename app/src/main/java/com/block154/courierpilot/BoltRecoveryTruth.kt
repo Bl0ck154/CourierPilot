@@ -53,7 +53,11 @@ internal object BoltRecoveryTruthMath {
 
 /** Only local memory + local SQLite. Never record customer names/addresses/coordinates in telemetry. */
 internal object BoltRecoveryTruth {
-    private data class Pending(val diagnostic: BoltRecoveryDiagnostics, val etaMinutes: Int?)
+    private data class Pending(
+        val diagnostic: BoltRecoveryDiagnostics,
+        val etaMinutes: Int?,
+        val realRoutePrefix: List<RoutePoint>,
+    )
     private val offers = LinkedHashMap<Long, Pending>()
     private val processing = mutableSetOf<Long>()
     private val worker = Executors.newSingleThreadExecutor()
@@ -62,7 +66,10 @@ internal object BoltRecoveryTruth {
     fun remember(context: Context, outcome: AutomaticBoltRouteOutcome, etaMinutes: Int?) {
         val diagnostics = outcome.diagnostics ?: return
         if (diagnostics.projectedDropoffs.isEmpty()) return
-        offers[outcome.offerId] = Pending(diagnostics, etaMinutes)
+        offers[outcome.offerId] = Pending(
+            diagnostics, etaMinutes,
+            outcome.waypoints.filter { it.kind != WaypointKind.DROPOFF }.map { it.point },
+        )
         while (offers.size > 24) offers.remove(offers.keys.first())
         pruneArchives(context)
         archiveMatchingSample(context, outcome.offerId)
@@ -120,6 +127,19 @@ internal object BoltRecoveryTruth {
             val recovered = BoltRecoveryTruthMath.nearest(pending.diagnostic.projectedDropoffs, actual)
                 ?: return@execute
             val d = pending.diagnostic
+            // Only an actual customer address may train ETA. A route to a projected pin cannot.
+            // Multi-drop permutations are still ambiguous, so do not train those until mapped.
+            val trueRouteMeters = if (d.projectedDropoffs.size == 1 &&
+                pending.realRoutePrefix.size >= 2 && pending.etaMinutes != null
+            ) {
+                runCatching {
+                    val endpoint = RouteEndpointSettings.load(app).validated()
+                    val comparison = RouteComparisonEngine(ValhallaRouteProvider(endpoint)).compare(
+                        pending.realRoutePrefix + actual,
+                    )
+                    comparison.cycleway.getOrNull()?.distanceMeters
+                }.getOrNull()?.takeIf { it > 0 }
+            } else null
             val row = BoltRecoveryTruthRow(
                 offerId = offerId,
                 recovered = recovered,
@@ -131,12 +151,15 @@ internal object BoltRecoveryTruth {
                 pickupMarkerCount = d.pickupMarkerCount,
                 dropoffMarkerCount = d.dropoffMarkerCount,
                 etaMinutes = pending.etaMinutes,
-                routeMeters = null, // Never train the ETA prior from an unverified route to a guessed pin.
+                routeMeters = trueRouteMeters,
             )
             runCatching {
                 val database = RouteResearchDatabase.get(app)
                 database.recordBoltRecoveryTruth(row)
                 database.pruneBoltRecoveryTruth(CaptureStorageSettings.retentionDays(app))
+                if (trueRouteMeters != null && pending.etaMinutes != null) {
+                    BoltEtaDistanceModel(app).observe(pending.etaMinutes, trueRouteMeters)
+                }
             }
             synchronized(this) { offers.remove(offerId); processing.remove(offerId) }
         }
