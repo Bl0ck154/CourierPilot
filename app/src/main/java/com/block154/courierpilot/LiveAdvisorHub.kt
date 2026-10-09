@@ -411,6 +411,17 @@ internal object LiveAdvisorHub {
     /** Main-thread snapshot of the attached card, for display screenshot pixel masking. */
     fun overlayScreenRect(): android.graphics.Rect? = advisor?.overlayScreenRect()
 
+    /** True when no card can appear in the next display screenshot (hidden or not shown). */
+    fun hideOverlayForScreenshot(context: Context): Boolean {
+        attach(context)
+        return advisor?.hideForScreenshot() ?: true
+    }
+
+    fun revealOverlayAfterScreenshot(context: Context) {
+        attach(context)
+        advisor?.revealAfterScreenshot()
+    }
+
     fun setCaptureSuppressed(context: Context, suppressed: Boolean, cleanFrame: Boolean = false) {
         attach(context)
         advisor?.setCaptureSuppressed(suppressed, cleanFrame)

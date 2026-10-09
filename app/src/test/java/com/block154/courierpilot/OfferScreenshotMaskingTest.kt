@@ -108,6 +108,42 @@ class OfferScreenshotMaskingTest {
     }
 
     @Test
+    fun displayScreenshotHidesTheCardAndRevealsItAfterwards() {
+        val service = Robolectric.buildService(TestService::class.java).create().get()
+        val view = LiveAdvisorOverlayView(service, {}, {}, { "Wolt" })
+        view.ensure()
+        val root = LiveAdvisorOverlayView::class.java.getDeclaredField("root").apply { isAccessible = true }
+            .get(view) as android.view.View
+        assertTrue(view.hideForScreenshot())
+        assertEquals(0f, root.alpha, 0.001f)
+        // Overlapping captures (OCR + proof) keep the card hidden until the last one finishes.
+        assertTrue(view.hideForScreenshot())
+        view.revealAfterScreenshot()
+        assertEquals(0f, root.alpha, 0.001f)
+        view.revealAfterScreenshot()
+        assertEquals(1f, root.alpha, 0.001f)
+        // Extra reveals are harmless.
+        view.revealAfterScreenshot()
+        assertEquals(1f, root.alpha, 0.001f)
+        view.detach(animate = false)
+    }
+
+    @Test
+    fun cardAttachedDuringAScreenshotStaysInvisibleUntilRevealed() {
+        val service = Robolectric.buildService(TestService::class.java).create().get()
+        val view = LiveAdvisorOverlayView(service, {}, {}, { "Wolt" })
+        assertTrue(view.hideForScreenshot())
+        view.ensure()
+        val root = LiveAdvisorOverlayView::class.java.getDeclaredField("root").apply { isAccessible = true }
+            .get(view) as android.view.View
+        org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+        assertEquals(0f, root.alpha, 0.001f)
+        view.revealAfterScreenshot()
+        assertEquals(1f, root.alpha, 0.001f)
+        view.detach(animate = false)
+    }
+
+    @Test
     fun regularCaptureDoesNotChangeOverlayAlphaEvenOnBolt() {
         val service = Robolectric.buildService(TestService::class.java).create().get()
         val view = LiveAdvisorOverlayView(service, {}, {}, { "Bolt" })

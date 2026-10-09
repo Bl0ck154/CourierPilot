@@ -883,6 +883,10 @@ internal class StableLiveOfferAdvisor(
     fun setCaptureSuppressed(suppressed: Boolean, cleanFrame: Boolean = false) =
         overlayView.setCaptureSuppressed(suppressed, cleanFrame)
 
+    fun hideForScreenshot(): Boolean = overlayView.hideForScreenshot()
+
+    fun revealAfterScreenshot() = overlayView.revealAfterScreenshot()
+
     private fun temporarilyHide(reason: String) {
         if (dismissed || currentParsed == null) return
         val firstHide = !temporarilyHidden
