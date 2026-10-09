@@ -12,80 +12,86 @@ internal data class LiveAdvisorDecisionThresholdSnapshot(
 )
 
 /**
- * Owns the per-offer threshold snapshot used by the live advisor.
- *
- * Adaptive market thresholds are warmed off the UI thread. The first snapshot actually used for
- * an offer is frozen for that offer's lifetime, so a late database/profile result can improve the
- * next offer but can never repaint the current verdict while the courier is deciding.
+ * Market thresholds are warmed once per (platform, currency) and frozen at session start.
+ * A route recorded during this offer must not train the reference distribution used for its
+ * own verdict; refresh is queued only after the previous session has ended.
  */
 internal class LiveAdvisorDecisionThresholds(
     private val loadCurrency: (String) -> String,
     private val loadAdaptiveThresholds: (String, String) -> OfferDecisionThresholds?,
     private val executeBackground: ((() -> Unit) -> Unit),
     private val postToMain: ((() -> Unit) -> Unit),
+    private val warmedStore: MutableMap<Pair<String, String>, LiveAdvisorDecisionThresholdSnapshot> = mutableMapOf(),
 ) {
     private var platform = ""
     private var generation = -1L
     private var snapshot: LiveAdvisorDecisionThresholdSnapshot? = null
-    private var prewarmGeneration = -1L
+    private var frozenAtBegin: Map<String, LiveAdvisorDecisionThresholdSnapshot> = emptyMap()
+    private val warmingPlatforms = mutableSetOf<String>()
 
     fun beginOffer(platform: String, generation: Long) {
+        if (this.platform.isNotBlank() && this.generation != generation) clearOffer()
         this.platform = platform
         this.generation = generation
         snapshot = null
-        prewarmGeneration = -1L
+        // A preload finishing during a live offer is *never* used by that offer.
+        frozenAtBegin = synchronized(warmedStore) {
+            warmedStore.filterKeys { it.first.equals(platform, ignoreCase = true) }
+                .mapKeys { it.key.second.uppercase() }
+        }
     }
 
     fun clearOffer() {
+        val previousPlatform = platform
         platform = ""
         generation = -1L
         snapshot = null
-        prewarmGeneration = -1L
+        frozenAtBegin = emptyMap()
+        if (previousPlatform.isNotBlank()) warmPlatform(previousPlatform)
     }
 
     fun snapshotFor(currencyCode: String): LiveAdvisorDecisionThresholdSnapshot {
         snapshot?.takeIf { it.currencyCode.equals(currencyCode, ignoreCase = true) }?.let { return it }
-
-        // Never scan the local market database on the UI thread just to show money/km. The numeric
-        // rate depends only on price + Valhalla distance, so use the cheap currency fallback while
-        // an adaptive snapshot continues warming for a future offer if it lost this race.
-        prewarm()
-        val coldStart = LiveOfferColdStartThresholds.forCurrency(currencyCode)
-        val frozen = LiveAdvisorDecisionThresholdSnapshot(
-            currencyCode = currencyCode,
-            thresholds = coldStart,
-            source = if (coldStart != null) "currency_cold_start_frozen" else "none_frozen",
-        )
+        val frozen = frozenAtBegin[currencyCode.uppercase()] ?: run {
+            val fallback = LiveOfferColdStartThresholds.forCurrency(currencyCode)
+            LiveAdvisorDecisionThresholdSnapshot(
+                currencyCode = currencyCode,
+                thresholds = fallback,
+                source = if (fallback == null) "none_frozen" else "currency_cold_start_frozen",
+            )
+        }
         snapshot = frozen
         return frozen
     }
 
+    /** Existing callers can ask for prewarm; during an offer it must not refresh thresholds. */
     fun prewarm() {
-        if (platform.isBlank() || snapshot != null) return
-        val expectedGeneration = generation
-        if (prewarmGeneration == expectedGeneration) return
-        prewarmGeneration = expectedGeneration
-        val expectedPlatform = platform
+        if (generation < 0 && platform.isNotBlank()) warmPlatform(platform)
+    }
+
+    /** Called at advisor creation, before any offer is scored, and after the previous offer ends. */
+    fun warmPlatform(platform: String) {
+        if (platform.isBlank() || !warmingPlatforms.add(platform)) return
         executeBackground background@{
-            val currencyCode = runCatching { loadCurrency(expectedPlatform) }.getOrNull().orEmpty()
-            if (currencyCode.isBlank()) return@background
-            val adaptive = runCatching {
-                loadAdaptiveThresholds(expectedPlatform, currencyCode)
-            }.getOrNull()
-            val coldStart = LiveOfferColdStartThresholds.forCurrency(currencyCode)
+            val currency = runCatching { loadCurrency(platform) }.getOrNull().orEmpty()
+            if (currency.isBlank()) {
+                postToMain { warmingPlatforms.remove(platform) }
+                return@background
+            }
+            val adaptive = runCatching { loadAdaptiveThresholds(platform, currency) }.getOrNull()
+            val fallback = LiveOfferColdStartThresholds.forCurrency(currency)
             val warmed = LiveAdvisorDecisionThresholdSnapshot(
-                currencyCode = currencyCode,
-                thresholds = adaptive ?: coldStart,
+                currencyCode = currency,
+                thresholds = adaptive ?: fallback,
                 source = when {
                     adaptive != null -> "adaptive"
-                    coldStart != null -> "currency_cold_start"
+                    fallback != null -> "currency_cold_start"
                     else -> "none"
                 },
             )
             postToMain {
-                if (generation == expectedGeneration && snapshot == null) {
-                    snapshot = warmed
-                }
+                synchronized(warmedStore) { warmedStore[platform to currency.uppercase()] = warmed }
+                warmingPlatforms.remove(platform)
             }
         }
     }
@@ -94,6 +100,8 @@ internal class LiveAdvisorDecisionThresholds(
         private val PREWARM_EXECUTOR: Executor = Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "CourierPilot-ScorePrewarm").apply { isDaemon = true }
         }
+        private val PROCESS_WARMED =
+            mutableMapOf<Pair<String, String>, LiveAdvisorDecisionThresholdSnapshot>()
 
         fun production(context: Context, handler: Handler): LiveAdvisorDecisionThresholds {
             val app = context.applicationContext
@@ -104,7 +112,11 @@ internal class LiveAdvisorDecisionThresholds(
                 },
                 executeBackground = { task -> PREWARM_EXECUTOR.execute(task) },
                 postToMain = { task -> handler.post(task) },
-            )
+                warmedStore = PROCESS_WARMED,
+            ).apply {
+                warmPlatform("Wolt")
+                warmPlatform("Bolt")
+            }
         }
     }
 }
