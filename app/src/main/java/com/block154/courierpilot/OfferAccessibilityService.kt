@@ -37,6 +37,7 @@ class OfferAccessibilityService : AccessibilityService() {
         )
     }
     private val captureRuntime = OfferCaptureRuntime(CAPTURE_OPERATION_TIMEOUT_MS)
+    private val cleanCaptureBudget = OfferCleanCaptureBudget()
     private var lastHandledArmedAt = 0L
     private var unlockReceiverRegistered = false
     private var lastCourierEventAtElapsed = 0L
@@ -999,7 +1000,7 @@ class OfferAccessibilityService : AccessibilityService() {
                         return
                     }
                     if (deferScreenshotProcessingForOverlayDrag(screenshot, captureToken, platform)) return
-                    val bitmap = screenshotToBitmap(screenshot)
+                    prepareCaptureBitmap(screenshot, captureToken, null) { bitmap ->
                     if (bitmap == null) {
                         finishCapture(captureToken)
                         CaptureEventLog.append(
@@ -1010,7 +1011,7 @@ class OfferAccessibilityService : AccessibilityService() {
                             3_000L,
                         )
                         scheduleAttempt(DISCOVERY_SCREENSHOT_RETRY_MS)
-                        return
+                        return@prepareCaptureBitmap
                     }
                     recognizer.process(InputImage.fromBitmap(bitmap, 0))
                         .addOnSuccessListener { result ->
@@ -1061,6 +1062,7 @@ class OfferAccessibilityService : AccessibilityService() {
                                 bitmap.recycle()
                             }
                         }
+                    }
                 }
 
                 override fun onFailure(errorCode: Int) {
@@ -1091,13 +1093,13 @@ class OfferAccessibilityService : AccessibilityService() {
                         return
                     }
                     if (deferScreenshotProcessingForOverlayDrag(screenshot, captureToken, platform)) return
-                    val bitmap = screenshotToBitmap(screenshot)
+                    prepareCaptureBitmap(screenshot, captureToken, pending, OfferParser.parse(accessibilityText).deliveryCount ?: 1) { bitmap ->
                     if (bitmap == null) {
                         val failures = recordScreenshotFailure(pending)
                         finishCapture(captureToken)
                         CaptureEventLog.append(this@OfferAccessibilityService, "bitmap_failed", "Android screenshot buffer could not be converted (attempt $failures)", platform, 5_000L)
                         scheduleAttempt(adaptiveOcrDelay(pending))
-                        return
+                        return@prepareCaptureBitmap
                     }
                     resetScreenshotFailures(pending)
                     val accumulatedAccessibilityText = accumulateOfferFrame(pending, accessibilityText)
@@ -1232,6 +1234,7 @@ class OfferAccessibilityService : AccessibilityService() {
                             CaptureEventLog.append(this@OfferAccessibilityService, "ocr_failed", error.javaClass.simpleName, platform, 5_000L)
                             scheduleAttempt(adaptiveOcrDelay(pending).coerceAtLeast(1_500L))
                         }
+                    }
                 }
 
                 override fun onFailure(errorCode: Int) {
@@ -1268,7 +1271,7 @@ class OfferAccessibilityService : AccessibilityService() {
                         persistOffer(null, pending, text, parsed)
                         return
                     }
-                    val bitmap = screenshotToBitmap(screenshot)
+                    prepareCaptureBitmap(screenshot, captureToken, pending, parsed.deliveryCount ?: 1) { bitmap ->
                     if (bitmap == null) {
                         val failures = recordScreenshotFailure(pending)
                         finishCapture(captureToken)
@@ -1291,12 +1294,13 @@ class OfferAccessibilityService : AccessibilityService() {
                         } else {
                             scheduleAttempt(500L)
                         }
-                        return
+                        return@prepareCaptureBitmap
                     }
                     resetScreenshotFailures(pending)
                     LiveAdvisorHub.showPendingOffer(this@OfferAccessibilityService, pending, parsed)
                     finishCapture(captureToken)
                     persistOffer(bitmap, pending, text, parsed)
+                    }
                 }
 
                 override fun onFailure(errorCode: Int) {
@@ -1539,7 +1543,71 @@ class OfferAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun screenshotToBitmap(screenshot: ScreenshotResult): Bitmap? = screenshotCapture.toBitmap(screenshot)
+    /**
+     * All display screenshots are pixel-masked before OCR/proof. A failed WS-C marker extraction
+     * beneath the overlay may request one optional clean frame; never block normal persistence.
+     */
+    private fun prepareCaptureBitmap(
+        screenshot: ScreenshotResult,
+        token: Long,
+        pending: PendingOffer?,
+        expectedCustomers: Int = 0,
+        onReady: (Bitmap?) -> Unit,
+    ) {
+        val boltCount = if (pending?.packageName == CourierSignals.BOLT_PACKAGE)
+            expectedCustomers.coerceAtLeast(1) else null
+        screenshotCapture.convertOffMain(
+            screenshot, { isCaptureCurrent(token) }, boltCount,
+        ) { prepared ->
+            if (!isCaptureCurrent(token)) {
+                prepared?.bitmap?.recycle()
+                return@convertOffMain
+            }
+            val offerKey = pending?.let { "${it.packageName}|${it.armedAt}|${it.notificationKey}" }
+            if (prepared == null || offerKey == null || !prepared.needsCleanBoltCapture ||
+                LiveAdvisorHub.isOverlayGestureActive() ||
+                !cleanCaptureBudget.claim(offerKey, missingPins = true, intersectsMap = true)
+            ) {
+                onReady(prepared?.bitmap)
+                return@convertOffMain
+            }
+            CaptureEventLog.append(
+                this, stage = "overlay_clean_capture",
+                platform = "Bolt",
+                message = "Missing map customer pins beneath card; requested one clean frame",
+                dedupeWindowMs = 1_000L,
+            )
+            screenshotCapture.takeCleanDisplayScreenshot(object : TakeScreenshotCallback {
+                override fun onSuccess(cleanScreenshot: ScreenshotResult) {
+                    if (!isCaptureCurrent(token)) {
+                        prepared.bitmap.recycle()
+                        discardScreenshot(cleanScreenshot)
+                        return
+                    }
+                    // Preserve the masked original until the clean frame has converted. A
+                    // screenshot rate-limit or GPU copy failure must not discard useful OCR.
+                    screenshotCapture.convertOffMain(
+                        cleanScreenshot, { true },
+                    ) { clean ->
+                        if (!isCaptureCurrent(token)) {
+                            prepared.bitmap.recycle()
+                            clean?.bitmap?.recycle()
+                        } else if (clean == null) {
+                            onReady(prepared.bitmap)
+                        } else {
+                            prepared.bitmap.recycle()
+                            onReady(clean.bitmap)
+                        }
+                    }
+                }
+                override fun onFailure(errorCode: Int) {
+                    if (isCaptureCurrent(token)) onReady(prepared.bitmap)
+                    else prepared.bitmap.recycle()
+                }
+            })
+        }
+    }
+
 
     private fun handleScreenshotFailure(
         errorCode: Int,
