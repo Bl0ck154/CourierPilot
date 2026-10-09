@@ -1579,18 +1579,25 @@ class OfferAccessibilityService : AccessibilityService() {
             )
             screenshotCapture.takeCleanDisplayScreenshot(object : TakeScreenshotCallback {
                 override fun onSuccess(cleanScreenshot: ScreenshotResult) {
-                    // Release the initial masked bitmap regardless of token outcome: the clean
-                    // shot replaces it. Fallback on a failed second conversion is metadata-only.
-                    prepared.bitmap.recycle()
                     if (!isCaptureCurrent(token)) {
+                        prepared.bitmap.recycle()
                         discardScreenshot(cleanScreenshot)
                         return
                     }
+                    // Preserve the masked original until the clean frame has converted. A
+                    // screenshot rate-limit or GPU copy failure must not discard useful OCR.
                     screenshotCapture.convertOffMain(
-                        cleanScreenshot, { isCaptureCurrent(token) },
+                        cleanScreenshot, { true },
                     ) { clean ->
-                        if (isCaptureCurrent(token)) onReady(clean?.bitmap)
-                        else clean?.bitmap?.recycle()
+                        if (!isCaptureCurrent(token)) {
+                            prepared.bitmap.recycle()
+                            clean?.bitmap?.recycle()
+                        } else if (clean == null) {
+                            onReady(prepared.bitmap)
+                        } else {
+                            prepared.bitmap.recycle()
+                            onReady(clean.bitmap)
+                        }
                     }
                 }
                 override fun onFailure(errorCode: Int) {
