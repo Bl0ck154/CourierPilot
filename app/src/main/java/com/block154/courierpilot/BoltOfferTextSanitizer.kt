@@ -16,8 +16,11 @@ internal object BoltOfferTextSanitizer {
         "(?i)^\\s*\\(?[^()]{0,70}(?:\\bstr\\.?|\\bstreet|\\bg\\.?|\\bgatv(?:ė|e)?|\\bpr\\.?|\\bprospektas|\\bave\\.?|\\bavenue|\\brd\\.?|\\broad)[^()]{0,30}\\)\\s*$"
     )
     private val leadingMapMarkerRegex = Regex(
-        "(?iu)^\\s*(?:(?:Y|У|V|¥)\\s*)?4(?:\\s+|[,.:]\\s*)(.+)$"
+        "(?iu)^\\s*(?:(?:Y|У|V|¥|W|Ψ|Ч)\\s*)?4(?:\\s+|[,.:]\\s*)(.+)$"
     )
+    // The fork-and-knife pin is sometimes read as a lone glyph ("Y Vokiečių g. 12"). Only letters
+    // that cannot be a Lithuanian initial without a dot are stripped, and only before whitespace.
+    private val leadingLoneMarkerRegex = Regex("(?u)^\\s*(?:Y|W|Ψ|ψ|¥|Ч)\\s+(.+)$")
 
     fun sanitizeStoredRawText(rawText: String): String {
         val lines = rawText.lineSequence()
@@ -59,7 +62,9 @@ internal object BoltOfferTextSanitizer {
 
     fun stripLeadingMapMarkerFromAddress(value: String): String {
         val line = cleanLine(value)
-        val match = leadingMapMarkerRegex.matchEntire(line) ?: return line
+        val match = leadingMapMarkerRegex.matchEntire(line)
+            ?: leadingLoneMarkerRegex.matchEntire(line)
+            ?: return line
         val candidate = cleanLine(match.groupValues[1])
         // Do not remove a legitimate leading house number. The prefix is treated as a Bolt map
         // marker only when the remainder is already a complete address with its own house number.

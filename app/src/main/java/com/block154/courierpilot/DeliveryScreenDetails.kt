@@ -51,6 +51,15 @@ internal object DeliveryScreenDetailsExtractor {
 
     private val uiBoundaries = setOf(
         "translate",
+        "see translation",
+        "customer notes",
+        "suite/floor",
+        "meet in person",
+        "leave at door",
+        "leave at the door",
+        "hand it to me",
+        "navigate",
+        "message",
         "call",
         "chat",
         "delivery issues?",
@@ -111,17 +120,29 @@ internal object DeliveryScreenDetailsExtractor {
     }
 
     /**
-     * Wolt's customer screen does not label the street with `Address`. The stable structure is:
+     * True for Wolt's customer (drop-off) sheet in both layouts: the legacy `Dropoff to` sheet and
+     * the October 2026 redesign headed `Deliver to` with Navigate / Customer notes / Suite/Floor.
+     * Pickup sheets are rejected.
+     */
+    fun isWoltCustomerSheet(text: String): Boolean {
+        val lines = normalizedLines(text)
+        if (lines.any(::isWoltPickupHeader)) return false
+        if (lines.any { it.equals("dropoff to", ignoreCase = true) }) return true
+        return redesignedWoltHeaderIndex(lines) >= 0
+    }
+
+    /**
+     * Wolt's customer screen does not label the street with `Address`. Legacy structure:
      * `Dropoff to` -> recipient/name -> street, followed by the INFO/Address details section.
      * `Pickup from` is deliberately rejected here.
      */
     private fun extractWoltCustomer(text: String): DeliveryScreenDetails? {
         val lines = normalizedLines(text)
         if (lines.isEmpty()) return null
-        if (lines.any { it.equals("pickup from", ignoreCase = true) }) return null
+        if (lines.any(::isWoltPickupHeader)) return null
 
         val dropoffIndex = lines.indexOfFirst { it.equals("dropoff to", ignoreCase = true) }
-        if (dropoffIndex < 0) return null
+        if (dropoffIndex < 0) return extractRedesignedWoltCustomer(lines)
 
         val following = lines.drop(dropoffIndex + 1).take(5)
         val addressOffset = following.indexOfFirst { DeliveryAddressNormalizer.identity(it) != null }
@@ -153,6 +174,75 @@ internal object DeliveryScreenDetailsExtractor {
             deliverTo = deliverTo,
         )
     }
+
+    /**
+     * October 2026 Wolt customer sheet:
+     * `Deliver to` -> name -> Call / Message -> street -> "City, postcode" -> `Suite/Floor` value ->
+     * `Customer notes` text -> `See translation` -> handover method (`Meet in person`) -> order
+     * line -> venue -> `Navigate`. Labels may arrive as their own node or inline with the value.
+     */
+    private fun extractRedesignedWoltCustomer(lines: List<String>): DeliveryScreenDetails? {
+        val headerIndex = redesignedWoltHeaderIndex(lines)
+        if (headerIndex < 0) return null
+
+        val following = lines.drop(headerIndex + 1).take(8)
+        val addressOffset = following.indexOfFirst { DeliveryAddressNormalizer.identity(it) != null }
+        if (addressOffset < 0) return null
+        val street = following[addressOffset]
+        val locality = following.getOrNull(addressOffset + 1)?.takeIf(woltLocalityLine::matches)
+        val address = listOfNotNull(street, locality).joinToString(", ")
+        val customerName = following.take(addressOffset)
+            .firstOrNull { candidate ->
+                DeliveryAddressNormalizer.identity(candidate) == null && !isBoundary(candidate)
+            }
+            ?.take(240)
+
+        val handover = lines.firstOrNull { line -> line.lowercase(Locale.ROOT) in woltHandoverMethods }
+        return DeliveryScreenDetails(
+            address = address,
+            customerName = customerName,
+            instructions = null,
+            additionalNote = sectionValue(lines, "customer notes"),
+            apartment = labelledValue(lines, listOf("apartment", "flat", "suite number")),
+            floor = labelledValue(lines, listOf("suite/floor", "floor")),
+            entryCode = labelledValue(lines, listOf("entry code", "door code", "gate code")),
+            buildingName = labelledValue(lines, listOf("building name")),
+            companyName = labelledValue(lines, listOf("company name")),
+            deliverTo = handover,
+        )
+    }
+
+    private fun redesignedWoltHeaderIndex(lines: List<String>): Int {
+        val index = lines.indexOfFirst { it.equals("deliver to", ignoreCase = true) }
+        if (index < 0) return -1
+        val hasRedesignCue = lines.any { line ->
+            val lower = line.lowercase(Locale.ROOT)
+            lower in woltRedesignCues || woltRedesignCues.any { cue -> lower.startsWith("$cue ") }
+        }
+        return index.takeIf { hasRedesignCue } ?: -1
+    }
+
+    /** Label on its own line followed by the value, or `Label value` / `Label: value` inline. */
+    private fun labelledValue(lines: List<String>, labels: List<String>): String? {
+        labels.forEach { label ->
+            singleValue(lines, label)?.let { return it }
+            lines.firstNotNullOfOrNull { line ->
+                val lower = line.lowercase(Locale.ROOT)
+                if (!lower.startsWith(label)) return@firstNotNullOfOrNull null
+                line.substring(label.length).trim().removePrefix(":").trim().takeIf(String::isNotEmpty)
+            }?.let { return it }
+        }
+        return null
+    }
+
+    private fun isWoltPickupHeader(line: String): Boolean =
+        line.equals("pickup from", ignoreCase = true) || line.equals("pick up from", ignoreCase = true)
+
+    private val woltLocalityLine = Regex("""^\p{L}[\p{L} .'-]{1,40},\s*(?:LT-?)?\d{4,5}$""")
+    private val woltRedesignCues = setOf("navigate", "customer notes", "meet in person", "suite/floor", "message")
+    private val woltHandoverMethods = setOf(
+        "meet in person", "leave at door", "leave at the door", "hand it to me", "meet outside", "meet at the door",
+    )
 
     fun forAddress(text: String, address: String): DeliveryScreenDetails? {
         val details = extract(text) ?: return null

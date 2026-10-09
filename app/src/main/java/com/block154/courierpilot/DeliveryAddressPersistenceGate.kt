@@ -47,9 +47,9 @@ internal object DeliveryAddressPersistenceGate {
         val lower = text.lowercase(Locale.ROOT).replace('’', '\'')
 
         if (packageName == CourierSignals.WOLT_PACKAGE) {
-            // Real Wolt customer sheet has the stable `Dropoff to` marker. It wins over generic
-            // controls lower on the sheet such as Order details or delivery-problem actions.
-            if (lower.contains("dropoff to") && details?.address != null) {
+            // Real Wolt customer sheet: legacy `Dropoff to` marker or the October 2026 `Deliver to`
+            // redesign. It wins over generic controls such as Order details or problem actions.
+            if (DeliveryScreenDetailsExtractor.isWoltCustomerSheet(text) && details?.address != null) {
                 return allowed(AddressPersistenceReason.CUSTOMER_DETAILS)
             }
             // Real Wolt merchant sheet has the stable `Pickup from` marker.

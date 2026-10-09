@@ -134,6 +134,8 @@ internal object DeliveryLifecycleTracking {
     internal fun hasActiveTaskSurface(text: String): Boolean {
         val lower = text.lowercase(Locale.ROOT).replace('’', '\'')
         if (lower.contains("dropoff to") || lower.contains("drop-off to")) return true
+        // October 2026 Wolt customer sheet (`Deliver to` + Navigate / Customer notes).
+        if (lower.contains("deliver to") && (lower.contains("navigate") || lower.contains("customer notes"))) return true
         if (lower.contains("address details") && lower.contains("order details")) return true
         if (lower.contains("order delivered!") && lower.contains("order details")) return true
         if (lower.contains("difficulties with the delivery?") && lower.contains("order details")) return true
