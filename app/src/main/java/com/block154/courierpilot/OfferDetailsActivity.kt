@@ -171,7 +171,7 @@ private fun OfferDetailsScreen(
 ) {
     val context = LocalContext.current
     var rawExpanded by remember { mutableStateOf(false) }
-    val merchant = OfferPresentation.merchantTitle(offer)
+    val merchant = OfferPresentation.merchantSummary(offer)
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),

@@ -1361,7 +1361,7 @@ private fun DashboardOfferCard(record: OfferRecord, onClick: () -> Unit) {
             Spacer(Modifier.size(12.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    OfferPresentation.merchantTitle(record),
+                    OfferPresentation.merchantSummary(record),
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
