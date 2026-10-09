@@ -40,6 +40,7 @@ internal data class BoltSemanticMarkers(
     val pickups: List<BoltMarkerEvidence>,
     val dropoffs: List<BoltMarkerEvidence>,
     val unknown: List<BoltMarkerEvidence>,
+    val bitmapWidthPx: Int? = null,
 ) {
     val pickup: BoltMarkerEvidence?
         get() = pickups.maxByOrNull { it.confidence }
@@ -536,8 +537,8 @@ internal object AutomaticBoltRouteCoordinator {
         val mapBottomScreenPx = captureMapBottomPx(context, parsed)
         val eta = etaFor(app, offerId, parsed)
         val etaModel = BoltEtaDistanceModel(app)
-        val toCustomerEtaMeters = eta.toCustomerMin?.let(etaModel::estimateMeters)
-        val etaEstimateMeters = (eta.toCustomerMin ?: eta.totalMin ?: parsed.estimatedMinutesMin)
+        val toCustomerEtaMeters = (eta.toCustomerMin ?: eta.totalMin)?.let(etaModel::estimateMeters)
+        val etaEstimateMeters = (eta.toCustomerMin ?: eta.totalMin ?: eta.toPickupMin ?: parsed.estimatedMinutesMin)
             ?.let(etaModel::estimateMeters)
         val initialSemanticMarkers = captureMapMarkers(context, parsed)?.takeIf(::hasUsefulMarkers)
 
@@ -580,7 +581,7 @@ internal object AutomaticBoltRouteCoordinator {
                         current = fix.point,
                         knownPickups = knownPickups,
                         expectedDropoffs = parsed.deliveryCount,
-                        bitmapWidthPx = app.resources.displayMetrics.widthPixels,
+                        bitmapWidthPx = mapMarkers?.bitmapWidthPx ?: app.resources.displayMetrics.widthPixels,
                         etaToCustomerMeters = toCustomerEtaMeters,
                     )
                     val recovery = recovered.recovery
@@ -833,7 +834,7 @@ internal object AutomaticBoltRouteCoordinator {
         inFlight.remove(offerId)
         context.mainExecutor.execute {
             val eta = etaFor(context, offerId, parsed)
-            val etaMinutes = eta.toCustomerMin ?: eta.totalMin
+            val etaMinutes = eta.toCustomerMin ?: eta.totalMin ?: eta.toPickupMin
             onComplete(
                 AutomaticBoltRouteOutcome(
                     offerId, waypoints, null, null, failureReason = reason,
