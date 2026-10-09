@@ -370,9 +370,11 @@ internal class LiveAdvisorOverlayView(
     fun setCaptureSuppressed(suppressed: Boolean, cleanFrame: Boolean = false) {
         // Normal display captures are masked in pixels; alpha must remain stable, even for Bolt.
         // An explicit one-frame clean recovery is the sole exception.
-        if (!OfferOverlayCapturePolicy.shouldChangeAlpha(
+        // A clean frame must always be revealed, even if a gesture began during the frame.
+        if (suppressed && !OfferOverlayCapturePolicy.shouldChangeAlpha(
                 cleanFrame, gestureTouchActive, isSwipeExitRunning
             )) return
+        if (!suppressed && !cleanFrame) return
         if (captureSuppressed == suppressed) return
         captureSuppressed = suppressed
         root?.alpha = if (suppressed) 0f else 1f
