@@ -613,6 +613,19 @@ internal class StableLiveOfferAdvisor(
     }
 
     /** A real foreign window-state event is stronger than rootInActiveWindow on overlay-heavy OEMs. */
+    /** The user came back to the courier app after a swipe: let the same offer show again. */
+    fun clearUserHiddenOnReturn() {
+        if (dismissed || currentParsed == null || !userHidden) return
+        userHidden = false
+        CaptureEventLog.append(
+            service,
+            stage = "overlay_user_hidden_cleared",
+            platform = currentPlatform,
+            message = "User returned to the courier app; card may show again",
+            dedupeWindowMs = 500L,
+        )
+    }
+
     fun onForegroundWindowChanged(packageName: String) {
         if (dismissed || currentParsed == null || packageName.isBlank()) return
         when {
