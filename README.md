@@ -44,7 +44,7 @@ Home, History and Addresses are grouped lists that reuse the live card's colours
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/app-screens-dark.png" />
-    <img src="docs/assets/app-screens-light.png" alt="CourierPilot Home, History, Addresses and Appearance settings" width="900" />
+    <img src="docs/assets/app-screens-light.png" alt="CourierPilot Home, History, Addresses and Stats" width="900" />
   </picture>
 </p>
 
@@ -133,6 +133,7 @@ Release signing is documented in [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNIN
 
 ## Releases and roadmap
 
+- **0.17.1** — instant History with incremental loading, redesigned Stats, Pay and Settings. See [`docs/RELEASE_0.17.1.md`](docs/RELEASE_0.17.1.md).
 - **0.17.0** — new grouped-list design for Home/History/Addresses, System/Light/Dark theme, every venue of stacked Wolt orders. See [`docs/RELEASE_0.17.0.md`](docs/RELEASE_0.17.0.md).
 - **0.16.2** — full Bolt venue names, new Wolt "Deliver to" screen, door-code reminders. See [`docs/RELEASE_0.16.2.md`](docs/RELEASE_0.16.2.md).
 - **0.16.1** — live card redesign (gold → grey), Bolt map anchoring fix, ETA sanity gate, no card restarts while an offer rings. See [`docs/RELEASE_0.16.1.md`](docs/RELEASE_0.16.1.md).

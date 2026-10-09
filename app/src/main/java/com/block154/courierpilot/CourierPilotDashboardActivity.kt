@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -43,6 +44,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -215,6 +218,7 @@ private fun DashboardRoot(
     refreshToken: Int,
 ) {
     var screen by remember { mutableStateOf(DashboardScreen.HOME) }
+    val historyState = remember { HistoryListState() }
     val context = LocalContext.current
     BackHandler(enabled = screen != DashboardScreen.HOME) { screen = DashboardScreen.HOME }
 
@@ -246,7 +250,7 @@ private fun DashboardRoot(
                     )
                 },
             )
-            DashboardScreen.HISTORY -> DashboardHistory(offers, padding, refreshToken) { id ->
+            DashboardScreen.HISTORY -> DashboardHistory(offers, historyState, padding, refreshToken) { id ->
                 context.startActivity(
                     Intent(context, OfferDetailsActivity::class.java)
                         .putExtra(OfferDetailsActivity.EXTRA_OFFER_ID, id)
@@ -263,8 +267,6 @@ private fun DashboardRoot(
                 meta = meta,
                 padding = padding,
                 refreshToken = refreshToken,
-                onHistory = { screen = DashboardScreen.HISTORY },
-                onAddresses = { screen = DashboardScreen.ADDRESSES },
             )
             DashboardScreen.MARKET -> DashboardMarket(padding, refreshToken)
             DashboardScreen.SETTINGS -> DashboardSettings(notificationOk, accessibilityOk, padding, refreshToken) {
@@ -430,7 +432,7 @@ private fun DashboardHome(
                 best = offers.recordsSince(startOfDay, limit = 500)
                     .mapNotNull(OfferRowRatePolicy::rate)
                     .maxByOrNull { it.perKm },
-                recent = offers.recent(4).map { it.withCurrentParsedStructure() },
+                recent = offers.recent(4).map(OfferEnrichmentCache::enriched),
             )
         }
     }
@@ -663,68 +665,121 @@ private data class HistoryDayGroup(
     val records: List<OfferRecord>,
 )
 
+/**
+ * History list state, hoisted to [DashboardRoot] so switching tabs keeps the loaded rows, scroll
+ * position, query and filter instead of starting again from "Loading offers…".
+ */
+private class HistoryListState {
+    var query by mutableStateOf("")
+    var filter by mutableStateOf(HistoryPlatformFilter.ALL)
+    var records by mutableStateOf<List<OfferRecord>>(emptyList())
+    var total by mutableIntStateOf(0)
+    var loadedOnce by mutableStateOf(false)
+    var loadingMore by mutableStateOf(false)
+    var endReached by mutableStateOf(false)
+    val listState = LazyListState()
+
+    val canLoadMore: Boolean get() = !endReached && !loadingMore
+}
+
+/**
+ * Loads [count] rows from [offset]. Stored rows are shown at once (they already carry the
+ * capture-time structure); only uncached rows are re-parsed, in parallel, and swapped in after.
+ */
+private suspend fun HistoryListState.loadRange(
+    offers: OfferDatabase,
+    offset: Int,
+    count: Int,
+    replace: Boolean,
+) {
+    val query = query
+    val platform = filter.platform
+    val (newTotal, stored) = withContext(Dispatchers.IO) {
+        offers.offerCount(query, platform) to offers.searchPage(query, count, offset, platform)
+    }
+    if (query != this.query || platform != filter.platform) return
+    total = newTotal
+    endReached = offset + stored.size >= newTotal || stored.isEmpty()
+    val instant = stored.map { OfferEnrichmentCache.cached(it) ?: it }
+    records = if (replace) instant else (records + instant).distinctBy { it.id }
+    loadedOnce = true
+    if (stored.none { OfferEnrichmentCache.cached(it) == null }) return
+    val enriched = OfferEnrichmentCache.enrichAll(stored).associateBy { it.id }
+    if (query != this.query || platform != filter.platform) return
+    records = records.map { enriched[it.id] ?: it }
+}
+
 @Composable
 private fun DashboardHistory(
     offers: OfferDatabase,
+    state: HistoryListState,
     padding: PaddingValues,
     refreshToken: Int,
     onOpenOffer: (Long) -> Unit,
 ) {
-    var query by remember { mutableStateOf("") }
-    var filter by remember { mutableStateOf(HistoryPlatformFilter.ALL) }
-    var page by remember { mutableIntStateOf(0) }
-    var total by remember { mutableIntStateOf(0) }
-    var records by remember { mutableStateOf<List<OfferRecord>>(emptyList()) }
-    var loading by remember { mutableStateOf(true) }
+    val scope = rememberCoroutineScope()
 
-    LaunchedEffect(query, filter, page, refreshToken) {
-        loading = true
-        if (query.isNotBlank()) delay(160L)
-        val requestedPage = page
-        val loaded = withContext(Dispatchers.IO) {
-            val count = offers.offerCount(query, filter.platform)
-            val pageCount = maxOf(1, ceil(count / HISTORY_PAGE_SIZE.toDouble()).toInt())
-            val safePage = requestedPage.coerceIn(0, pageCount - 1)
-            val pageRecords = offers.searchPage(query, HISTORY_PAGE_SIZE, safePage * HISTORY_PAGE_SIZE, filter.platform)
-                .map { it.withCurrentParsedStructure() }
-            Triple(count, safePage, pageRecords)
-        }
-        total = loaded.first
-        if (page != loaded.second) page = loaded.second
-        records = loaded.third
-        loading = false
+    // First page for a new query/filter, and a silent refresh of what is already shown on resume.
+    LaunchedEffect(state.query, state.filter, refreshToken) {
+        if (state.query.isNotBlank()) delay(200L)
+        state.loadRange(
+            offers = offers,
+            offset = 0,
+            count = state.records.size.coerceIn(HISTORY_CHUNK_SIZE, HISTORY_CHUNK_SIZE * 6),
+            replace = true,
+        )
     }
 
-    val pageCount = maxOf(1, ceil(total / HISTORY_PAGE_SIZE.toDouble()).toInt())
-    val groups = remember(records) { historyDayGroups(records) }
+    val nearEnd by remember {
+        derivedStateOf {
+            val info = state.listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()?.index ?: 0
+            info.totalItemsCount > 0 && last >= info.totalItemsCount - 6
+        }
+    }
+    LaunchedEffect(nearEnd, state.records.size) {
+        if (!nearEnd || !state.loadedOnce || !state.canLoadMore) return@LaunchedEffect
+        state.loadingMore = true
+        try {
+            state.loadRange(offers, offset = state.records.size, count = HISTORY_CHUNK_SIZE, replace = false)
+        } finally {
+            state.loadingMore = false
+        }
+    }
+
+    val groups = remember(state.records) { historyDayGroups(state.records) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
+        state = state.listState,
         contentPadding = PaddingValues(16.dp, padding.calculateTopPadding() + 8.dp, 16.dp, padding.calculateBottomPadding() + 20.dp),
     ) {
-        item { DashboardScreenTitle("History", "$total captured offers") }
-        item {
+        item(key = "title") { DashboardScreenTitle("History", if (state.loadedOnce) "${state.total} captured offers" else "Offer history") }
+        item(key = "search") {
             Spacer(Modifier.height(12.dp))
-            DashboardSearchField(query, "Venue, address, customer…") {
-                query = it
-                page = 0
+            DashboardSearchField(state.query, "Venue, address, customer…") {
+                state.query = it
+                scope.launch { state.listState.scrollToItem(0) }
             }
         }
-        item {
+        item(key = "filters") {
             Row(Modifier.padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 HistoryPlatformFilter.entries.forEach { option ->
-                    FilterChipD(option.label, selected = filter == option) {
-                        filter = option
-                        page = 0
+                    FilterChipD(option.label, selected = state.filter == option) {
+                        state.filter = option
+                        scope.launch { state.listState.scrollToItem(0) }
                     }
                 }
             }
         }
         when {
-            loading && records.isEmpty() -> item { Spacer(Modifier.height(12.dp)); DashboardEmpty("Loading offers…") }
-            records.isEmpty() -> item {
+            !state.loadedOnce -> item(key = "loading") { Spacer(Modifier.height(12.dp)); DashboardEmpty("Loading offers…") }
+            state.records.isEmpty() -> item(key = "empty") {
                 Spacer(Modifier.height(12.dp))
-                DashboardEmpty(if (query.isBlank() && filter == HistoryPlatformFilter.ALL) "No offers yet." else "No offers match this search.")
+                DashboardEmpty(
+                    if (state.query.isBlank() && state.filter == HistoryPlatformFilter.ALL) "No offers yet."
+                    else "No offers match this search."
+                )
             }
             else -> groups.forEach { group ->
                 item(key = "day-${group.label}-${group.records.first().id}") { HistoryDayHeader(group) }
@@ -733,14 +788,14 @@ private fun DashboardHistory(
                 }
             }
         }
-        if (total > HISTORY_PAGE_SIZE) {
-            item {
-                Spacer(Modifier.height(8.dp))
-                PaginationRow(
-                    page = page,
-                    pageCount = pageCount,
-                    onPrevious = { if (!loading && page > 0) page-- },
-                    onNext = { if (!loading && page + 1 < pageCount) page++ },
+        if (state.loadingMore) {
+            item(key = "more") {
+                Text(
+                    "Loading more…",
+                    Modifier.fillMaxWidth().padding(16.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 13.sp,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
             }
         }
@@ -937,15 +992,21 @@ private fun DashboardAddressItem(
     }
 }
 
-private data class DashboardStatsData(
-    val today: DashboardMoneySummary,
-    val seven: DashboardMoneySummary,
-    val thirty: DashboardMoneySummary,
-    val workToday: AutomaticWorkSummary,
-    val workSeven: AutomaticWorkSummary,
-    val workThirty: AutomaticWorkSummary,
+private enum class StatsPeriod(val label: String, val daysBack: Int) {
+    TODAY("Today", 0),
+    WEEK("7 days", 6),
+    MONTH("30 days", 29),
+}
+
+private data class StatsPeriodData(
+    val summary: DashboardMoneySummary,
+    val work: AutomaticWorkSummary,
     val wolt: DashboardMoneySummary,
     val bolt: DashboardMoneySummary,
+)
+
+private data class DashboardStatsData(
+    val periods: Map<StatsPeriod, StatsPeriodData>,
     val days: List<DashboardMoneyDaySummary>,
 )
 
@@ -955,22 +1016,22 @@ private fun DashboardStats(
     meta: CourierMetaDatabase,
     padding: PaddingValues,
     refreshToken: Int,
-    onHistory: () -> Unit,
-    onAddresses: () -> Unit,
 ) {
     var stats by remember { mutableStateOf<DashboardStatsData?>(null) }
+    var period by remember { mutableStateOf(StatsPeriod.WEEK) }
 
     LaunchedEffect(refreshToken) {
         stats = withContext(Dispatchers.IO) {
             DashboardStatsData(
-                today = DashboardMoneyStats.summarySince(offers, dashStartOfDay(0)),
-                seven = DashboardMoneyStats.summarySince(offers, dashStartOfDay(6)),
-                thirty = DashboardMoneyStats.summarySince(offers, dashStartOfDay(29)),
-                workToday = meta.workSummarySince(dashStartOfDay(0)),
-                workSeven = meta.workSummarySince(dashStartOfDay(6)),
-                workThirty = meta.workSummarySince(dashStartOfDay(29)),
-                wolt = DashboardMoneyStats.summarySince(offers, dashStartOfDay(29), "Wolt"),
-                bolt = DashboardMoneyStats.summarySince(offers, dashStartOfDay(29), "Bolt"),
+                periods = StatsPeriod.entries.associateWith { p ->
+                    val since = dashStartOfDay(p.daysBack)
+                    StatsPeriodData(
+                        summary = DashboardMoneyStats.summarySince(offers, since),
+                        work = meta.workSummarySince(since),
+                        wolt = DashboardMoneyStats.summarySince(offers, since, "Wolt"),
+                        bolt = DashboardMoneyStats.summarySince(offers, since, "Bolt"),
+                    )
+                },
                 days = DashboardMoneyStats.dailyStats(offers, 14),
             )
         }
@@ -979,67 +1040,57 @@ private fun DashboardStats(
     val loaded = stats
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp, padding.calculateTopPadding() + 12.dp, 16.dp, padding.calculateBottomPadding() + 20.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(16.dp, padding.calculateTopPadding() + 8.dp, 16.dp, padding.calculateBottomPadding() + 20.dp),
     ) {
-        item { DashboardSection("Statistics", "Tap any period to open offer history") }
-        if (loaded == null) {
-            item { DashboardEmpty("Loading statistics…") }
-        } else {
-            item { StatsPeriod("Today", loaded.today, loaded.workToday, onHistory) }
-            item { StatsPeriod("Last 7 days", loaded.seven, loaded.workSeven, onHistory) }
-            item { StatsPeriod("Last 30 days", loaded.thirty, loaded.workThirty, onHistory) }
-
-            item { DashboardSection("Platforms", "Last 30 days") }
-            item {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    DashboardMetric("Wolt", loaded.wolt.count.toString(), dashAveragePrice(loaded.wolt), BrandCyan, Modifier.weight(1f), onHistory)
-                    DashboardMetric("Bolt", loaded.bolt.count.toString(), dashAveragePrice(loaded.bolt), Success, Modifier.weight(1f), onHistory)
-                }
-            }
-
-            item { DashboardSection("Recent days", "Captured offers by day") }
-            if (loaded.days.isEmpty()) {
-                item { DashboardEmpty("No daily statistics yet.") }
-            } else {
-                items(loaded.days, key = { it.day }) { day ->
-                    Card(onClick = onHistory, shape = RoundedCornerShape(18.dp)) {
-                        Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text(day.day, fontWeight = FontWeight.SemiBold)
-                                Text(
-                                    "Wolt ${day.woltCount} · Bolt ${day.boltCount}",
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontSize = 12.sp,
-                                )
-                            }
-                            Column(horizontalAlignment = Alignment.End) {
-                                Text("${day.count} offers", fontWeight = FontWeight.SemiBold)
-                                Text(
-                                    dashDayAverage(day),
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontSize = 12.sp,
-                                )
-                            }
-                            Spacer(Modifier.size(8.dp))
-                            Icon(Icons.Rounded.ChevronRight, contentDescription = null)
-                        }
-                    }
+        item { DashboardScreenTitle("Stats", "Offers captured on this phone") }
+        item {
+            Row(Modifier.padding(top = 14.dp, bottom = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatsPeriod.entries.forEach { option ->
+                    FilterChipD(option.label, selected = period == option) { period = option }
                 }
             }
         }
+        if (loaded == null) {
+            item { DashboardEmpty("Loading statistics…") }
+            return@LazyColumn
+        }
+        val data = loaded.periods.getValue(period)
+        item { StatsHeroCard(period, data) }
 
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                FilledTonalButton(onClick = onHistory, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Rounded.History, contentDescription = null)
-                    Spacer(Modifier.size(6.dp))
-                    Text("History")
+        item { StatsSectionLabel("Platforms") }
+        val platforms = listOf("Wolt" to data.wolt, "Bolt" to data.bolt)
+        itemsIndexed(platforms, key = { _, item -> "platform-${item.first}" }) { index, (name, summary) ->
+            GroupedRow(index = index, count = platforms.size) {
+                PlatformBadge(name)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(name, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text(
+                        if (summary.count == 0) "No offers" else "${summary.count} offers · ${dashAveragePrice(summary)} per offer",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.5.sp,
+                    )
                 }
-                FilledTonalButton(onClick = onAddresses, modifier = Modifier.weight(1f)) {
-                    Icon(Icons.Rounded.Place, contentDescription = null)
-                    Spacer(Modifier.size(6.dp))
-                    Text("Addresses")
+                StatsRate(summary.averageMoneyPerKm.takeUnless { summary.mixedCurrency }, summary.currencyCode)
+            }
+        }
+
+        item { StatsSectionLabel("Last 14 days") }
+        if (loaded.days.isEmpty()) {
+            item { DashboardEmpty("No daily statistics yet.") }
+        } else {
+            item { StatsDayBars(loaded.days) }
+            item { Spacer(Modifier.height(10.dp)) }
+            itemsIndexed(loaded.days, key = { _, day -> "day-${day.day}" }) { index, day ->
+                GroupedRow(index = index, count = loaded.days.size) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(statsDayLabel(day.day), fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        Text(
+                            "${day.count} offers · Wolt ${day.woltCount} · Bolt ${day.boltCount}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.5.sp,
+                        )
+                    }
+                    StatsRate(day.averageMoneyPerKm.takeUnless { day.mixedCurrency }, day.currencyCode)
                 }
             }
         }
@@ -1047,39 +1098,136 @@ private fun DashboardStats(
 }
 
 @Composable
-private fun StatsPeriod(
-    label: String,
-    summary: DashboardMoneySummary,
-    work: AutomaticWorkSummary,
-    onClick: () -> Unit,
-) {
-    Card(onClick = onClick, shape = RoundedCornerShape(20.dp)) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+private fun StatsHeroCard(period: StatsPeriod, data: StatsPeriodData) {
+    val palette = LocalCourierPalette.current
+    val summary = data.summary
+    val rate = summary.averageMoneyPerKm?.takeUnless { summary.mixedCurrency }
+    val grade = OfferRowRatePolicy.gradeFor(rate, summary.currencyCode)
+    GroupedBlock {
+        Column(Modifier.padding(horizontal = 18.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Average €/km · ${period.label.lowercase(Locale.getDefault())}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(label, Modifier.weight(1f), fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
-                Icon(Icons.Rounded.ChevronRight, contentDescription = null)
+                if (rate != null) {
+                    RateText(OfferRowRatePolicy.formatValue(rate, summary.currencyCode), "/km", grade, valueSize = 46.sp, unitSize = 16.sp)
+                    Spacer(Modifier.size(8.dp))
+                    VerdictEmoji(grade, size = 24.sp)
+                } else {
+                    Text("—", fontFamily = RateNumberFamily, fontSize = 46.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
-            Row {
-                Text("Offers", Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(summary.count.toString(), fontWeight = FontWeight.Medium)
+            val avgOffer = dashAveragePrice(summary)
+            if (avgOffer != "—") {
+                Text("$avgOffer per offer", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.5.sp)
             }
-            Row {
-                Text("Average offer", Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(dashAveragePrice(summary))
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatsMini("Offers", summary.count.toString(), Modifier.weight(1f), palette.miniStatBg)
+                StatsMini("Online", dashDuration(data.work.totalMillis), Modifier.weight(1f), palette.miniStatBg)
+                StatsMini("Per hour", dashOffersPerHour(summary.count, data.work.totalMillis), Modifier.weight(1f), palette.miniStatBg)
             }
-            Row {
-                Text(dashboardRateLabel(summary.currencyCode, summary.mixedCurrency), Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(dashPerKm(summary))
-            }
-            Row {
-                Text("Online time", Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(dashDuration(work.totalMillis))
-            }
-            Row {
-                Text("Offers / hour", Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(dashOffersPerHour(summary.count, work.totalMillis))
+            summary.averageDistanceMeters?.let { meters ->
+                Text(
+                    "Average route ${"%.1f".format(Locale.US, meters / 1000.0)} km",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.5.sp,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
             }
         }
+    }
+}
+
+@Composable
+private fun StatsMini(label: String, value: String, modifier: Modifier, background: Color) {
+    Surface(modifier = modifier, shape = RoundedCornerShape(14.dp), color = background) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.5.sp, maxLines = 1)
+            Text(value, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1)
+        }
+    }
+}
+
+@Composable
+private fun StatsRate(perKm: Double?, currencyCode: String?) {
+    if (perKm == null) {
+        Text("—", fontFamily = RateNumberFamily, fontSize = 19.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        return
+    }
+    val grade = OfferRowRatePolicy.gradeFor(perKm, currencyCode)
+    RateText(OfferRowRatePolicy.formatValue(perKm, currencyCode), "/km", grade)
+    VerdictEmoji(grade)
+}
+
+@Composable
+private fun StatsSectionLabel(text: String) {
+    Text(
+        text.uppercase(Locale.getDefault()),
+        modifier = Modifier.padding(start = 4.dp, top = 22.dp, bottom = 8.dp),
+        fontSize = 13.sp,
+        fontWeight = FontWeight.ExtraBold,
+        letterSpacing = 0.6.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+/** Offers per day as bars; each bar takes the verdict colour of that day's average €/km. */
+@Composable
+private fun StatsDayBars(days: List<DashboardMoneyDaySummary>) {
+    val palette = LocalCourierPalette.current
+    val byDay = days.associateBy { it.day }
+    val keyFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+    val letterFormat = SimpleDateFormat("EEE", Locale.getDefault())
+    val slots = (13 downTo 0).map { back ->
+        val date = Date(dashStartOfDay(back))
+        Triple(byDay[keyFormat.format(date)], letterFormat.format(date).take(2), back == 0)
+    }
+    val maxCount = slots.maxOf { it.first?.count ?: 0 }.coerceAtLeast(1)
+    GroupedBlock {
+        Row(
+            Modifier.fillMaxWidth().height(150.dp).padding(horizontal = 14.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            slots.forEach { (day, letter, today) ->
+                val count = day?.count ?: 0
+                val grade = OfferRowRatePolicy.gradeFor(day?.averageMoneyPerKm.takeUnless { day?.mixedCurrency == true }, day?.currencyCode)
+                Column(Modifier.weight(1f).fillMaxHeight(), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        if (count > 0) count.toString() else "",
+                        fontSize = 10.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                    Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .fillMaxHeight((count.toFloat() / maxCount).coerceAtLeast(if (count > 0) 0.04f else 0.015f))
+                                .clip(RoundedCornerShape(topStart = 5.dp, topEnd = 5.dp, bottomStart = 2.dp, bottomEnd = 2.dp))
+                                .background(if (count > 0) palette.rateColor(grade) else palette.line)
+                        )
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        letter,
+                        maxLines = 1,
+                        softWrap = false,
+                        fontSize = 10.sp,
+                        fontWeight = if (today) FontWeight.ExtraBold else FontWeight.Medium,
+                        color = if (today) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun statsDayLabel(day: String): String {
+    val date = runCatching { SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(day) }.getOrNull() ?: return day
+    return when (date.time) {
+        dashStartOfDay(0) -> "Today"
+        dashStartOfDay(1) -> "Yesterday"
+        else -> SimpleDateFormat("EEE, d MMM", Locale.getDefault()).format(date)
     }
 }
 
@@ -1129,224 +1277,274 @@ private fun DashboardSettings(
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp, padding.calculateTopPadding() + 12.dp, 16.dp, padding.calculateBottomPadding() + 20.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(16.dp, padding.calculateTopPadding() + 8.dp, 16.dp, padding.calculateBottomPadding() + 24.dp),
     ) {
         item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Settings", fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
-                    Text("Offer behavior, routes, data and Android access", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                FilledTonalIconButton(onClick = onBack) {
-                    Icon(Icons.Rounded.Close, contentDescription = "Close settings")
-                }
+            Row(Modifier.padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                SquareIconButton(Icons.Rounded.ChevronLeft, "Back", onBack)
+                Spacer(Modifier.size(12.dp))
+                Text("Settings", fontSize = 26.sp, fontWeight = FontWeight.ExtraBold)
             }
         }
 
-        item { DashboardSection("Appearance", "The live card over Wolt and Bolt always stays dark") }
+        item { StatsSectionLabel("Appearance") }
         item { AppearanceThemeGroup() }
+        item { SettingsFootnote("The live card over Wolt and Bolt always stays dark, so it reads over any map.") }
 
-        item { DashboardSection("Offers", "What CourierPilot does when an offer appears") }
+        item { StatsSectionLabel("Offers") }
         item {
-            Card(shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.padding(16.dp)) {
-                    SettingsSwitchRow("Live offer card", "Show price, ETA and calculated route metrics over Wolt/Bolt.", liveAdvisor) {
-                        liveAdvisor = it
-                        LiveAdvisorSettings.setEnabled(context, it)
-                    }
-                    HorizontalDivider(Modifier.padding(vertical = 12.dp))
-                    SettingsSwitchRow("Voice readout", "Read the compact offer summary aloud when the live card appears.", voice) {
-                        voice = it
-                        LiveAdvisorSettings.setVoiceEnabled(context, it)
-                    }
-                    HorizontalDivider(Modifier.padding(vertical = 12.dp))
-                    SettingsSwitchRow("Auto-open real offer notifications", "Strict classifier; unrelated notifications stay untouched.", autoOpen) {
-                        autoOpen = it
-                        OfferState.setAutoOpen(context, it)
-                    }
-                    HorizontalDivider(Modifier.padding(vertical = 12.dp))
-                    SettingsSwitchRow("Wake screen for offers", "Briefly wakes a sleeping screen after a matched offer.", wakeScreen) {
-                        wakeScreen = it
-                        OfferState.setWakeScreen(context, it)
-                    }
+            SettingsGroup {
+                SettingsSwitchRow("Live offer card", "Show price, ETA and calculated route metrics over Wolt/Bolt.", liveAdvisor) {
+                    liveAdvisor = it
+                    LiveAdvisorSettings.setEnabled(context, it)
+                }
+                SettingsDivider()
+                SettingsSwitchRow("Voice readout", "Read the compact offer summary aloud when the live card appears.", voice) {
+                    voice = it
+                    LiveAdvisorSettings.setVoiceEnabled(context, it)
+                }
+                SettingsDivider()
+                SettingsSwitchRow("Auto-open real offer notifications", "Strict classifier; unrelated notifications stay untouched.", autoOpen) {
+                    autoOpen = it
+                    OfferState.setAutoOpen(context, it)
+                }
+                SettingsDivider()
+                SettingsSwitchRow("Wake screen for offers", "Briefly wakes a sleeping screen after a matched offer.", wakeScreen) {
+                    wakeScreen = it
+                    OfferState.setWakeScreen(context, it)
                 }
             }
         }
 
-        item { DashboardSection("Pay comparison", "Adaptive pay/km scoring from recent anonymous city offers") }
+        item { StatsSectionLabel("Routing") }
         item {
-            Card(shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.padding(16.dp)) {
-                    SettingsSwitchRow(
-                        "Share anonymous market data",
-                        "City, platform, price and calculated Valhalla kilometres only. No addresses, names, screenshots or exact GPS.",
-                        marketSharing,
-                    ) { enabled ->
-                        if (MarketIntelligence.setSharingEnabled(context, enabled)) {
-                            marketSharing = enabled
-                        } else {
-                            marketSharing = MarketIntelligence.sharingEnabled(context)
-                        }
+            SettingsGroup {
+                SettingsSwitchRow(
+                    "Wolt calculated route",
+                    if (routeReady) "Use phone GPS + visible Wolt stops for Valhalla comparison." else "Unavailable until the private route service is provisioned.",
+                    woltRoute,
+                    enabled = routeReady,
+                ) {
+                    woltRoute = it
+                    LiveAdvisorSettings.setAutomaticWoltRouting(context, it)
+                }
+                SettingsDivider()
+                SettingsSwitchRow(
+                    "Bolt calculated route",
+                    if (routeReady) "Calculate to pickup and recover customer map point only when evidence is sufficient." else "Unavailable until the private route service is provisioned.",
+                    boltRoute,
+                    enabled = routeReady,
+                ) {
+                    boltRoute = it
+                    LiveAdvisorSettings.setAutomaticBoltRouting(context, it)
+                }
+            }
+        }
+        item { SettingsFootnote(if (routeReady) "Private route service ready." else "Route service needs developer provisioning.") }
+
+        item { StatsSectionLabel("Pay comparison") }
+        item {
+            SettingsGroup {
+                SettingsSwitchRow(
+                    "Share anonymous market data",
+                    "City, platform, price and calculated Valhalla kilometres only. No addresses, names, screenshots or exact GPS.",
+                    marketSharing,
+                ) { enabled ->
+                    if (MarketIntelligence.setSharingEnabled(context, enabled)) {
+                        marketSharing = enabled
+                    } else {
+                        marketSharing = MarketIntelligence.sharingEnabled(context)
                     }
-                    HorizontalDivider(Modifier.padding(vertical = 12.dp))
+                }
+                SettingsDivider()
+                Column(Modifier.padding(horizontal = 4.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
                         marketStatus?.city?.name ?: if (marketStatus == null) "Loading pay profile…" else "City not resolved yet",
-                        fontWeight = FontWeight.SemiBold,
+                        fontWeight = FontWeight.Bold,
                     )
                     Text(
                         marketStatus?.let { marketProfileSummary("Wolt", it.localWoltProfile, it.woltProfile) } ?: "Wolt · loading…",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp,
+                        fontSize = 12.5.sp,
                     )
                     Text(
                         marketStatus?.let { marketProfileSummary("Bolt", it.localBoltProfile, it.boltProfile) } ?: "Bolt · loading…",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp,
+                        fontSize = 12.5.sp,
                     )
                 }
             }
         }
 
-        item { DashboardSection("Routing", if (routeReady) "Private route service ready" else "Route service needs developer provisioning") }
+        item { StatsSectionLabel("Screenshots") }
         item {
-            Card(shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.padding(16.dp)) {
-                    SettingsSwitchRow(
-                        "Wolt calculated route",
-                        if (routeReady) "Use phone GPS + visible Wolt stops for Valhalla comparison." else "Unavailable until the private route service is provisioned.",
-                        woltRoute,
-                        enabled = routeReady,
-                    ) {
-                        woltRoute = it
-                        LiveAdvisorSettings.setAutomaticWoltRouting(context, it)
-                    }
-                    HorizontalDivider(Modifier.padding(vertical = 12.dp))
-                    SettingsSwitchRow(
-                        "Bolt calculated route",
-                        if (routeReady) "Calculate to pickup and recover customer map point only when evidence is sufficient." else "Unavailable until the private route service is provisioned.",
-                        boltRoute,
-                        enabled = routeReady,
-                    ) {
-                        boltRoute = it
-                        LiveAdvisorSettings.setAutomaticBoltRouting(context, it)
-                    }
+            SettingsGroup {
+                SettingsSwitchRow(
+                    "Save offer screenshots",
+                    "Save PNG copies in Pictures/CourierOffers. OCR continues to work when this is off.",
+                    saveScreenshots,
+                ) {
+                    saveScreenshots = it
+                    CaptureStorageSettings.setSaveOfferScreenshots(context, it)
                 }
             }
         }
 
-        item { DashboardSection("Screenshots", "OCR works even when gallery copies are disabled") }
+        item { StatsSectionLabel("Android access") }
         item {
-            Card(shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.padding(16.dp)) {
-                    SettingsSwitchRow(
-                        "Save offer screenshots",
-                        "Save PNG copies in Pictures/CourierOffers. OCR continues to work when this is off.",
-                        saveScreenshots,
-                    ) {
-                        saveScreenshots = it
-                        CaptureStorageSettings.setSaveOfferScreenshots(context, it)
+            SettingsLinkRow(
+                index = 0,
+                count = 2,
+                icon = Icons.Rounded.NotificationsActive,
+                title = "Notification access",
+                subtitle = if (notificationOk) "Enabled" else "Needs setup",
+                subtitleColor = if (notificationOk) Success else MaterialTheme.colorScheme.error,
+            ) { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+        }
+        item {
+            SettingsLinkRow(
+                index = 1,
+                count = 2,
+                icon = Icons.Rounded.Shield,
+                title = "Accessibility capture",
+                subtitle = if (accessibilityOk) "Enabled" else "Needs setup",
+                subtitleColor = if (accessibilityOk) Success else MaterialTheme.colorScheme.error,
+            ) { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+        }
+
+        item { StatsSectionLabel("Diagnostics") }
+        item {
+            SettingsGroup {
+                SettingsSwitchRow(
+                    "Send diagnostics",
+                    "Uploads app lifecycle, capture, route and performance events. No screenshots, addresses, customer text or exact GPS.",
+                    remoteDiagnostics,
+                ) { enabled ->
+                    if (RemoteDiagnostics.setEnabled(context, enabled)) {
+                        remoteDiagnostics = enabled
+                        // The LaunchedEffect above refreshes queue/upload health on Dispatchers.IO.
+                        // Keep the tap path free of JSON queue parsing.
+                        remoteStatus = remoteStatus.copy(
+                            enabled = enabled,
+                            queued = if (enabled) remoteStatus.queued else 0,
+                            lastError = if (enabled) remoteStatus.lastError else "",
+                        )
+                    } else {
+                        remoteDiagnostics = RemoteDiagnostics.enabled(context)
                     }
+                }
+                SettingsDivider()
+                Column(Modifier.padding(horizontal = 4.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Server logging", fontWeight = FontWeight.Bold)
+                    Text(
+                        diagnosticsStatusText(remoteStatus),
+                        color = if (remoteStatus.lastError.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                        fontSize = 12.5.sp,
+                    )
                 }
             }
         }
-
-        item { DashboardSection("Android access", "Required for background offer capture") }
+        item { Spacer(Modifier.height(10.dp)) }
         item {
-            SettingsStatusCard("Notification access", notificationOk, Icons.Rounded.NotificationsActive) {
-                context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-            }
+            SettingsLinkRow(
+                index = 0,
+                count = if (developerEnabled) 2 else 1,
+                icon = Icons.Rounded.Shield,
+                title = "Reliability Center",
+                subtitle = "Capture health and an exportable report",
+            ) { context.startActivity(Intent(context, ReliabilityActivity::class.java)) }
         }
-        item {
-            SettingsStatusCard("Accessibility capture", accessibilityOk, Icons.Rounded.Shield) {
-                context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-            }
-        }
-
-        item { DashboardSection("Diagnostics", "Performance and reliability logs without delivery content") }
-        item {
-            Card(shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.padding(16.dp)) {
-                    SettingsSwitchRow(
-                        "Send diagnostics",
-                        "Uploads app lifecycle, capture, route and performance events. No screenshots, addresses, customer text or exact GPS.",
-                        remoteDiagnostics,
-                    ) { enabled ->
-                        if (RemoteDiagnostics.setEnabled(context, enabled)) {
-                            remoteDiagnostics = enabled
-                            // The LaunchedEffect above refreshes queue/upload health on Dispatchers.IO.
-                            // Keep the tap path free of JSON queue parsing.
-                            remoteStatus = remoteStatus.copy(
-                                enabled = enabled,
-                                queued = if (enabled) remoteStatus.queued else 0,
-                                lastError = if (enabled) remoteStatus.lastError else "",
-                            )
-                        } else {
-                            remoteDiagnostics = RemoteDiagnostics.enabled(context)
-                        }
-                    }
-                    HorizontalDivider(Modifier.padding(vertical = 12.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.BugReport, contentDescription = null)
-                        Spacer(Modifier.size(12.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text("Server logging", fontWeight = FontWeight.SemiBold)
-                            Text(
-                                diagnosticsStatusText(remoteStatus),
-                                color = if (remoteStatus.lastError.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
-                                fontSize = 12.sp,
-                            )
-                        }
-                    }
-                    Spacer(Modifier.size(12.dp))
-                    FilledTonalButton(
-                        onClick = { context.startActivity(Intent(context, ReliabilityActivity::class.java)) },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(Icons.Rounded.Shield, contentDescription = null)
-                        Spacer(Modifier.size(8.dp))
-                        Text("Reliability Center")
-                    }
-                }
-            }
-        }
-
-        item { DashboardSection("App updates", "Version, manual check and automatic update options") }
-        item { AppUpdateSettingsSummaryCard() }
-
         if (developerEnabled) {
             item {
-                FilledTonalButton(
-                    onClick = { context.startActivity(Intent(context, DeveloperToolsActivity::class.java)) },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Icon(Icons.Rounded.BugReport, contentDescription = null)
-                    Spacer(Modifier.size(8.dp))
-                    Text("Developer tools")
-                }
+                SettingsLinkRow(
+                    index = 1,
+                    count = 2,
+                    icon = Icons.Rounded.BugReport,
+                    title = "Developer tools",
+                    subtitle = "Route research and debug switches",
+                ) { context.startActivity(Intent(context, DeveloperToolsActivity::class.java)) }
             }
         }
 
+        item { StatsSectionLabel("App updates") }
+        item { AppUpdateSettingsSummaryCard() }
+
         item {
-            TextButton(
-                onClick = {
-                    if (!developerEnabled) {
-                        developerTaps++
-                        if (developerTaps >= 7) {
-                            DeveloperModeSettings.setEnabled(context, true)
-                            developerEnabled = true
+            Text(
+                "CourierPilot ${dashAppVersion(context)}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 18.dp)
+                    .clickable(
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null,
+                    ) {
+                        if (!developerEnabled) {
+                            developerTaps++
+                            if (developerTaps >= 7) {
+                                DeveloperModeSettings.setEnabled(context, true)
+                                developerEnabled = true
+                            }
                         }
                     }
-                },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(
-                    "CourierPilot ${dashAppVersion(context)}",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 11.sp,
-                )
+                    .padding(8.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun SettingsGroup(content: @Composable () -> Unit) {
+    GroupedBlock {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) { content() }
+    }
+}
+
+@Composable
+private fun SettingsDivider() {
+    HorizontalDivider(color = LocalCourierPalette.current.line, thickness = 1.dp)
+}
+
+@Composable
+private fun SettingsFootnote(text: String) {
+    Text(
+        text,
+        modifier = Modifier.padding(start = 6.dp, end = 6.dp, top = 8.dp),
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        fontSize = 12.5.sp,
+        lineHeight = 17.sp,
+    )
+}
+
+@Composable
+private fun SettingsLinkRow(
+    index: Int,
+    count: Int,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    subtitleColor: Color = Color.Unspecified,
+    onClick: () -> Unit,
+) {
+    val palette = LocalCourierPalette.current
+    GroupedRow(index = index, count = count, onClick = onClick) {
+        Surface(shape = RoundedCornerShape(12.dp), color = palette.pinBg, modifier = Modifier.size(38.dp)) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(icon, contentDescription = null, tint = palette.pinText, modifier = Modifier.size(20.dp))
             }
         }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            Text(
+                subtitle,
+                color = if (subtitleColor == Color.Unspecified) MaterialTheme.colorScheme.onSurfaceVariant else subtitleColor,
+                fontSize = 12.5.sp,
+            )
+        }
+        Icon(Icons.Rounded.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -1373,27 +1571,6 @@ private fun AppearanceThemeGroup() {
         }
     }
 }
-
-@Composable
-private fun SettingsStatusCard(
-    label: String,
-    ok: Boolean,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    onClick: () -> Unit,
-) {
-    Card(onClick = onClick, shape = RoundedCornerShape(20.dp)) {
-        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, contentDescription = null)
-            Spacer(Modifier.size(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(label, fontWeight = FontWeight.SemiBold)
-                Text(if (ok) "Enabled" else "Needs setup", color = if (ok) Success else MaterialTheme.colorScheme.error, fontSize = 12.sp)
-            }
-            Icon(Icons.Rounded.ChevronRight, contentDescription = null)
-        }
-    }
-}
-
 
 private fun diagnosticsStatusText(status: RemoteDiagnosticsStatus): String = when {
     !status.enabled -> "Off · nothing is uploaded"
@@ -1664,5 +1841,5 @@ private fun dashAppVersion(context: android.content.Context): String = runCatchi
     context.packageManager.getPackageInfo(context.packageName, 0).versionName.orEmpty()
 }.getOrDefault("")
 
-private const val HISTORY_PAGE_SIZE = 50
+private const val HISTORY_CHUNK_SIZE = 30
 private const val ADDRESS_PAGE_SIZE = 40
