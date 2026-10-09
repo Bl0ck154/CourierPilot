@@ -41,6 +41,37 @@ internal data class LocalMapTransform(
     companion object {
         private const val METERS_PER_DEGREE_LATITUDE = 111_320.0
 
+        const val BOLT_MAP_NORTH_UP = true
+
+        /**
+         * Least-squares north-up scale: screen's downwards Y is negated before fitting metres.
+         * Do not let GPS/geocoding noise rotate a north-up Mapbox screenshot.
+         */
+        fun fitNorthUp(first: KnownMapAnchor, second: KnownMapAnchor): NorthUpAnchorFit {
+            val dx = second.screen.x - first.screen.x
+            val dyNorth = first.screen.y - second.screen.y
+            val pixelSquared = dx * dx + dyNorth * dyNorth
+            require(pixelSquared >= 4.0) { "Screen anchor baseline too short" }
+            val midLatitude = Math.toRadians((first.geo.latitude + second.geo.latitude) / 2.0)
+            val eastMeters = (second.geo.longitude - first.geo.longitude) *
+                METERS_PER_DEGREE_LATITUDE * cos(midLatitude)
+            val northMeters = (second.geo.latitude - first.geo.latitude) * METERS_PER_DEGREE_LATITUDE
+            val geoMeters = hypot(eastMeters, northMeters)
+            require(geoMeters >= 1.0) { "Geographic anchor baseline too short" }
+            val measuredRotation = normalizeDegrees(
+                (atan2(dyNorth, dx) - atan2(northMeters, eastMeters)) * 180.0 / PI
+            )
+            val scale = (dx * eastMeters + dyNorth * northMeters) / pixelSquared
+            require(scale > 0.0 && scale.isFinite()) { "North-up scale must be positive" }
+            return NorthUpAnchorFit(
+                LocalMapTransform(first, scale, 0.0),
+                measuredRotation,
+                kotlin.math.sqrt(pixelSquared),
+                geoMeters,
+            )
+        }
+
+
         fun fromTwoAnchors(first: KnownMapAnchor, second: KnownMapAnchor): LocalMapTransform {
             val screenDx = second.screen.x - first.screen.x
             val screenNorth = -(second.screen.y - first.screen.y)
@@ -65,6 +96,15 @@ internal data class LocalMapTransform(
         }
     }
 }
+
+
+/** A north-up fit keeps the map orientation fixed; rotation is evidence quality, not a free DOF. */
+internal data class NorthUpAnchorFit(
+    val transform: LocalMapTransform,
+    val measuredRotationDegrees: Double,
+    val baselinePx: Double,
+    val baselineMeters: Double,
+)
 
 internal enum class BoltMarkerKind { CURRENT_LOCATION, PICKUP, DROPOFF, UNKNOWN }
 
