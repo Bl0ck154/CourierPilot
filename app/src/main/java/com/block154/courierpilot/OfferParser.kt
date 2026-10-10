@@ -139,10 +139,35 @@ internal object OfferParser {
         return null
     }
 
-    private fun normalizedLines(text: String): List<String> = text.lineSequence()
-        .map(::sanitizeCapturedLine)
-        .filter { it.isNotEmpty() }
-        .toList()
+    private fun normalizedLines(text: String): List<String> = joinWrappedTitleTails(
+        text.lineSequence()
+            .map(::sanitizeCapturedLine)
+            .map(OcrPostcodeRepair::repair)
+            .filter { it.isNotEmpty() }
+            .toList()
+    )
+
+    /**
+     * Wolt wraps long venue titles: `Eat More Chinese & Shimai Sushi (Palangos` / `g.)`. OCR then
+     * yields the tail as its own line and it became a venue named `g.)`. Join a short line that
+     * only closes a bracket opened on the previous line.
+     */
+    private fun joinWrappedTitleTails(lines: List<String>): List<String> {
+        val out = mutableListOf<String>()
+        for (line in lines) {
+            val previous = out.lastOrNull()
+            val closesOnly = line.length <= 24 && line.endsWith(")") && '(' !in line &&
+                line.count { it == ')' } == 1
+            val previousOpen = previous != null &&
+                previous.count { it == '(' } > previous.count { it == ')' }
+            if (closesOnly && previousOpen) {
+                out[out.lastIndex] = "$previous $line"
+            } else {
+                out += line
+            }
+        }
+        return out
+    }
 
     private fun sanitizeCapturedLine(raw: String): String {
         var value = Normalizer.normalize(raw, Normalizer.Form.NFC)
