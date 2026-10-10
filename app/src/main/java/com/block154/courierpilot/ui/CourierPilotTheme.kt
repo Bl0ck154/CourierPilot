@@ -146,6 +146,11 @@ fun CourierPilotTheme(content: @Composable () -> Unit) {
                     isAppearanceLightStatusBars = !dark
                     isAppearanceLightNavigationBars = !dark
                 }
+                // 3-button navigation otherwise gets a translucent white scrim that reads as a
+                // white strip under every screen; let the theme background run under the bar.
+                @Suppress("DEPRECATION")
+                window.navigationBarColor = android.graphics.Color.TRANSPARENT
+                if (android.os.Build.VERSION.SDK_INT >= 29) window.isNavigationBarContrastEnforced = false
             }
         }
     }
