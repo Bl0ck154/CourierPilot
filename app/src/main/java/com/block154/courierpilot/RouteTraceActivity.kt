@@ -1,36 +1,60 @@
 package com.block154.courierpilot
 
 import android.Manifest
-import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.Gravity
-import android.view.View
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.TextView
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material3.Button
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.block154.courierpilot.ui.CourierPilotTheme
+import com.block154.courierpilot.ui.DetailHeader
+import com.block154.courierpilot.ui.GroupedBlock
+import com.block154.courierpilot.ui.GroupedRow
+import com.block154.courierpilot.ui.LocalCourierPalette
+import com.block154.courierpilot.ui.SectionLabel
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-class RouteTraceActivity : Activity() {
+class RouteTraceActivity : ComponentActivity() {
     private val handler = Handler(Looper.getMainLooper())
-    private lateinit var statusText: TextView
-    private lateinit var latestText: TextView
-    private lateinit var startButton: Button
-    private lateinit var stopButton: Button
-    private lateinit var shareButton: Button
-    private lateinit var deleteLatestButton: Button
-    private lateinit var deleteAllButton: Button
+    private var ui by mutableStateOf(RouteTraceUi())
 
     private val refreshRunnable = object : Runnable {
         override fun run() {
@@ -41,11 +65,23 @@ class RouteTraceActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.statusBarColor = BG
-        window.navigationBarColor = BG
-        val screen = buildScreen()
-        setContentView(screen)
-        screen.applySystemBarsPadding()
+        enableEdgeToEdge()
+        refreshStatus()
+        setContent {
+            CourierPilotTheme {
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    RouteTraceScreen(
+                        ui = ui,
+                        onBack = ::finish,
+                        onStart = ::requestStartTrace,
+                        onStop = ::stopTrace,
+                        onShare = ::shareLatest,
+                        onDeleteLatest = ::confirmDeleteLatest,
+                        onDeleteAll = ::confirmDeleteAll,
+                    )
+                }
+            }
+        }
     }
 
     override fun onResume() {
@@ -59,7 +95,8 @@ class RouteTraceActivity : Activity() {
         super.onPause()
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         when (requestCode) {
             REQUEST_LOCATION -> {
@@ -71,73 +108,6 @@ class RouteTraceActivity : Activity() {
                 else refreshStatus("Notification permission is required so GPS recording remains visibly controllable.")
             }
         }
-    }
-
-    private fun buildScreen(): View {
-        val scroll = ScrollView(this).apply { setBackgroundColor(BG) }
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(18), dp(18), dp(36))
-        }
-
-        root.addView(LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(button("Back") { finish() })
-            addView(LinearLayout(this@RouteTraceActivity).apply {
-                orientation = LinearLayout.VERTICAL
-                addView(text("Ride trace", 24f, TEXT, true))
-                addView(text("Explicit GPS recording for personal route learning", 12f, MUTED).top(dp(3)))
-            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(10) })
-        })
-
-        root.addView(card().apply {
-            addView(text("How this works", 15f, TEXT, true))
-            addView(text(
-                "Start creates one local route-learning session and a visible foreground-service notification. You can leave CourierPilot while it records. Stop ends the session; the service is not silently restarted after a kill or reboot.",
-                12f,
-                MUTED,
-            ).top(dp(6)))
-            addView(text(
-                "Default sampling request: about every 2 seconds / 2 meters. Points worse than ±80 m accuracy and extreme GPS jumps are ignored.",
-                12f,
-                MUTED,
-            ).top(dp(7)))
-        }.top(dp(20)))
-
-        root.addView(card().apply {
-            addView(text("Current recording", 15f, TEXT, true))
-            statusText = text("Checking…", 13f, TEXT)
-            addView(statusText.top(dp(7)))
-            startButton = button("▶ Start ride trace") { requestStartTrace() }
-            addView(startButton.top(dp(10)))
-            stopButton = button("■ Stop trace") { stopTrace() }
-            addView(stopButton.top(dp(4)))
-        }.top(dp(12)))
-
-        root.addView(card().apply {
-            addView(text("Latest local trace", 15f, TEXT, true))
-            latestText = text("No trace yet.", 13f, TEXT)
-            addView(latestText.top(dp(7)))
-            shareButton = button("Share latest as GeoJSON") { shareLatest() }
-            addView(shareButton.top(dp(9)))
-            deleteLatestButton = button("Delete latest finished trace") { confirmDeleteLatest() }
-            addView(deleteLatestButton.top(dp(4)))
-            deleteAllButton = button("Delete all finished traces") { confirmDeleteAll() }
-            addView(deleteAllButton.top(dp(3)))
-        }.top(dp(10)))
-
-        root.addView(card().apply {
-            addView(text("Privacy / scope", 15f, TEXT, true))
-            addView(text(
-                "Raw GPS samples stay in route_research.db. Recording begins only from this visible screen and remains visibly represented by Android's foreground-service notification. Rich GeoJSON export includes point timestamps, accuracy and reported speed. Finished traces can be deleted here. 0.11 does not upload traces or map-match them automatically.",
-                12f,
-                MUTED,
-            ).top(dp(6)))
-        }.top(dp(10)))
-
-        scroll.addView(root)
-        return scroll
     }
 
     private fun requestStartTrace() {
@@ -185,42 +155,59 @@ class RouteTraceActivity : Activity() {
     }
 
     private fun refreshStatus(override: String? = null) {
-        if (!::statusText.isInitialized) return
         val state = GpsTraceState.status(this)
         val status = override ?: when {
             state.recording -> buildString {
                 append("RECORDING")
                 state.startedAt?.let { append(" · started ${formatTime(it)}") }
-                append("\n${state.sampleCount} points · ${"%.2f".format(Locale.US, state.distanceMeters / 1000.0)} km")
-                state.lastSampleAt?.let { append(" · last fix ${secondsAgo(it)}s ago") }
             }
             state.stale -> "Previous recorder heartbeat is stale. Starting a new trace will close that open DB session first."
             else -> "Not recording."
         }
-        statusText.text = status
-        statusText.setTextColor(if (state.recording) GREEN else if (state.stale) AMBER else TEXT)
-        startButton.isEnabled = !state.recording
-        stopButton.isEnabled = state.recording || state.stale
+        val live = if (state.recording) {
+            TraceMetrics(
+                points = state.sampleCount.toString(),
+                distance = "${"%.2f".format(Locale.US, state.distanceMeters / 1000.0)} km",
+                third = state.lastSampleAt?.let { "${secondsAgo(it)}s ago" } ?: "—",
+            )
+        } else {
+            null
+        }
 
         val latest = RouteResearchDatabase.get(this).latestGpsSessionSummary()
-        if (latest == null) {
-            latestText.text = "No trace yet."
-            shareButton.isEnabled = false
-            deleteLatestButton.isEnabled = false
-            deleteAllButton.isEnabled = false
+        ui = if (latest == null) {
+            RouteTraceUi(
+                status = status,
+                tone = if (state.recording) TraceTone.RECORDING else if (state.stale) TraceTone.STALE else TraceTone.IDLE,
+                live = live,
+                startEnabled = !state.recording,
+                stopEnabled = state.recording || state.stale,
+                latestTitle = "No trace yet.",
+                latestSubtitle = "",
+                latestMetrics = null,
+                shareEnabled = false,
+                deleteLatestEnabled = false,
+                deleteAllEnabled = false,
+            )
         } else {
-            latestText.text = buildString {
-                append("Session #${latest.sessionId} · ${formatDateTime(latest.startedAt)}")
-                append("\n${latest.sampleCount} points · ${"%.2f".format(Locale.US, latest.distanceMeters / 1000.0)} km")
-                latest.averageSpeedMetersPerSecond?.let {
-                    append(" · avg ${"%.1f".format(Locale.US, it * 3.6)} km/h")
-                }
-                append(if (latest.endedAt == null) " · open" else " · finished")
-            }
             val finished = latest.endedAt != null
-            shareButton.isEnabled = latest.sampleCount >= 2
-            deleteLatestButton.isEnabled = finished && !state.recording
-            deleteAllButton.isEnabled = !state.recording
+            RouteTraceUi(
+                status = status,
+                tone = if (state.recording) TraceTone.RECORDING else if (state.stale) TraceTone.STALE else TraceTone.IDLE,
+                live = live,
+                startEnabled = !state.recording,
+                stopEnabled = state.recording || state.stale,
+                latestTitle = "Session #${latest.sessionId}",
+                latestSubtitle = "${formatDateTime(latest.startedAt)} · ${if (finished) "finished" else "open"}",
+                latestMetrics = TraceMetrics(
+                    points = latest.sampleCount.toString(),
+                    distance = "${"%.2f".format(Locale.US, latest.distanceMeters / 1000.0)} km",
+                    third = latest.averageSpeedMetersPerSecond?.let { "${"%.1f".format(Locale.US, it * 3.6)} km/h" } ?: "—",
+                ),
+                shareEnabled = latest.sampleCount >= 2,
+                deleteLatestEnabled = finished && !state.recording,
+                deleteAllEnabled = !state.recording,
+            )
         }
     }
 
@@ -275,53 +262,180 @@ class RouteTraceActivity : Activity() {
     private fun formatTime(timestamp: Long): String = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timestamp))
     private fun formatDateTime(timestamp: Long): String = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(timestamp))
 
-    private fun card(): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(dp(16), dp(15), dp(16), dp(15))
-        background = rounded(Color.WHITE, BORDER, dp(18).toFloat())
-        elevation = dp(1).toFloat()
-    }
-
-    private fun text(value: String, size: Float, color: Int, bold: Boolean = false): TextView = TextView(this).apply {
-        text = value
-        textSize = size
-        setTextColor(color)
-        includeFontPadding = false
-        if (bold) typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-    }
-
-    private fun button(label: String, click: () -> Unit): Button = Button(this).apply {
-        text = label
-        textSize = 12f
-        isAllCaps = false
-        setTextColor(BLUE)
-        setOnClickListener { click() }
-    }
-
-    private fun rounded(fill: Int, stroke: Int, radius: Float) = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
-        setColor(fill)
-        cornerRadius = radius
-        setStroke(dp(1), stroke)
-    }
-
-    private fun <T : View> T.top(value: Int): T {
-        layoutParams = (layoutParams as? LinearLayout.LayoutParams)?.apply { topMargin = value }
-            ?: LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = value }
-        return this
-    }
-
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
-
     companion object {
         private const val REQUEST_LOCATION = 1713
         private const val REQUEST_NOTIFICATIONS = 1714
-        private val BG = Color.parseColor("#F5F7FB")
-        private val TEXT = Color.parseColor("#111827")
-        private val MUTED = Color.parseColor("#6B7280")
-        private val BORDER = Color.parseColor("#E5E7EB")
-        private val BLUE = Color.parseColor("#2563EB")
-        private val GREEN = Color.parseColor("#15803D")
-        private val AMBER = Color.parseColor("#D97706")
+    }
+}
+
+private enum class TraceTone { IDLE, RECORDING, STALE }
+
+private data class TraceMetrics(val points: String, val distance: String, val third: String)
+
+private data class RouteTraceUi(
+    val status: String = "Checking…",
+    val tone: TraceTone = TraceTone.IDLE,
+    val live: TraceMetrics? = null,
+    val startEnabled: Boolean = false,
+    val stopEnabled: Boolean = false,
+    val latestTitle: String = "No trace yet.",
+    val latestSubtitle: String = "",
+    val latestMetrics: TraceMetrics? = null,
+    val shareEnabled: Boolean = false,
+    val deleteLatestEnabled: Boolean = false,
+    val deleteAllEnabled: Boolean = false,
+)
+
+@Composable
+private fun RouteTraceScreen(
+    ui: RouteTraceUi,
+    onBack: () -> Unit,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    onShare: () -> Unit,
+    onDeleteLatest: () -> Unit,
+    onDeleteAll: () -> Unit,
+) {
+    val palette = LocalCourierPalette.current
+    val error = MaterialTheme.colorScheme.error
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 24.dp),
+    ) {
+        item { DetailHeader("Ride trace", "Explicit GPS recording for route learning", onBack) }
+
+        item { SectionLabel("Current recording") }
+        item {
+            GroupedBlock {
+                Column(
+                    Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (ui.tone != TraceTone.IDLE) {
+                            Surface(
+                                shape = RoundedCornerShape(50),
+                                color = if (ui.tone == TraceTone.RECORDING) palette.onlineText else palette.rateFire,
+                                modifier = Modifier.size(9.dp),
+                            ) {}
+                            Spacer(Modifier.size(8.dp))
+                        }
+                        Text(
+                            ui.status,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            color = when (ui.tone) {
+                                TraceTone.RECORDING -> palette.onlineText
+                                TraceTone.STALE -> palette.rateFire
+                                TraceTone.IDLE -> MaterialTheme.colorScheme.onSurface
+                            },
+                        )
+                    }
+                    ui.live?.let { TraceMetricRow(it, "Last fix") }
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = onStart,
+                            enabled = ui.startEnabled,
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.fillMaxWidth().height(48.dp),
+                        ) {
+                            Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.size(6.dp))
+                            Text("Start ride trace", fontWeight = FontWeight.Bold)
+                        }
+                        FilledTonalButton(
+                            onClick = onStop,
+                            enabled = ui.stopEnabled,
+                            shape = RoundedCornerShape(14.dp),
+                            modifier = Modifier.fillMaxWidth().height(48.dp),
+                        ) {
+                            Icon(Icons.Rounded.Stop, contentDescription = null, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.size(6.dp))
+                            Text("Stop trace", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+
+        item { SectionLabel("Latest local trace") }
+        item {
+            GroupedRow(index = 0, count = 4) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(ui.latestTitle, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        if (ui.latestSubtitle.isNotBlank()) {
+                            Text(ui.latestSubtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.5.sp, lineHeight = 17.sp)
+                        }
+                    }
+                    ui.latestMetrics?.let { TraceMetricRow(it, "Avg speed") }
+                }
+            }
+        }
+        item { TraceActionRow(1, 4, "Share latest as GeoJSON", ui.shareEnabled, palette.accent, onShare) }
+        item { TraceActionRow(2, 4, "Delete latest finished trace", ui.deleteLatestEnabled, error, onDeleteLatest) }
+        item { TraceActionRow(3, 4, "Delete all finished traces", ui.deleteAllEnabled, error, onDeleteAll) }
+
+        item { SectionLabel("How this works") }
+        item {
+            TraceTextBlock(
+                "Start creates one local route-learning session and a visible foreground-service notification. You can leave CourierPilot while it records. Stop ends the session; the service is not silently restarted after a kill or reboot.",
+                "Default sampling request: about every 2 seconds / 2 meters. Points worse than ±80 m accuracy and extreme GPS jumps are ignored.",
+            )
+        }
+
+        item { SectionLabel("Privacy / scope") }
+        item {
+            TraceTextBlock(
+                "Raw GPS samples stay in route_research.db. Recording begins only from this visible screen and remains visibly represented by Android's foreground-service notification. Rich GeoJSON export includes point timestamps, accuracy and reported speed. Finished traces can be deleted here. 0.11 does not upload traces or map-match them automatically.",
+            )
+        }
+    }
+}
+
+@Composable
+private fun TraceMetricRow(metrics: TraceMetrics, thirdLabel: String) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        TraceMetric("Points", metrics.points, Modifier.weight(1f))
+        TraceMetric("Distance", metrics.distance, Modifier.weight(1f))
+        TraceMetric(thirdLabel, metrics.third, Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun TraceMetric(label: String, value: String, modifier: Modifier) {
+    Surface(modifier = modifier, shape = RoundedCornerShape(14.dp), color = LocalCourierPalette.current.miniStatBg) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.5.sp, maxLines = 1)
+            Text(value, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1)
+        }
+    }
+}
+
+/** Grouped-list action that greys out instead of disappearing when it cannot run. */
+@Composable
+private fun TraceActionRow(index: Int, count: Int, text: String, enabled: Boolean, color: Color, onClick: () -> Unit) {
+    GroupedRow(index = index, count = count, onClick = if (enabled) onClick else null) {
+        Text(
+            text,
+            modifier = Modifier.weight(1f),
+            fontWeight = FontWeight.Bold,
+            fontSize = 15.sp,
+            color = if (enabled) color else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+        )
+    }
+}
+
+@Composable
+private fun TraceTextBlock(vararg paragraphs: String) {
+    GroupedBlock {
+        Column(
+            Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            paragraphs.forEach {
+                Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.5.sp, lineHeight = 17.sp)
+            }
+        }
     }
 }
