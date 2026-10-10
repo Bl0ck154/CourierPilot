@@ -1,34 +1,68 @@
 package com.block154.courierpilot
 
 import android.Manifest
-import android.app.Activity
 import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
-import android.text.InputType
-import android.text.method.PasswordTransformationMethod
-import android.view.Gravity
-import android.view.View
-import android.widget.Button
-import android.widget.EditText
-import android.widget.LinearLayout
-import android.widget.ScrollView
-import android.widget.Switch
-import android.widget.TextView
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
+import com.block154.courierpilot.ui.ActionRow
+import com.block154.courierpilot.ui.CourierPilotTheme
+import com.block154.courierpilot.ui.CourierPilotToggleRow
+import com.block154.courierpilot.ui.DetailHeader
+import com.block154.courierpilot.ui.Footnote
+import com.block154.courierpilot.ui.GroupedBlock
+import com.block154.courierpilot.ui.GroupedRow
+import com.block154.courierpilot.ui.LocalCourierPalette
+import com.block154.courierpilot.ui.SectionLabel
+import com.block154.courierpilot.ui.SettingsDivider
+import com.block154.courierpilot.ui.SettingsGroup
 import java.util.ArrayList
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 
 /** Manual route-validation harness. Production offer capture never waits for this screen. */
-class RouteResearchActivity : Activity() {
+class RouteResearchActivity : ComponentActivity() {
 
     private val executor = Executors.newSingleThreadExecutor()
     private var runningRequest: Future<*>? = null
@@ -36,34 +70,49 @@ class RouteResearchActivity : Activity() {
     private var currentStart: RoutePoint? = null
     private var currentEnd: RoutePoint? = null
 
-    private lateinit var endpointField: EditText
-    private lateinit var tokenField: EditText
-    private lateinit var enabledSwitch: Switch
-    private lateinit var endpointStatusText: TextView
-    private lateinit var fromLatField: EditText
-    private lateinit var fromLonField: EditText
-    private lateinit var toLatField: EditText
-    private lateinit var toLonField: EditText
-    private lateinit var destinationAddressField: EditText
-    private lateinit var runButton: Button
-    private lateinit var statusText: TextView
-    private lateinit var resultText: TextView
+    // Form and status state. Logic below reads/writes these exactly where the View version used
+    // EditText/TextView; Compose only renders them.
+    private var endpointUrl by mutableStateOf("")
+    private var token by mutableStateOf("")
+    private var requestsEnabled by mutableStateOf(false)
+    private var endpointStatus by mutableStateOf<Pair<String, ResearchTone>>("" to ResearchTone.MUTED)
+    private var fromLat by mutableStateOf("54.6872")
+    private var fromLon by mutableStateOf("25.2797")
+    private var toLat by mutableStateOf("54.7005")
+    private var toLon by mutableStateOf("25.3030")
+    private var destinationAddress by mutableStateOf("")
+    private var runEnabled by mutableStateOf(true)
+    private var status by mutableStateOf<Pair<String, ResearchTone>>("" to ResearchTone.MUTED)
+    private var resultText by mutableStateOf("No comparison run yet.")
+    private var notes by mutableStateOf("")
+    private var validationStatus by mutableStateOf("Run a comparison before saving a verdict.")
+    private var boltSampleStatus by mutableStateOf<Pair<String, ResearchTone>>("" to ResearchTone.MUTED)
     private lateinit var previewView: RoutePreviewView
-    private lateinit var notesField: EditText
-    private lateinit var validationStatusText: TextView
-    private lateinit var boltSampleStatusText: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        window.statusBarColor = BG
-        window.navigationBarColor = BG
-        setContentView(buildScreen().also { it.applySystemBarsPadding() })
+        val config = RouteEndpointSettings.load(this)
+        endpointUrl = config.baseUrl
+        token = config.bearerToken
+        requestsEnabled = config.enabled
+        refreshEndpointStatus(config)
+        status = "Ready. ${RouteResearchDatabase.get(this).comparisonCount()} route comparisons saved locally." to ResearchTone.MUTED
+        previewView = RoutePreviewView(this)
+        refreshBoltSampleStatus()
+        enableEdgeToEdge()
+        setContent {
+            CourierPilotTheme {
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    RouteResearchScreen()
+                }
+            }
+        }
     }
 
     override fun onResume() {
         super.onResume()
-        if (::endpointStatusText.isInitialized) refreshEndpointStatus()
-        if (::boltSampleStatusText.isInitialized) refreshBoltSampleStatus()
+        refreshEndpointStatus()
+        refreshBoltSampleStatus()
     }
 
     override fun onDestroy() {
@@ -72,7 +121,8 @@ class RouteResearchActivity : Activity() {
         super.onDestroy()
     }
 
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+    @Suppress("OVERRIDE_DEPRECATION", "DEPRECATION")
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_LOCATION) {
             if (grantResults.any { it == PackageManager.PERMISSION_GRANTED }) useCurrentLocation()
@@ -80,142 +130,171 @@ class RouteResearchActivity : Activity() {
         }
     }
 
-    private fun buildScreen(): View {
-        val config = RouteEndpointSettings.load(this)
-        val scroll = ScrollView(this).apply { setBackgroundColor(BG) }
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(18), dp(18), dp(18), dp(36))
-        }
+    @Composable
+    private fun RouteResearchScreen() {
+        val palette = LocalCourierPalette.current
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 24.dp),
+        ) {
+            DetailHeader("Route research", "Real Vilnius route validation", ::finish)
 
-        root.addView(LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            addView(button("Back") { finish() })
-            addView(LinearLayout(this@RouteResearchActivity).apply {
-                orientation = LinearLayout.VERTICAL
-                addView(text("Route research", 24f, TEXT, true))
-                addView(text("Real Vilnius route validation", 12f, MUTED).top(dp(3)))
-            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = dp(10) })
-        })
-
-        root.addView(card().apply {
-            addView(text("How to test", 15f, TEXT, true))
-            addView(text(
-                "1. Save the Valhalla token once. 2. Tap Use my location. 3. Enter a destination address or coordinates. 4. Compare. 5. Mark which candidate you would actually ride.",
-                12f, MUTED,
-            ).top(dp(6)))
-            addView(text(
-                "Orange = pedestrian shortcut; blue = cycleway-biased. The preview is geometry-only, so use your local knowledge when rating it.",
-                12f, AMBER, true,
-            ).top(dp(8)))
-        }.top(dp(20)))
-
-        root.addView(section(
-            "Protected endpoint",
-            "The private token is stored only on this app install and intentionally excluded from Android backup",
-        ).top(dp(20)))
-        root.addView(card().apply {
-            endpointField = field("HTTPS base URL", config.baseUrl)
-            addView(endpointField)
-            tokenField = field("Bearer token", config.bearerToken).apply {
-                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-                transformationMethod = PasswordTransformationMethod.getInstance()
+            SectionLabel("How to test")
+            GroupedBlock {
+                Column(
+                    Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        "1. Save the Valhalla token once. 2. Tap Use my location. 3. Enter a destination address or coordinates. 4. Compare. 5. Mark which candidate you would actually ride.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.5.sp,
+                        lineHeight = 17.sp,
+                    )
+                    Text(
+                        "Orange = pedestrian shortcut; blue = cycleway-biased. The preview is geometry-only, so use your local knowledge when rating it.",
+                        color = palette.rateFire,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.5.sp,
+                        lineHeight = 17.sp,
+                    )
+                }
             }
-            addView(tokenField.top(dp(8)))
-            enabledSwitch = Switch(this@RouteResearchActivity).apply {
-                text = "Enable route research requests"
-                isChecked = config.enabled
-                setTextColor(TEXT)
+
+            SectionLabel("Protected endpoint")
+            SettingsGroup {
+                Column(
+                    Modifier.padding(horizontal = 2.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    ResearchField(endpointUrl, "HTTPS base URL") { endpointUrl = it }
+                    ResearchField(token, "Bearer token", password = true) { token = it }
+                }
+                SettingsDivider()
+                CourierPilotToggleRow(
+                    title = "Enable route research requests",
+                    subtitle = "Takes effect after Save endpoint.",
+                    checked = requestsEnabled,
+                    onCheckedChange = { requestsEnabled = it },
+                )
+                SettingsDivider()
+                Column(
+                    Modifier.padding(horizontal = 4.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text(endpointStatus.first, color = endpointStatus.second.color(), fontWeight = FontWeight.Bold, fontSize = 12.5.sp, lineHeight = 17.sp)
+                    Text(
+                        "If CourierPilot is reinstalled or its app data is cleared, paste the private token again. Normal app updates keep it.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.5.sp,
+                        lineHeight = 17.sp,
+                    )
+                }
             }
-            addView(enabledSwitch.top(dp(10)))
-            endpointStatusText = text("", 12f, MUTED)
-            addView(endpointStatusText.top(dp(8)))
-            addView(text(
-                "If CourierPilot is reinstalled or its app data is cleared, paste the private token again. Normal app updates keep it.",
-                11f,
-                MUTED,
-            ).top(dp(5)))
-            addView(button("Save endpoint") { saveEndpoint() }.top(dp(8)))
-        }.top(dp(8)))
-        refreshEndpointStatus(config)
+            Spacer(Modifier.height(10.dp))
+            ActionRow(0, 1, "Save endpoint") { saveEndpoint() }
+            Footnote("The private token is stored only on this app install and intentionally excluded from Android backup.")
 
-        root.addView(section("Start", "Use a fresh phone fix instead of typing latitude/longitude").top(dp(20)))
-        root.addView(card().apply {
-            fromLatField = coordinateField("Start latitude", "54.6872")
-            fromLonField = coordinateField("Start longitude", "25.2797")
-            addView(fromLatField)
-            addView(fromLonField.top(dp(7)))
-            addView(button("📍 Use my current location") { useCurrentLocation() }.top(dp(9)))
-        }.top(dp(8)))
+            SectionLabel("Start")
+            GroupedRow(index = 0, count = 2) {
+                CoordinateFields(fromLat, fromLon, "Start latitude", "Start longitude", { fromLat = it }, { fromLon = it })
+            }
+            ActionRow(1, 2, "📍 Use my current location") { useCurrentLocation() }
+            Footnote("Use a fresh phone fix instead of typing latitude/longitude.")
 
-        root.addView(section("Destination", "Type an address you know or paste coordinates").top(dp(20)))
-        root.addView(card().apply {
-            destinationAddressField = field("Vilnius address, e.g. Gedimino pr. 9", "")
-            addView(destinationAddressField)
-            addView(button("Resolve address to coordinates") { geocodeDestination() }.top(dp(7)))
-            toLatField = coordinateField("End latitude", "54.7005")
-            toLonField = coordinateField("End longitude", "25.3030")
-            addView(toLatField.top(dp(10)))
-            addView(toLonField.top(dp(7)))
-            runButton = button("Compare pedestrian vs cycleway") { runComparison() }
-            addView(runButton.top(dp(12)))
-            statusText = text("Ready. ${RouteResearchDatabase.get(this@RouteResearchActivity).comparisonCount()} route comparisons saved locally.", 12f, MUTED)
-            addView(statusText.top(dp(10)))
-        }.top(dp(8)))
+            SectionLabel("Destination")
+            GroupedRow(index = 0, count = 3) {
+                Column(Modifier.weight(1f)) {
+                    ResearchField(destinationAddress, "Vilnius address, e.g. Gedimino pr. 9") { destinationAddress = it }
+                }
+            }
+            ActionRow(1, 3, "Resolve address to coordinates") { geocodeDestination() }
+            GroupedRow(index = 2, count = 3) {
+                CoordinateFields(toLat, toLon, "End latitude", "End longitude", { toLat = it }, { toLon = it })
+            }
+            Footnote("Type an address you know or paste coordinates.")
+            Spacer(Modifier.height(14.dp))
+            Button(
+                onClick = { runComparison() },
+                enabled = runEnabled,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+            ) {
+                Text("Compare pedestrian vs cycleway", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            }
+            Text(
+                status.first,
+                modifier = Modifier.padding(start = 6.dp, end = 6.dp, top = 8.dp),
+                color = status.second.color(),
+                fontSize = 12.5.sp,
+                lineHeight = 17.sp,
+            )
 
-        root.addView(section("Route shape", "Geometry preview; start/end are black dots").top(dp(20)))
-        previewView = RoutePreviewView(this)
-        root.addView(card().apply { addView(previewView) }.top(dp(8)))
+            SectionLabel("Route shape")
+            GroupedBlock {
+                AndroidView(
+                    factory = { previewView },
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(20.dp)),
+                )
+            }
+            Footnote("Geometry preview; start/end are black dots.")
 
-        root.addView(section("Result", "Distance is the primary signal; Valhalla ETA is still generic").top(dp(20)))
-        resultText = text("No comparison run yet.", 12f, TEXT).apply { setTextIsSelectable(true) }
-        root.addView(card().apply {
-            addView(resultText)
-            addView(button("Share comparison as GeoJSON") { shareComparison() }.top(dp(10)))
-        }.top(dp(8)))
+            SectionLabel("Result")
+            GroupedRow(index = 0, count = 2) {
+                SelectionContainer(Modifier.weight(1f)) {
+                    Text(resultText, fontSize = 12.5.sp, lineHeight = 17.sp)
+                }
+            }
+            ActionRow(1, 2, "Share comparison as GeoJSON") { shareComparison() }
+            Footnote("Distance is the primary signal; Valhalla ETA is still generic.")
 
-        root.addView(section("Your verdict", "This creates the real Vilnius validation corpus").top(dp(20)))
-        root.addView(card().apply {
-            notesField = field("Optional note: stairs, useless detour, shortcut…", "").apply { setSingleLine(false); minLines = 2 }
-            addView(notesField)
-            addView(button("🟠 Pedestrian is better") { saveVerdict(RouteComparisonVerdict.PEDESTRIAN_BETTER) }.top(dp(8)))
-            addView(button("🔵 Cycleway is better") { saveVerdict(RouteComparisonVerdict.CYCLEWAY_BETTER) }.top(dp(3)))
-            addView(button("Both are usable") { saveVerdict(RouteComparisonVerdict.BOTH_OK) }.top(dp(3)))
-            addView(button("Both are bad") { saveVerdict(RouteComparisonVerdict.BOTH_BAD) }.top(dp(3)))
-            validationStatusText = text("Run a comparison before saving a verdict.", 12f, MUTED)
-            addView(validationStatusText.top(dp(8)))
-        }.top(dp(8)))
+            SectionLabel("Your verdict")
+            GroupedRow(index = 0, count = 6) {
+                Column(Modifier.weight(1f)) {
+                    ResearchField(notes, "Optional note: stairs, useless detour, shortcut…", singleLine = false) { notes = it }
+                }
+            }
+            ActionRow(1, 6, "🟠 Pedestrian is better") { saveVerdict(RouteComparisonVerdict.PEDESTRIAN_BETTER) }
+            ActionRow(2, 6, "🔵 Cycleway is better") { saveVerdict(RouteComparisonVerdict.CYCLEWAY_BETTER) }
+            ActionRow(3, 6, "Both are usable") { saveVerdict(RouteComparisonVerdict.BOTH_OK) }
+            ActionRow(4, 6, "Both are bad") { saveVerdict(RouteComparisonVerdict.BOTH_BAD) }
+            GroupedRow(index = 5, count = 6) {
+                Text(validationStatus, Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.5.sp, lineHeight = 17.sp)
+            }
+            Footnote("This creates the real Vilnius validation corpus.")
 
-        root.addView(section("Bolt map sample", "One arm captures tree + screenshot + available cached phone GPS").top(dp(20)))
-        root.addView(card().apply {
-            boltSampleStatusText = text("", 12f, MUTED)
-            addView(boltSampleStatusText)
-            addView(button("Open Android Accessibility settings") {
+            SectionLabel("Bolt map sample")
+            GroupedRow(index = 0, count = 6) {
+                Text(
+                    boltSampleStatus.first,
+                    Modifier.weight(1f),
+                    color = boltSampleStatus.second.color(),
+                    fontSize = 12.5.sp,
+                    lineHeight = 17.sp,
+                )
+            }
+            ActionRow(1, 6, "Open Android Accessibility settings") {
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-            }.top(dp(8)))
-            addView(button("Arm next Bolt offer/map screen") {
+            }
+            ActionRow(2, 6, "Arm next Bolt offer/map screen") {
                 BoltAccessibilityDiagnostics.arm(this@RouteResearchActivity)
                 refreshBoltSampleStatus()
-            }.top(dp(4)))
-            addView(button("Disarm") {
+            }
+            ActionRow(3, 6, "Disarm") {
                 BoltAccessibilityDiagnostics.disarm(this@RouteResearchActivity)
                 refreshBoltSampleStatus()
-            }.top(dp(3)))
-            addView(button("Share full Bolt sample") { shareBoltSample() }.top(dp(3)))
-            addView(button("Clear Bolt sample") {
+            }
+            ActionRow(4, 6, "Share full Bolt sample") { shareBoltSample() }
+            ActionRow(5, 6, "Clear Bolt sample", color = MaterialTheme.colorScheme.error) {
                 BoltAccessibilityDiagnostics.clear(this@RouteResearchActivity)
                 refreshBoltSampleStatus()
-            }.top(dp(3)))
-            addView(text(
-                "For GPS metadata, grant location once with Use my current location. The Bolt research service only reads the best cached fix; it does not start background tracking.",
-                11f, MUTED,
-            ).top(dp(8)))
-        }.top(dp(8)))
-        refreshBoltSampleStatus()
-
-        scroll.addView(root)
-        return scroll
+            }
+            Footnote(
+                "One arm captures tree + screenshot + available cached phone GPS. For GPS metadata, grant location once with Use my current location. The Bolt research service only reads the best cached fix; it does not start background tracking.",
+            )
+        }
     }
 
     private fun saveEndpoint() {
@@ -228,8 +307,8 @@ class RouteResearchActivity : Activity() {
         runCatching { RouteEndpointSettings.save(this, candidate) }
             .onSuccess {
                 val saved = RouteEndpointSettings.load(this)
-                endpointField.setText(saved.baseUrl)
-                tokenField.setText(saved.bearerToken)
+                endpointUrl = saved.baseUrl
+                token = saved.bearerToken
                 refreshEndpointStatus(saved)
                 showStatus(if (saved.enabled) "Protected route service enabled." else "Endpoint saved; route requests remain disabled.", false)
             }
@@ -240,25 +319,22 @@ class RouteResearchActivity : Activity() {
     }
 
     private fun currentEndpointInput() = RouteEndpointConfig(
-        enabled = enabledSwitch.isChecked,
-        baseUrl = endpointField.text.toString(),
-        bearerToken = tokenField.text.toString(),
+        enabled = requestsEnabled,
+        baseUrl = endpointUrl,
+        bearerToken = token,
     )
 
     private fun refreshEndpointStatus(config: RouteEndpointConfig = RouteEndpointSettings.load(this)) {
-        if (!::endpointStatusText.isInitialized) return
-        val (message, color) = when {
+        endpointStatus = when {
             config.bearerToken.isBlank() ->
-                "TOKEN MISSING — paste the private server token, enable requests, then Save endpoint." to RED
+                "TOKEN MISSING — paste the private server token, enable requests, then Save endpoint." to ResearchTone.ERROR
             !config.enabled ->
-                "ROUTE REQUESTS DISABLED — enable the switch and tap Save endpoint." to AMBER
+                "ROUTE REQUESTS DISABLED — enable the switch and tap Save endpoint." to ResearchTone.WARNING
             runCatching { config.validated() }.isFailure ->
-                "ENDPOINT CONFIG INVALID — check the HTTPS URL/token and save again." to RED
+                "ENDPOINT CONFIG INVALID — check the HTTPS URL/token and save again." to ResearchTone.ERROR
             else ->
-                "READY — protected Valhalla route service is configured on this device." to GREEN
+                "READY — protected Valhalla route service is configured on this device." to ResearchTone.GOOD
         }
-        endpointStatusText.text = message
-        endpointStatusText.setTextColor(color)
     }
 
     private fun useCurrentLocation() {
@@ -269,8 +345,8 @@ class RouteResearchActivity : Activity() {
         showStatus("Getting current location…", false)
         RouteResearchLocation.requestCurrent(this) { result ->
             result.onSuccess { fix ->
-                fromLatField.setText(String.format(Locale.US, "%.7f", fix.point.latitude))
-                fromLonField.setText(String.format(Locale.US, "%.7f", fix.point.longitude))
+                fromLat = String.format(Locale.US, "%.7f", fix.point.latitude)
+                fromLon = String.format(Locale.US, "%.7f", fix.point.longitude)
                 showStatus("Location: ±${fix.accuracyMeters?.toInt() ?: "?"} m · ${fix.provider}", false)
             }.onFailure { showStatus(it.message ?: "Could not obtain location.", true) }
         }
@@ -278,10 +354,10 @@ class RouteResearchActivity : Activity() {
 
     private fun geocodeDestination() {
         showStatus("Resolving destination address…", false)
-        RouteResearchGeocoder.resolve(this, destinationAddressField.text.toString()) { result ->
+        RouteResearchGeocoder.resolve(this, destinationAddress) { result ->
             result.onSuccess { point ->
-                toLatField.setText(String.format(Locale.US, "%.7f", point.latitude))
-                toLonField.setText(String.format(Locale.US, "%.7f", point.longitude))
+                toLat = String.format(Locale.US, "%.7f", point.latitude)
+                toLon = String.format(Locale.US, "%.7f", point.longitude)
                 showStatus("Address resolved. Ready to compare.", false)
             }.onFailure { showStatus(it.message ?: "Could not resolve address.", true) }
         }
@@ -304,29 +380,29 @@ class RouteResearchActivity : Activity() {
         }
         val points = runCatching {
             listOf(
-                RoutePoint(parseCoordinate(fromLatField, "start latitude"), parseCoordinate(fromLonField, "start longitude")),
-                RoutePoint(parseCoordinate(toLatField, "end latitude"), parseCoordinate(toLonField, "end longitude")),
+                RoutePoint(parseCoordinate(fromLat, "start latitude"), parseCoordinate(fromLon, "start longitude")),
+                RoutePoint(parseCoordinate(toLat, "end latitude"), parseCoordinate(toLon, "end longitude")),
             ).also { RouteIntelligencePolicy.validate(RouteRequest(it, RouteProfile.PEDESTRIAN_SHORTCUT)) }
         }.getOrElse {
             showStatus(it.message ?: "Invalid coordinates.", true)
             return
         }
 
-        runButton.isEnabled = false
+        runEnabled = false
         showStatus("Requesting both candidates…", false)
-        resultText.text = "Waiting for Valhalla…"
+        resultText = "Waiting for Valhalla…"
         previewView.setRoutes(null, null)
         runningRequest = executor.submit {
             val comparison = RouteComparisonEngine(ValhallaRouteProvider(config)).compare(points)
             runOnUiThread {
                 if (isDestroyed) return@runOnUiThread
-                runButton.isEnabled = true
+                runEnabled = true
                 currentComparison = comparison
                 currentStart = points.first()
                 currentEnd = points.last()
                 previewView.setRoutes(comparison.pedestrian.getOrNull(), comparison.cycleway.getOrNull())
-                resultText.text = formatComparison(comparison)
-                validationStatusText.text = "Choose the route you would actually ride."
+                resultText = formatComparison(comparison)
+                validationStatus = "Choose the route you would actually ride."
                 val succeeded = listOf(comparison.pedestrian, comparison.cycleway).count { it.isSuccess }
                 showStatus("$succeeded/2 candidates returned successfully.", succeeded != 2)
             }
@@ -335,14 +411,14 @@ class RouteResearchActivity : Activity() {
 
     private fun saveVerdict(verdict: RouteComparisonVerdict) {
         val comparison = currentComparison ?: run {
-            validationStatusText.text = "Run a comparison first."
+            validationStatus = "Run a comparison first."
             return
         }
         val start = currentStart ?: return
         val end = currentEnd ?: return
-        val id = RouteResearchDatabase.get(this).recordComparison(start, end, comparison, verdict, notesField.text.toString())
-        validationStatusText.text = "Saved validation #$id · ${verdict.name.lowercase().replace('_', ' ')}"
-        notesField.setText("")
+        val id = RouteResearchDatabase.get(this).recordComparison(start, end, comparison, verdict, notes)
+        validationStatus = "Saved validation #$id · ${verdict.name.lowercase().replace('_', ' ')}"
+        notes = ""
     }
 
     private fun shareComparison() {
@@ -369,7 +445,7 @@ class RouteResearchActivity : Activity() {
     private fun refreshBoltSampleStatus() {
         val armed = BoltAccessibilityDiagnostics.isArmed(this)
         val sample = BoltAccessibilityDiagnostics.summary(this)
-        boltSampleStatusText.text = buildString {
+        boltSampleStatus = buildString {
             append(if (armed) "ARMED — switch to Bolt and wait for the offer/map screen." else "Not armed.")
             if (sample != null) {
                 append("\nLast sample: ${sample.nodeCount} nodes")
@@ -380,14 +456,13 @@ class RouteResearchActivity : Activity() {
             } else {
                 append("\nNo saved Bolt sample yet.")
             }
-        }
-        boltSampleStatusText.setTextColor(if (armed) AMBER else MUTED)
+        } to if (armed) ResearchTone.WARNING else ResearchTone.MUTED
     }
 
     private fun shareBoltSample() {
         val files = BoltAccessibilityDiagnostics.sampleFiles(this)
         if (files.isEmpty()) {
-            boltSampleStatusText.text = "No Bolt sample to share yet."
+            boltSampleStatus = "No Bolt sample to share yet." to boltSampleStatus.second
             return
         }
         val uris = ArrayList<Uri>()
@@ -423,85 +498,74 @@ class RouteResearchActivity : Activity() {
         )
     }
 
-    private fun parseCoordinate(field: EditText, label: String): Double =
-        field.text.toString().trim().toDoubleOrNull() ?: error("Invalid $label")
+    private fun parseCoordinate(value: String, label: String): Double =
+        value.trim().toDoubleOrNull() ?: error("Invalid $label")
 
     private fun showStatus(message: String, error: Boolean) {
-        statusText.text = message
-        statusText.setTextColor(if (error) RED else MUTED)
+        status = message to if (error) ResearchTone.ERROR else ResearchTone.MUTED
     }
-
-    private fun coordinateField(hint: String, value: String) = field(hint, value).apply {
-        inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL or InputType.TYPE_NUMBER_FLAG_SIGNED
-    }
-
-    private fun field(hint: String, value: String): EditText = EditText(this).apply {
-        this.hint = hint
-        setText(value)
-        setTextColor(TEXT)
-        setHintTextColor(MUTED)
-        setSingleLine(true)
-        textSize = 14f
-        setPadding(dp(12), dp(10), dp(12), dp(10))
-        background = rounded(Color.WHITE, BORDER, dp(10).toFloat())
-    }
-
-    private fun button(label: String, click: () -> Unit): Button = Button(this).apply {
-        text = label
-        textSize = 12f
-        isAllCaps = false
-        setTextColor(BLUE)
-        setOnClickListener { click() }
-    }
-
-    private fun section(title: String, subtitle: String): View = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        addView(text(title, 18f, TEXT, true))
-        addView(text(subtitle, 12f, MUTED).top(dp(3)))
-    }
-
-    private fun card(): LinearLayout = LinearLayout(this).apply {
-        orientation = LinearLayout.VERTICAL
-        setPadding(dp(16), dp(15), dp(16), dp(15))
-        background = rounded(Color.WHITE, BORDER, dp(18).toFloat())
-        elevation = dp(1).toFloat()
-    }
-
-    private fun text(value: String, size: Float, color: Int, bold: Boolean = false): TextView = TextView(this).apply {
-        text = value
-        textSize = size
-        setTextColor(color)
-        includeFontPadding = false
-        if (bold) typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-    }
-
-    private fun rounded(fill: Int, stroke: Int, radius: Float) = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
-        setColor(fill)
-        cornerRadius = radius
-        setStroke(dp(1), stroke)
-    }
-
-    private fun <T : View> T.top(value: Int): T {
-        layoutParams = (layoutParams as? LinearLayout.LayoutParams)?.apply { topMargin = value }
-            ?: LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = value }
-        return this
-    }
-
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     companion object {
         private const val REQUEST_LOCATION = 41
-        private val BG = Color.parseColor("#F5F7FB")
-        private val TEXT = Color.parseColor("#111827")
-        private val MUTED = Color.parseColor("#6B7280")
-        private val BORDER = Color.parseColor("#E5E7EB")
-        private val BLUE = Color.parseColor("#2563EB")
-        private val AMBER = Color.parseColor("#D97706")
-        private val RED = Color.parseColor("#DC2626")
-        private val GREEN = Color.parseColor("#059669")
+    }
+}
+
+private enum class ResearchTone { MUTED, GOOD, WARNING, ERROR }
+
+@Composable
+private fun ResearchTone.color(): Color = when (this) {
+    ResearchTone.MUTED -> MaterialTheme.colorScheme.onSurfaceVariant
+    ResearchTone.GOOD -> LocalCourierPalette.current.onlineText
+    ResearchTone.WARNING -> LocalCourierPalette.current.rateFire
+    ResearchTone.ERROR -> MaterialTheme.colorScheme.error
+}
+
+@Composable
+private fun ResearchField(
+    value: String,
+    label: String,
+    modifier: Modifier = Modifier.fillMaxWidth(),
+    password: Boolean = false,
+    numeric: Boolean = false,
+    singleLine: Boolean = true,
+    onValueChange: (String) -> Unit,
+) {
+    val palette = LocalCourierPalette.current
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier,
+        label = if (singleLine) ({ Text(label, maxLines = 1) }) else null,
+        placeholder = if (singleLine) null else ({ Text(label) }),
+        singleLine = singleLine,
+        minLines = if (singleLine) 1 else 2,
+        shape = RoundedCornerShape(14.dp),
+        textStyle = MaterialTheme.typography.bodyMedium,
+        visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
+        keyboardOptions = when {
+            password -> KeyboardOptions(keyboardType = KeyboardType.Password)
+            numeric -> KeyboardOptions(keyboardType = KeyboardType.Decimal)
+            else -> KeyboardOptions.Default
+        },
+        colors = OutlinedTextFieldDefaults.colors(
+            unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+            focusedContainerColor = MaterialTheme.colorScheme.surface,
+            unfocusedBorderColor = palette.chipBorder,
+        ),
+    )
+}
+
+@Composable
+private fun RowScope.CoordinateFields(
+    lat: String,
+    lon: String,
+    latLabel: String,
+    lonLabel: String,
+    onLat: (String) -> Unit,
+    onLon: (String) -> Unit,
+) {
+    Row(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        ResearchField(lat, latLabel, Modifier.weight(1f), numeric = true, onValueChange = onLat)
+        ResearchField(lon, lonLabel, Modifier.weight(1f), numeric = true, onValueChange = onLon)
     }
 }

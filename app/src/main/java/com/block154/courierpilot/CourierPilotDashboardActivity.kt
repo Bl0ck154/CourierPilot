@@ -19,6 +19,14 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.RadioButton
 import androidx.compose.ui.draw.clip
 import com.block154.courierpilot.ui.AppearanceSettings
+import com.block154.courierpilot.ui.EmptyBlock
+import com.block154.courierpilot.ui.Footnote
+import com.block154.courierpilot.ui.LinkRow
+import com.block154.courierpilot.ui.ScreenTitle
+import com.block154.courierpilot.ui.SectionLabel
+import com.block154.courierpilot.ui.SettingsDivider
+import com.block154.courierpilot.ui.SettingsGroup
+import com.block154.courierpilot.ui.SquareIconButton
 import com.block154.courierpilot.ui.FilterChipD
 import com.block154.courierpilot.ui.GroupedBlock
 import com.block154.courierpilot.ui.GroupedRow
@@ -351,7 +359,7 @@ private fun DashboardMarket(padding: PaddingValues, refreshToken: Int) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item { DashboardSection("Pay comparison", "Loading local and city pay/km data") }
-            item { DashboardEmpty("Loading pay insights…") }
+            item { EmptyBlock("Loading pay insights…") }
         }
         return
     }
@@ -450,8 +458,8 @@ private fun DashboardHome(
             contentPadding = listPadding,
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            item { DashboardScreenTitle("Today", SimpleDateFormat("EEEE, d MMM", Locale.getDefault()).format(Date())) }
-            item { Spacer(Modifier.height(14.dp)); DashboardEmpty("Loading today’s offers and work time…") }
+            item { ScreenTitle("Today", SimpleDateFormat("EEEE, d MMM", Locale.getDefault()).format(Date())) }
+            item { Spacer(Modifier.height(14.dp)); EmptyBlock("Loading today’s offers and work time…") }
         }
         return
     }
@@ -520,7 +528,7 @@ private fun DashboardHome(
             }
         }
         if (loaded.recent.isEmpty()) {
-            item { DashboardEmpty("No priced offers captured yet.") }
+            item { EmptyBlock("No priced offers captured yet.") }
         } else {
             itemsIndexed(loaded.recent, key = { _, record -> record.id }) { index, record ->
                 DashboardOfferRow(record, index, loaded.recent.size, showPickup = false) { onOpenOffer(record.id) }
@@ -636,24 +644,6 @@ private fun PresencePill(presence: List<PlatformPresence>, workTime: String, act
     }
 }
 
-@Composable
-private fun SquareIconButton(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    description: String,
-    onClick: () -> Unit,
-) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(12.dp),
-        color = LocalCourierPalette.current.iconBg,
-        modifier = Modifier.size(44.dp),
-    ) {
-        Box(contentAlignment = Alignment.Center) {
-            Icon(icon, contentDescription = description, modifier = Modifier.size(20.dp))
-        }
-    }
-}
-
 private enum class HistoryPlatformFilter(val label: String, val platform: String?) {
     ALL("All", null),
     WOLT("Wolt", "Wolt"),
@@ -754,7 +744,7 @@ private fun DashboardHistory(
         state = state.listState,
         contentPadding = PaddingValues(16.dp, padding.calculateTopPadding() + 8.dp, 16.dp, padding.calculateBottomPadding() + 20.dp),
     ) {
-        item(key = "title") { DashboardScreenTitle("History", if (state.loadedOnce) "${state.total} captured offers" else "Offer history") }
+        item(key = "title") { ScreenTitle("History", if (state.loadedOnce) "${state.total} captured offers" else "Offer history") }
         item(key = "search") {
             Spacer(Modifier.height(12.dp))
             DashboardSearchField(state.query, "Venue, address, customer…") {
@@ -773,10 +763,10 @@ private fun DashboardHistory(
             }
         }
         when {
-            !state.loadedOnce -> item(key = "loading") { Spacer(Modifier.height(12.dp)); DashboardEmpty("Loading offers…") }
+            !state.loadedOnce -> item(key = "loading") { Spacer(Modifier.height(12.dp)); EmptyBlock("Loading offers…") }
             state.records.isEmpty() -> item(key = "empty") {
                 Spacer(Modifier.height(12.dp))
-                DashboardEmpty(
+                EmptyBlock(
                     if (state.query.isBlank() && state.filter == HistoryPlatformFilter.ALL) "No offers yet."
                     else "No offers match this search."
                 )
@@ -904,7 +894,7 @@ private fun DashboardAddresses(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp, padding.calculateTopPadding() + 8.dp, 16.dp, padding.calculateBottomPadding() + 20.dp),
     ) {
-        item { DashboardScreenTitle("Addresses", "$total buildings saved on this phone") }
+        item { ScreenTitle("Addresses", "$total buildings saved on this phone") }
         item {
             Spacer(Modifier.height(12.dp))
             DashboardSearchField(query, "Search street, name or code") {
@@ -914,8 +904,8 @@ private fun DashboardAddresses(
             Spacer(Modifier.height(12.dp))
         }
         when {
-            loading && rows.isEmpty() -> item { DashboardEmpty("Loading addresses…") }
-            rows.isEmpty() -> item { DashboardEmpty(if (query.isBlank()) "No addresses captured yet." else "No addresses match this search.") }
+            loading && rows.isEmpty() -> item { EmptyBlock("Loading addresses…") }
+            rows.isEmpty() -> item { EmptyBlock(if (query.isBlank()) "No addresses captured yet." else "No addresses match this search.") }
             else -> itemsIndexed(rows, key = { _, row -> row.address.id }) { index, row ->
                 DashboardAddressItem(
                     row = row,
@@ -1042,7 +1032,7 @@ private fun DashboardStats(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp, padding.calculateTopPadding() + 8.dp, 16.dp, padding.calculateBottomPadding() + 20.dp),
     ) {
-        item { DashboardScreenTitle("Stats", "Offers captured on this phone") }
+        item { ScreenTitle("Stats", "Offers captured on this phone") }
         item {
             Row(Modifier.padding(top = 14.dp, bottom = 14.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 StatsPeriod.entries.forEach { option ->
@@ -1051,13 +1041,13 @@ private fun DashboardStats(
             }
         }
         if (loaded == null) {
-            item { DashboardEmpty("Loading statistics…") }
+            item { EmptyBlock("Loading statistics…") }
             return@LazyColumn
         }
         val data = loaded.periods.getValue(period)
         item { StatsHeroCard(period, data) }
 
-        item { StatsSectionLabel("Platforms") }
+        item { SectionLabel("Platforms") }
         val platforms = listOf("Wolt" to data.wolt, "Bolt" to data.bolt)
         itemsIndexed(platforms, key = { _, item -> "platform-${item.first}" }) { index, (name, summary) ->
             GroupedRow(index = index, count = platforms.size) {
@@ -1074,9 +1064,9 @@ private fun DashboardStats(
             }
         }
 
-        item { StatsSectionLabel("Last 14 days") }
+        item { SectionLabel("Last 14 days") }
         if (loaded.days.isEmpty()) {
-            item { DashboardEmpty("No daily statistics yet.") }
+            item { EmptyBlock("No daily statistics yet.") }
         } else {
             item { StatsDayBars(loaded.days) }
             item { Spacer(Modifier.height(10.dp)) }
@@ -1158,19 +1148,6 @@ private fun StatsRate(perKm: Double?, currencyCode: String?) {
     VerdictEmoji(grade)
 }
 
-@Composable
-private fun StatsSectionLabel(text: String) {
-    Text(
-        text.uppercase(Locale.getDefault()),
-        modifier = Modifier.padding(start = 4.dp, top = 22.dp, bottom = 8.dp),
-        fontSize = 13.sp,
-        fontWeight = FontWeight.ExtraBold,
-        letterSpacing = 0.6.sp,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
-}
-
-/** Offers per day as bars; each bar takes the verdict colour of that day's average €/km. */
 @Composable
 private fun StatsDayBars(days: List<DashboardMoneyDaySummary>) {
     val palette = LocalCourierPalette.current
@@ -1287,11 +1264,11 @@ private fun DashboardSettings(
             }
         }
 
-        item { StatsSectionLabel("Appearance") }
+        item { SectionLabel("Appearance") }
         item { AppearanceThemeGroup() }
-        item { SettingsFootnote("The live card over Wolt and Bolt always stays dark, so it reads over any map.") }
+        item { Footnote("The live card over Wolt and Bolt always stays dark, so it reads over any map.") }
 
-        item { StatsSectionLabel("Offers") }
+        item { SectionLabel("Offers") }
         item {
             SettingsGroup {
                 SettingsSwitchRow("Live offer card", "Show price, ETA and calculated route metrics over Wolt/Bolt.", liveAdvisor) {
@@ -1316,7 +1293,7 @@ private fun DashboardSettings(
             }
         }
 
-        item { StatsSectionLabel("Routing") }
+        item { SectionLabel("Routing") }
         item {
             SettingsGroup {
                 SettingsSwitchRow(
@@ -1340,9 +1317,9 @@ private fun DashboardSettings(
                 }
             }
         }
-        item { SettingsFootnote(if (routeReady) "Private route service ready." else "Route service needs developer provisioning.") }
+        item { Footnote(if (routeReady) "Private route service ready." else "Route service needs developer provisioning.") }
 
-        item { StatsSectionLabel("Pay comparison") }
+        item { SectionLabel("Pay comparison") }
         item {
             SettingsGroup {
                 SettingsSwitchRow(
@@ -1376,7 +1353,7 @@ private fun DashboardSettings(
             }
         }
 
-        item { StatsSectionLabel("Screenshots") }
+        item { SectionLabel("Screenshots") }
         item {
             SettingsGroup {
                 SettingsSwitchRow(
@@ -1390,9 +1367,9 @@ private fun DashboardSettings(
             }
         }
 
-        item { StatsSectionLabel("Android access") }
+        item { SectionLabel("Android access") }
         item {
-            SettingsLinkRow(
+            LinkRow(
                 index = 0,
                 count = 2,
                 icon = Icons.Rounded.NotificationsActive,
@@ -1402,7 +1379,7 @@ private fun DashboardSettings(
             ) { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
         }
         item {
-            SettingsLinkRow(
+            LinkRow(
                 index = 1,
                 count = 2,
                 icon = Icons.Rounded.Shield,
@@ -1412,7 +1389,7 @@ private fun DashboardSettings(
             ) { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         }
 
-        item { StatsSectionLabel("Diagnostics") }
+        item { SectionLabel("Diagnostics") }
         item {
             SettingsGroup {
                 SettingsSwitchRow(
@@ -1446,7 +1423,7 @@ private fun DashboardSettings(
         }
         item { Spacer(Modifier.height(10.dp)) }
         item {
-            SettingsLinkRow(
+            LinkRow(
                 index = 0,
                 count = if (developerEnabled) 2 else 1,
                 icon = Icons.Rounded.Shield,
@@ -1456,7 +1433,7 @@ private fun DashboardSettings(
         }
         if (developerEnabled) {
             item {
-                SettingsLinkRow(
+                LinkRow(
                     index = 1,
                     count = 2,
                     icon = Icons.Rounded.BugReport,
@@ -1466,7 +1443,7 @@ private fun DashboardSettings(
             }
         }
 
-        item { StatsSectionLabel("App updates") }
+        item { SectionLabel("App updates") }
         item { AppUpdateSettingsSummaryCard() }
 
         item {
@@ -1493,58 +1470,6 @@ private fun DashboardSettings(
                     .padding(8.dp),
             )
         }
-    }
-}
-
-@Composable
-private fun SettingsGroup(content: @Composable () -> Unit) {
-    GroupedBlock {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) { content() }
-    }
-}
-
-@Composable
-private fun SettingsDivider() {
-    HorizontalDivider(color = LocalCourierPalette.current.line, thickness = 1.dp)
-}
-
-@Composable
-private fun SettingsFootnote(text: String) {
-    Text(
-        text,
-        modifier = Modifier.padding(start = 6.dp, end = 6.dp, top = 8.dp),
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        fontSize = 12.5.sp,
-        lineHeight = 17.sp,
-    )
-}
-
-@Composable
-private fun SettingsLinkRow(
-    index: Int,
-    count: Int,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    title: String,
-    subtitle: String,
-    subtitleColor: Color = Color.Unspecified,
-    onClick: () -> Unit,
-) {
-    val palette = LocalCourierPalette.current
-    GroupedRow(index = index, count = count, onClick = onClick) {
-        Surface(shape = RoundedCornerShape(12.dp), color = palette.pinBg, modifier = Modifier.size(38.dp)) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(icon, contentDescription = null, tint = palette.pinText, modifier = Modifier.size(20.dp))
-            }
-        }
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Text(title, fontWeight = FontWeight.Bold, fontSize = 15.sp)
-            Text(
-                subtitle,
-                color = if (subtitleColor == Color.Unspecified) MaterialTheme.colorScheme.onSurfaceVariant else subtitleColor,
-                fontSize = 12.5.sp,
-            )
-        }
-        Icon(Icons.Rounded.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -1702,25 +1627,10 @@ private fun dashRowDistance(record: OfferRecord): String? =
         ?: record.trustedMarketRouteDistanceMeters?.let { "~%.1f km".format(Locale.US, it / 1000.0) }
 
 @Composable
-private fun DashboardScreenTitle(title: String, subtitle: String) {
-    Column(Modifier.padding(start = 4.dp, top = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(title, fontSize = 26.sp, fontWeight = FontWeight.ExtraBold)
-        Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
-    }
-}
-
-@Composable
 private fun DashboardSection(title: String, subtitle: String) {
     Column(Modifier.padding(start = 4.dp, top = 6.dp)) {
         Text(title, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
         Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.5.sp)
-    }
-}
-
-@Composable
-private fun DashboardEmpty(text: String) {
-    GroupedBlock {
-        Text(text, Modifier.fillMaxWidth().padding(18.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 

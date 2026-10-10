@@ -10,3 +10,6 @@ local.properties
 build/
 **/build/
 .kotlin/
+
+# Local agent worktrees
+.claude/worktrees/

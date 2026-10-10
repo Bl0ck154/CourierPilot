@@ -18,28 +18,23 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.BugReport
-import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.ExpandLess
+import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.WarningAmber
-import androidx.compose.material3.Card
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -52,11 +47,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.block154.courierpilot.ui.ActionRow
 import com.block154.courierpilot.ui.CourierPilotTheme
 import com.block154.courierpilot.ui.CourierPilotToggleRow
-import com.block154.courierpilot.ui.Success
+import com.block154.courierpilot.ui.DetailHeader
+import com.block154.courierpilot.ui.Footnote
+import com.block154.courierpilot.ui.GroupedBlock
+import com.block154.courierpilot.ui.GroupedRow
+import com.block154.courierpilot.ui.LinkRow
+import com.block154.courierpilot.ui.LocalCourierPalette
+import com.block154.courierpilot.ui.SectionLabel
+import com.block154.courierpilot.ui.SettingsDivider
+import com.block154.courierpilot.ui.SettingsGroup
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -73,11 +79,14 @@ class ReliabilityActivity : ComponentActivity() {
         setContent {
             val refreshToken = refresh.intValue
             CourierPilotTheme {
-                ReliabilityScreen(
-                    refreshToken = refreshToken,
-                    onBack = ::finish,
-                    onRefresh = { refresh.intValue++ },
-                )
+                // Surface supplies onBackground as the content colour for headers and plain text.
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    ReliabilityScreen(
+                        refreshToken = refreshToken,
+                        onBack = ::finish,
+                        onRefresh = { refresh.intValue++ },
+                    )
+                }
             }
         }
     }
@@ -136,92 +145,101 @@ private fun ReliabilityScreen(refreshToken: Int, onBack: () -> Unit, onRefresh: 
         }
     }
 
+    val palette = LocalCourierPalette.current
+    val statusOk = palette.onlineText
+    val statusBad = MaterialTheme.colorScheme.error
+    val visibleEvents = events.take(10)
+    val developerEnabled = DeveloperModeSettings.enabled(context)
+
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 24.dp),
     ) {
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.Rounded.ArrowBack, contentDescription = "Back")
-                }
-                Column(Modifier.weight(1f)) {
-                    Text("Reliability", fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
-                    Text("Capture health and Android access", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-                }
-            }
-        }
+        item { DetailHeader("Reliability", "Capture health and Android access", onBack) }
 
-        item { ReliabilitySection("Required access", "Services used for automatic capture") }
+        item { SectionLabel("Required access") }
         item {
-            ReliabilityStatusCard(
+            LinkRow(
+                index = 0,
+                count = 2,
+                icon = Icons.Rounded.NotificationsActive,
                 title = "Notification access",
                 subtitle = if (notificationOk) "Connected" else "Needed to detect incoming offers",
-                ok = notificationOk,
-                icon = Icons.Rounded.NotificationsActive,
-                onClick = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) },
-            )
+                subtitleColor = if (notificationOk) statusOk else statusBad,
+            ) { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
         }
         item {
-            ReliabilityStatusCard(
+            LinkRow(
+                index = 1,
+                count = 2,
+                icon = Icons.Rounded.Shield,
                 title = "Accessibility capture",
                 subtitle = if (accessibilityOk) "Connected" else "Needed for screenshots and OCR",
-                ok = accessibilityOk,
-                icon = Icons.Rounded.Shield,
-                onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
-            )
+                subtitleColor = if (accessibilityOk) statusOk else statusBad,
+            ) { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
         }
+        item { Footnote("Services used for automatic capture.") }
 
-        item { ReliabilitySection("Background health", "Android restrictions that can interrupt capture") }
+        item { SectionLabel("Background health") }
         item {
-            ReliabilityStatusCard(
+            LinkRow(
+                index = 0,
+                count = 2,
+                icon = Icons.Rounded.BatteryChargingFull,
                 title = "Battery optimization",
                 subtitle = if (unrestricted) "Unrestricted" else "Set battery usage to Unrestricted / Don't optimize",
-                ok = unrestricted,
-                icon = Icons.Rounded.BatteryChargingFull,
-                onClick = {
-                    runCatching { context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
-                        .onFailure { reliabilityOpenAppInfo(context) }
-                },
-            )
+                subtitleColor = if (unrestricted) statusOk else statusBad,
+            ) {
+                runCatching { context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+                    .onFailure { reliabilityOpenAppInfo(context) }
+            }
         }
         item {
-            ReliabilityStatusCard(
+            LinkRow(
+                index = 1,
+                count = 2,
+                icon = Icons.Rounded.PhoneAndroid,
                 title = "Background restriction",
                 subtitle = if (backgroundRestricted) "Android reports background activity as restricted" else "No restriction reported",
-                ok = !backgroundRestricted,
-                icon = Icons.Rounded.PhoneAndroid,
-                onClick = { reliabilityOpenAppInfo(context) },
-            )
+                subtitleColor = if (backgroundRestricted) statusBad else statusOk,
+            ) { reliabilityOpenAppInfo(context) }
         }
+        item { Footnote("Android restrictions that can interrupt capture.") }
 
-        item { ReliabilitySection("Current capture", "Latest capture state") }
+        item { SectionLabel("Current capture") }
         item {
-            Card(shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(Modifier.fillMaxWidth()) {
-                        ReliabilityFact(
+            GroupedBlock {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ReliabilityMiniStat(
                             "Pending",
                             pending?.let { "${OfferState.platformLabel(it.packageName)} · ${reliabilityTime(it.armedAt)}" } ?: "None",
                             Modifier.weight(1f),
                         )
-                        ReliabilityFact(
+                        ReliabilityMiniStat(
                             "Screenshots",
                             if (CaptureStorageSettings.saveOfferScreenshots(context)) "Enabled" else "Off",
                             Modifier.weight(1f),
                         )
                     }
-                    ReliabilityFact("Last capture", OfferState.lastCapture(context))
+                    ReliabilityMiniStat(
+                        "Last capture",
+                        OfferState.lastCapture(context),
+                        Modifier.fillMaxWidth(),
+                        compactValue = true,
+                    )
                     if (error.isNotBlank()) {
                         Surface(
-                            color = MaterialTheme.colorScheme.errorContainer,
+                            color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
                             shape = RoundedCornerShape(14.dp),
                         ) {
-                            Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
                                 Icon(Icons.Rounded.WarningAmber, contentDescription = null, tint = MaterialTheme.colorScheme.error)
-                                Spacer(Modifier.size(8.dp))
-                                Text(error, color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 12.sp)
+                                Text(error, color = MaterialTheme.colorScheme.onSurface, fontSize = 12.5.sp, lineHeight = 17.sp)
                             }
                         }
                     }
@@ -229,160 +247,139 @@ private fun ReliabilityScreen(refreshToken: Int, onBack: () -> Unit, onRefresh: 
             }
         }
 
-        item { ReliabilitySection("Diagnostics", "Automatic remote logs; manual export only when needed") }
+        item { SectionLabel("Diagnostics") }
         item {
-            Card(shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    CourierPilotToggleRow(
-                        title = "Remote diagnostics",
-                        subtitle = "Privacy-safe technical events only. No screenshots, addresses, customer text or GPS coordinates.",
-                        checked = remoteEnabled,
-                    ) { enabled ->
-                        // Update the visible control first; persistence result is then reconciled below.
-                        remoteEnabled = enabled
-                        val persisted = RemoteDiagnostics.setEnabled(context, enabled)
-                        if (!persisted) {
-                            remoteEnabled = RemoteDiagnostics.enabled(context)
-                        } else if (enabled) {
-                            // First end-to-end heartbeat: if this reaches the server, toggle + queue + HTTPS work.
-                            CaptureEventLog.append(
-                                context,
-                                stage = "diagnostics_enabled",
-                                message = "Remote diagnostics enabled",
-                            )
-                        }
-                        onRefresh()
-                    }
-
-                    if (remoteEnabled) {
-                        Text(
-                            reliabilityRemoteStatus(remoteDiagnostics),
-                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
-                            color = if (remoteDiagnostics.lastError.isBlank()) Success else MaterialTheme.colorScheme.error,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium,
+            SettingsGroup {
+                CourierPilotToggleRow(
+                    title = "Remote diagnostics",
+                    subtitle = "Privacy-safe technical events only. No screenshots, addresses, customer text or GPS coordinates.",
+                    checked = remoteEnabled,
+                ) { enabled ->
+                    // Update the visible control first; persistence result is then reconciled below.
+                    remoteEnabled = enabled
+                    val persisted = RemoteDiagnostics.setEnabled(context, enabled)
+                    if (!persisted) {
+                        remoteEnabled = RemoteDiagnostics.enabled(context)
+                    } else if (enabled) {
+                        // First end-to-end heartbeat: if this reaches the server, toggle + queue + HTTPS work.
+                        CaptureEventLog.append(
+                            context,
+                            stage = "diagnostics_enabled",
+                            message = "Remote diagnostics enabled",
                         )
                     }
-
-                    HorizontalDivider(Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
-                    TextButton(
-                        onClick = { manualDiagnosticsExpanded = !manualDiagnosticsExpanded },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(Icons.Rounded.BugReport, contentDescription = null)
-                        Spacer(Modifier.size(8.dp))
-                        Text(if (manualDiagnosticsExpanded) "Hide manual diagnostics" else "Show manual diagnostics")
-                    }
-
-                    if (manualDiagnosticsExpanded) {
-                        if (events.isEmpty()) {
-                            Text(
-                                "No diagnostic events yet.",
-                                modifier = Modifier.padding(horizontal = 8.dp),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 12.sp,
-                            )
-                        } else {
-                            events.take(10).forEach { event ->
-                                Column(Modifier.padding(horizontal = 8.dp, vertical = 3.dp)) {
-                                    Text(
-                                        "${reliabilityTime(event.timestamp)} · ${event.stage}${event.platform.takeIf(String::isNotBlank)?.let { " · $it" }.orEmpty()}",
-                                        fontSize = 11.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        fontWeight = FontWeight.Medium,
-                                    )
-                                    Text(event.message, fontSize = 12.sp)
-                                }
-                            }
-                        }
-                        FilledTonalButton(
-                            onClick = { reliabilityShareDiagnostics(context) },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text("Share diagnostics manually")
-                        }
-                        TextButton(
-                            onClick = {
-                                CaptureEventLog.clear(context)
-                                onRefresh()
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text("Clear local event log")
-                        }
+                    onRefresh()
+                }
+                if (remoteEnabled) {
+                    SettingsDivider()
+                    Column(Modifier.padding(horizontal = 4.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("Server logging", fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        Text(
+                            reliabilityRemoteStatus(remoteDiagnostics),
+                            color = if (remoteDiagnostics.lastError.isBlank()) statusOk else statusBad,
+                            fontSize = 12.5.sp,
+                        )
                     }
                 }
             }
         }
+        item { Footnote("Automatic remote logs; manual export only when needed.") }
 
-        if (DeveloperModeSettings.enabled(context)) {
-            item {
-                FilledTonalButton(
-                    onClick = { context.startActivity(Intent(context, DeveloperToolsActivity::class.java)) },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Icon(Icons.Rounded.BugReport, contentDescription = null)
-                    Spacer(Modifier.size(8.dp))
-                    Text("Developer tools")
+        item { SectionLabel("Manual diagnostics") }
+        val manualCount = if (manualDiagnosticsExpanded) 1 + visibleEvents.size.coerceAtLeast(1) else 1
+        item {
+            LinkRow(
+                index = 0,
+                count = manualCount,
+                icon = Icons.Rounded.BugReport,
+                title = if (manualDiagnosticsExpanded) "Hide manual diagnostics" else "Show manual diagnostics",
+                subtitle = "Event log and a shareable report",
+                trailing = {
+                    Icon(
+                        if (manualDiagnosticsExpanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                },
+            ) { manualDiagnosticsExpanded = !manualDiagnosticsExpanded }
+        }
+        if (manualDiagnosticsExpanded) {
+            if (visibleEvents.isEmpty()) {
+                item {
+                    GroupedRow(index = 1, count = manualCount) {
+                        Text(
+                            "No diagnostic events yet.",
+                            modifier = Modifier.weight(1f),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.5.sp,
+                        )
+                    }
                 }
+            } else {
+                visibleEvents.forEachIndexed { index, event ->
+                    item {
+                        GroupedRow(index = index + 1, count = manualCount) {
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    "${reliabilityTime(event.timestamp)} · ${event.stage}${event.platform.takeIf(String::isNotBlank)?.let { " · $it" }.orEmpty()}",
+                                    fontSize = 12.5.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                                Text(event.message, fontSize = 14.sp, lineHeight = 19.sp)
+                            }
+                        }
+                    }
+                }
+            }
+            item { Spacer(Modifier.height(10.dp)) }
+            item { ActionRow(index = 0, count = 2, text = "Share diagnostics manually") { reliabilityShareDiagnostics(context) } }
+            item {
+                ActionRow(index = 1, count = 2, text = "Clear local event log", color = MaterialTheme.colorScheme.error) {
+                    CaptureEventLog.clear(context)
+                    onRefresh()
+                }
+            }
+        }
+
+        if (developerEnabled) {
+            item { Spacer(Modifier.height(10.dp)) }
+            item {
+                LinkRow(
+                    index = 0,
+                    count = 1,
+                    icon = Icons.Rounded.BugReport,
+                    title = "Developer tools",
+                    subtitle = "Route research and debug switches",
+                ) { context.startActivity(Intent(context, DeveloperToolsActivity::class.java)) }
             }
         }
 
         item {
             Text(
                 "CourierPilot ${reliabilityVersion(context)}",
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                modifier = Modifier.fillMaxWidth().padding(top = 26.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 11.sp,
+                fontSize = 12.sp,
+                textAlign = TextAlign.Center,
             )
         }
     }
 }
 
+/** Small metric tile on the soft stat background, like the dashboard's StatsMini. */
 @Composable
-private fun ReliabilitySection(title: String, subtitle: String) {
-    Column(Modifier.padding(top = 4.dp)) {
-        Text(title, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
-        Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
-    }
-}
-
-@Composable
-private fun ReliabilityStatusCard(
-    title: String,
-    subtitle: String,
-    ok: Boolean,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    onClick: () -> Unit,
-) {
-    Card(onClick = onClick, shape = RoundedCornerShape(18.dp)) {
-        Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = if (ok) Success.copy(alpha = 0.12f) else MaterialTheme.colorScheme.errorContainer,
-            ) {
-                Icon(
-                    icon,
-                    contentDescription = null,
-                    modifier = Modifier.padding(9.dp),
-                    tint = if (ok) Success else MaterialTheme.colorScheme.error,
-                )
+private fun ReliabilityMiniStat(label: String, value: String, modifier: Modifier = Modifier, compactValue: Boolean = false) {
+    Surface(modifier = modifier, shape = RoundedCornerShape(14.dp), color = LocalCourierPalette.current.miniStatBg) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.5.sp, maxLines = 1)
+            if (compactValue) {
+                // File names can be long: keep them readable instead of a clipped 18 sp line.
+                Text(value, fontSize = 15.sp, fontWeight = FontWeight.Bold, lineHeight = 19.sp)
+            } else {
+                Text(value, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
-            Spacer(Modifier.size(11.dp))
-            Column(Modifier.weight(1f)) {
-                Text(title, fontWeight = FontWeight.SemiBold)
-                Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
-            }
-            Icon(Icons.Rounded.ChevronRight, contentDescription = null)
         }
-    }
-}
-
-@Composable
-private fun ReliabilityFact(label: String, value: String, modifier: Modifier = Modifier) {
-    Column(modifier) {
-        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, fontWeight = FontWeight.Medium)
-        Text(value, fontSize = 13.sp)
     }
 }
 

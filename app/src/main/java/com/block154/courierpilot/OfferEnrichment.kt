@@ -268,7 +268,7 @@ private fun canonicalDistinctAddresses(values: List<String>, bolt: Boolean = fal
     val seen = mutableSetOf<String>()
     return values.mapNotNull { raw ->
         val source = if (bolt) BoltOfferTextSanitizer.stripLeadingMapMarkerFromAddress(raw) else raw
-        val cleaned = source
+        val cleaned = OcrPostcodeRepair.repair(source)
             .replace('\u00A0', ' ')
             .replace('\u2007', ' ')
             .replace('\u202F', ' ')

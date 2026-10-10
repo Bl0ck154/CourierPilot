@@ -48,8 +48,13 @@ internal object WoltOfferUiText {
             BOOST_METADATA_REGEX.containsMatchIn(normalized) ||
             normalized.startsWith("id check ") ||
             normalized.startsWith("id verification ") ||
-            normalized.startsWith("age verification ")
+            normalized.startsWith("age verification ") ||
+            WRAPPED_TITLE_TAIL_REGEX.matches(line.trim())
     }
+
+    // `g.)`, `str.)`, `pr.)`: the tail of a wrapped `Venue (Street g.)` title stored as its own
+    // venue by older captures. It never names a venue.
+    private val WRAPPED_TITLE_TAIL_REGEX = Regex("""(?iu)^[\p{L}.]{1,6}\)$""")
 
     // Wolt may prefix this metadata with decorative glyphs (for example ✨), so match the
     // semantic payload anywhere in the line instead of depending on its first character.

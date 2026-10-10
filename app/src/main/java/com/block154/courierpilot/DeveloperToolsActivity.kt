@@ -2,11 +2,6 @@ package com.block154.courierpilot
 
 import android.content.Intent
 import android.net.Uri
-import java.io.File
-import org.json.JSONArray
-import org.json.JSONObject
-import androidx.core.content.FileProvider
-import java.util.Locale
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
@@ -18,31 +13,41 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.BugReport
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Map
 import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material3.Card
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
+import com.block154.courierpilot.ui.ActionRow
 import com.block154.courierpilot.ui.CourierPilotTheme
+import com.block154.courierpilot.ui.DetailHeader
+import com.block154.courierpilot.ui.Footnote
+import com.block154.courierpilot.ui.GroupedBlock
+import com.block154.courierpilot.ui.GroupedRow
+import com.block154.courierpilot.ui.IconTile
+import com.block154.courierpilot.ui.LocalCourierPalette
+import com.block154.courierpilot.ui.SectionLabel
+import java.io.File
+import java.util.Locale
+import org.json.JSONArray
+import org.json.JSONObject
 
 /** Internal/research controls deliberately kept out of normal Settings and Reliability. */
 class DeveloperToolsActivity : ComponentActivity() {
@@ -55,7 +60,9 @@ class DeveloperToolsActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             CourierPilotTheme {
-                DeveloperToolsScreen(onBack = ::finish)
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    DeveloperToolsScreen(onBack = ::finish)
+                }
             }
         }
     }
@@ -64,123 +71,163 @@ class DeveloperToolsActivity : ComponentActivity() {
 @Composable
 private fun DeveloperToolsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
+    val palette = LocalCourierPalette.current
     val routeReady = runCatching { RouteEndpointSettings.load(context).validated() }.isSuccess
     val boltSample = BoltAccessibilityDiagnostics.summary(context)
     val truthDb = runCatching { RouteResearchDatabase.get(context) }.getOrNull()
     val truthStats = runCatching { truthDb?.boltRecoveryStats() }.getOrNull()
     val truthRows = runCatching { truthDb?.boltRecoveryTruthRows(20).orEmpty() }.getOrDefault(emptyList())
+    val count = truthStats?.count ?: 0
+    fun metres(value: Double?): String =
+        value?.let { String.format(Locale.US, "%.0f m", it) } ?: "—"
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 24.dp),
     ) {
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) { Icon(Icons.Rounded.ArrowBack, contentDescription = "Back") }
-                Column(Modifier.weight(1f)) {
-                    Text("Developer tools", fontSize = 28.sp, fontWeight = FontWeight.SemiBold)
-                    Text("Internal diagnostics and route validation", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-                }
-            }
-        }
+        item { DetailHeader("Developer tools", "Internal diagnostics and route validation", onBack) }
 
+        item { Spacer(Modifier.height(18.dp)) }
         item {
-            Card(shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.BugReport, contentDescription = null)
-                        Spacer(Modifier.size(10.dp))
-                        Text("Research-only", fontWeight = FontWeight.SemiBold)
-                    }
+            GroupedRow(index = 0, count = 1) {
+                IconTile(Icons.Rounded.BugReport)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("Research-only", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     Text(
                         "These controls are for CourierPilot development. Normal users do not need server URLs, tokens, raw Accessibility trees or manual coordinates.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp,
+                        fontSize = 12.5.sp,
+                        lineHeight = 17.sp,
                     )
                 }
             }
         }
 
+        item { SectionLabel("Route research") }
         item {
-            Card(shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Route research", fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
-                    Text(
-                        if (routeReady) "Protected route service configured on this device" else "Route service is not provisioned on this device",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp,
-                    )
-                    FilledTonalButton(
-                        onClick = { context.startActivity(Intent(context, RouteResearchActivity::class.java)) },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(Icons.Rounded.Map, contentDescription = null)
-                        Spacer(Modifier.size(8.dp))
-                        Text("Open manual route research")
+            DevLinkRow(
+                icon = Icons.Rounded.Map,
+                title = "Open manual route research",
+                subtitle = if (routeReady) "Protected route service configured on this device" else "Route service is not provisioned on this device",
+                subtitleColor = if (routeReady) palette.onlineText else MaterialTheme.colorScheme.onSurfaceVariant,
+            ) { context.startActivity(Intent(context, RouteResearchActivity::class.java)) }
+        }
+
+        item { SectionLabel("Bolt research") }
+        item {
+            DevLinkRow(
+                icon = Icons.Rounded.Settings,
+                title = "Open Accessibility services",
+                subtitle = boltSample?.let {
+                    "Last private sample: ${it.nodeCount} nodes · screenshot ${if (it.screenshotAvailable) "yes" else "no"} · GPS ${if (it.locationAvailable) "yes" else "no"}"
+                } ?: "No private Bolt research sample saved",
+            ) { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+        }
+
+        item { SectionLabel("Bolt recovery accuracy · local only") }
+        item {
+            GroupedBlock {
+                Column(
+                    Modifier.padding(horizontal = 14.dp, vertical = 14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        DevMetric("Matched", count.toString(), Modifier.weight(1f))
+                        DevMetric("Median", metres(truthStats?.medianMeters), Modifier.weight(1f))
+                        DevMetric("p80", metres(truthStats?.p80Meters), Modifier.weight(1f))
                     }
-                }
-            }
-        }
-
-        item {
-            Card(shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Bolt research", fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
-                    Text(
-                        boltSample?.let {
-                            "Last private sample: ${it.nodeCount} nodes · screenshot ${if (it.screenshotAvailable) "yes" else "no"} · GPS ${if (it.locationAvailable) "yes" else "no"}"
-                        } ?: "No private Bolt research sample saved",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp,
-                    )
-                    FilledTonalButton(
-                        onClick = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) },
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Icon(Icons.Rounded.Settings, contentDescription = null)
-                        Spacer(Modifier.size(8.dp))
-                        Text("Open Accessibility services")
+                    if (truthRows.isEmpty()) {
+                        Text(
+                            "No matched deliveries yet",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.5.sp,
+                            lineHeight = 17.sp,
+                        )
                     }
-                }
-            }
-        }
-
-        item {
-            Card(shape = RoundedCornerShape(20.dp)) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Bolt recovery accuracy · local only", fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
-                    val count = truthStats?.count ?: 0
-                    fun metres(value: Double?): String =
-                        value?.let { String.format(Locale.US, "%.0f m", it) } ?: "—"
-                    Text("$count matched deliveries · median ${metres(truthStats?.medianMeters)} · p80 ${metres(truthStats?.p80Meters)}",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                     truthRows.forEach { item ->
-                        Text("Offer #${item.offerId} · error ${metres(item.errorMeters)} · markers ${item.pickupMarkerCount}/${item.dropoffMarkerCount} · ETA ${item.etaMinutes ?: "?"} min",
-                            fontSize = 11.sp)
+                        Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                            Text("Offer #${item.offerId} · error ${metres(item.errorMeters)}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                            Text(
+                                "markers ${item.pickupMarkerCount}/${item.dropoffMarkerCount} · ETA ${item.etaMinutes ?: "?"} min",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.5.sp,
+                                lineHeight = 17.sp,
+                            )
+                        }
                     }
-                    Text("Export includes local coordinates and may include the saved research screenshot/tree. Share only deliberately.",
-                        fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    FilledTonalButton(
-                        onClick = { exportBoltRecoveryTruth(context) },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = count > 0,
-                    ) { Text("Export private Bolt research (share sheet)") }
                 }
             }
         }
-
+        item { Spacer(Modifier.height(10.dp)) }
         item {
-            TextButton(
-                onClick = {
-                    DeveloperModeSettings.setEnabled(context, false)
-                    onBack()
-                },
-                modifier = Modifier.fillMaxWidth(),
+            DevActionRow(
+                text = "Export private Bolt research (share sheet)",
+                enabled = count > 0,
+            ) { exportBoltRecoveryTruth(context) }
+        }
+        item { Footnote("Export includes local coordinates and may include the saved research screenshot/tree. Share only deliberately.") }
+
+        item { Spacer(Modifier.height(22.dp)) }
+        item {
+            ActionRow(
+                index = 0,
+                count = 1,
+                text = "Disable developer mode",
+                color = MaterialTheme.colorScheme.error,
             ) {
-                Text("Disable developer mode")
+                DeveloperModeSettings.setEnabled(context, false)
+                onBack()
             }
         }
+    }
+}
+
+/** Link row whose subtitle may wrap: same anatomy as LinkRow with a compact line height. */
+@Composable
+private fun DevLinkRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    subtitleColor: Color = Color.Unspecified,
+    onClick: () -> Unit,
+) {
+    GroupedRow(index = 0, count = 1, onClick = onClick) {
+        IconTile(icon)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            Text(
+                subtitle,
+                color = if (subtitleColor == Color.Unspecified) MaterialTheme.colorScheme.onSurfaceVariant else subtitleColor,
+                fontSize = 12.5.sp,
+                lineHeight = 17.sp,
+            )
+        }
+        Icon(Icons.Rounded.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/** Mini stat tile: muted label over an extra-bold value. */
+@Composable
+private fun DevMetric(label: String, value: String, modifier: Modifier) {
+    Surface(modifier = modifier, shape = RoundedCornerShape(14.dp), color = LocalCourierPalette.current.miniStatBg) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.5.sp, maxLines = 1)
+            Text(value, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1)
+        }
+    }
+}
+
+/** Single-row action that greys out instead of disappearing when it cannot run. */
+@Composable
+private fun DevActionRow(text: String, enabled: Boolean, onClick: () -> Unit) {
+    GroupedRow(index = 0, count = 1, onClick = if (enabled) onClick else null) {
+        Text(
+            text,
+            modifier = Modifier.weight(1f),
+            fontWeight = FontWeight.Bold,
+            fontSize = 15.sp,
+            color = if (enabled) LocalCourierPalette.current.accent else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+        )
     }
 }
 

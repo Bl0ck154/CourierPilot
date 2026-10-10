@@ -45,6 +45,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.lazy.itemsIndexed
+import com.block154.courierpilot.ui.ActionRow
+import com.block154.courierpilot.ui.DetailHeader
+import com.block154.courierpilot.ui.EmptyBlock
+import com.block154.courierpilot.ui.Footnote
+import com.block154.courierpilot.ui.GroupedBlock
+import com.block154.courierpilot.ui.GroupedRow
+import com.block154.courierpilot.ui.IconTile
+import com.block154.courierpilot.ui.LocalCourierPalette
+import com.block154.courierpilot.ui.SectionLabel
 import com.block154.courierpilot.ui.CourierPilotTheme
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -352,25 +362,19 @@ private fun loadAddressDetails(
 
 @Composable
 private fun LoadingAddressDetails() {
-    Column(
-        Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text("Loading address…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        EmptyBlock("Loading address…")
     }
 }
 
 @Composable
 private fun MissingAddress(onBack: () -> Unit) {
-    Column(
-        Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 24.dp),
     ) {
-        Text("Address not found", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(12.dp))
-        FilledTonalButton(onClick = onBack) { Text("Back") }
+        item { DetailHeader("Address", null, onBack) }
+        item { Spacer(Modifier.height(16.dp)); EmptyBlock("This address is no longer saved.") }
     }
 }
 
@@ -390,187 +394,174 @@ private fun AddressDetailsScreen(
 ) {
     var customersExpanded by remember(address.id) { mutableStateOf(false) }
     val visibleCustomers = if (customersExpanded) customers else customers.take(COLLAPSED_CUSTOMER_COUNT)
+    val hasMoreCustomers = customers.size > COLLAPSED_CUSTOMER_COUNT
+    val palette = LocalCourierPalette.current
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 24.dp),
     ) {
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.Rounded.ArrowBack, contentDescription = "Back")
-                }
-                Column(Modifier.weight(1f)) {
-                    Text("Address memory", fontSize = 25.sp, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        "Saved locally from delivery screens",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp,
-                    )
-                }
-                IconButton(onClick = onDelete) {
-                    Icon(
-                        Icons.Rounded.Delete,
-                        contentDescription = "Delete address",
-                        tint = MaterialTheme.colorScheme.error,
-                    )
-                }
-            }
-        }
+        item { DetailHeader("Address", "Saved from delivery screens", onBack) }
 
         item {
-            Card(
-                onClick = onMap,
-                shape = RoundedCornerShape(22.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-            ) {
-                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Spacer(Modifier.height(16.dp))
+            GroupedBlock {
+                Column(Modifier.padding(horizontal = 18.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.Place, contentDescription = null)
-                        Spacer(Modifier.size(10.dp))
-                        Text(address.displayAddress, Modifier.weight(1f), fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
+                        IconTile(Icons.Rounded.Place)
+                        Spacer(Modifier.size(12.dp))
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(address.displayAddress, fontSize = 19.sp, lineHeight = 24.sp, fontWeight = FontWeight.ExtraBold)
+                            Text(
+                                "${address.platform} · last ${addressDate(address.lastSeenAt)}",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.5.sp,
+                            )
+                        }
                     }
-                    Text(
-                        "${address.platform} · last captured ${addressDate(address.lastSeenAt)}",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp,
-                    )
-                    FilledTonalButton(onClick = onMap, modifier = Modifier.fillMaxWidth()) {
-                        Icon(Icons.Rounded.Map, contentDescription = null)
-                        Spacer(Modifier.size(8.dp))
-                        Text("Open in maps")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        AddressMetric("Visits", address.seenCount.toString(), Modifier.weight(1f))
+                        AddressMetric("Customers", customers.size.toString(), Modifier.weight(1f))
+                        AddressMetric("Codes", codes.size.toString(), Modifier.weight(1f))
                     }
-                }
-            }
-        }
-
-        item {
-            Card(shape = RoundedCornerShape(18.dp)) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 14.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    AddressMetric("Captured", address.seenCount.toString(), Modifier.weight(1f))
-                    AddressMetric("Customers", customers.size.toString(), Modifier.weight(1f))
-                    AddressMetric("Access hints", codes.size.toString(), Modifier.weight(1f))
+                    Surface(
+                        onClick = onMap,
+                        shape = RoundedCornerShape(14.dp),
+                        color = palette.pinBg,
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                    ) {
+                        Row(horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Rounded.Map, contentDescription = null, tint = palette.pinText, modifier = Modifier.size(20.dp))
+                            Spacer(Modifier.size(8.dp))
+                            Text("Open in maps", color = palette.pinText, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        }
+                    }
                 }
             }
         }
 
         if (notificationCodes.isNotEmpty()) {
-            item {
-                AddressSection(
-                    "Why this reminder appeared",
-                    "Source of the saved access hint from the notification",
-                )
-            }
-            item {
-                AccessHintSourceCard(
-                    codes = notificationCodes,
-                    source = notificationSource,
-                )
-            }
+            item { SectionLabel("Why this reminder appeared") }
+            item { AccessHintSourceBlock(codes = notificationCodes, source = notificationSource) }
         }
 
         address.latestDetails?.takeIf(String::isNotBlank)?.let { details ->
+            item { SectionLabel("Latest delivery info") }
             item {
-                AddressSection(
-                    "Latest delivery info",
-                    "Newest parsed delivery details. Clear this summary without deleting raw history.",
-                )
+                GroupedRow(index = 0, count = 1) {
+                    Text(
+                        details,
+                        modifier = Modifier.weight(1f),
+                        fontSize = 14.sp,
+                        lineHeight = 19.sp,
+                    )
+                    DeleteButton("Clear latest delivery info", onDeleteLatestDetails)
+                }
             }
-            item {
-                AddressInfoCard(
-                    body = details,
-                    onDelete = onDeleteLatestDetails,
-                    deleteDescription = "Clear latest delivery info",
-                )
-            }
+            item { Footnote("Clearing it keeps the raw delivery-screen history.") }
         }
 
         if (codes.isNotEmpty()) {
-            item {
-                AddressSection(
-                    "Possible access hints",
-                    "Derived from saved screens. Remove an outdated hint with the trash button.",
-                )
+            item { SectionLabel("Access codes") }
+            itemsIndexed(codes, key = { _, code -> "code-${code.key}" }) { index, code ->
+                GroupedRow(index = index, count = codes.size) {
+                    Surface(shape = RoundedCornerShape(10.dp), color = palette.codeBg) {
+                        Text(
+                            "🔑 ${code.code}",
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            color = palette.codeText,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 16.sp,
+                        )
+                    }
+                    Text(
+                        "${code.platforms.joinToString(" + ")} · seen ${code.seenCount}× · ${addressDate(code.lastSeenAt)}",
+                        modifier = Modifier.weight(1f),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.5.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    DeleteButton("Delete saved access hint") { onDeleteCode(code) }
+                }
             }
-            items(codes, key = { "code-${it.key}" }) { code ->
-                CompactMemoryRow(
-                    title = code.code,
-                    subtitle = "${code.platforms.joinToString(" + ")} · seen ${code.seenCount}× · ${addressDate(code.lastSeenAt)}",
-                    titleSize = 18,
-                    onDelete = { onDeleteCode(code) },
-                    deleteDescription = "Delete saved access hint",
-                )
-            }
+            item { Footnote("Found on saved delivery screens. Remove an outdated code with the bin.") }
         }
 
-        item {
-            AddressSection(
-                "Customers · ${customers.size}",
-                "Equivalent Wolt/Bolt names are grouped. Remove one remembered customer with the trash button.",
-            )
-        }
+        item { SectionLabel("Customers · ${customers.size}") }
         if (customers.isEmpty()) {
-            item { AddressInfoCard("No customer names saved for this building yet.") }
+            item { EmptyBlock("No customer names saved for this building yet.") }
         } else {
-            items(visibleCustomers, key = { "customer-${it.key}" }) { customer ->
-                CompactMemoryRow(
-                    title = customer.displayName,
-                    subtitle = "${customer.platforms.joinToString(" + ")} · captured ${customer.seenCount}× · last ${addressDate(customer.lastSeenAt)}",
-                    onDelete = { onDeleteCustomer(customer) },
-                    deleteDescription = "Delete saved customer",
-                )
+            val rowCount = visibleCustomers.size + if (hasMoreCustomers) 1 else 0
+            itemsIndexed(visibleCustomers, key = { _, customer -> "customer-${customer.key}" }) { index, customer ->
+                GroupedRow(index = index, count = rowCount) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text(customer.displayName, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                        Text(
+                            "${customer.platforms.joinToString(" + ")} · ${customer.seenCount}× · last ${addressDate(customer.lastSeenAt)}",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 12.5.sp,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    DeleteButton("Delete saved customer") { onDeleteCustomer(customer) }
+                }
             }
-            if (customers.size > COLLAPSED_CUSTOMER_COUNT) {
+            if (hasMoreCustomers) {
                 item {
-                    ExpandCollapseButton(
-                        expanded = customersExpanded,
-                        collapsedLabel = "Show all ${customers.size} customers",
-                        onClick = { customersExpanded = !customersExpanded },
-                    )
+                    ActionRow(
+                        index = rowCount - 1,
+                        count = rowCount,
+                        text = if (customersExpanded) "Show less" else "Show all ${customers.size} customers",
+                    ) { customersExpanded = !customersExpanded }
                 }
             }
         }
+
+        item { Spacer(Modifier.height(22.dp)) }
+        item {
+            ActionRow(index = 0, count = 1, text = "Delete address", color = MaterialTheme.colorScheme.error, onClick = onDelete)
+        }
+        item { Footnote("Removes this address with its customers, codes and saved screens from this phone.") }
     }
 }
 
 @Composable
-private fun AccessHintSourceCard(
+private fun AccessHintSourceBlock(
     codes: List<String>,
     source: AddressObservationRecord?,
 ) {
-    Card(
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-    ) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(
-                "Possible code: ${codes.joinToString(" / ")}",
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 16.sp,
-            )
+    val palette = LocalCourierPalette.current
+    GroupedBlock {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Surface(shape = RoundedCornerShape(10.dp), color = palette.codeBg) {
+                Text(
+                    "🔑 ${codes.joinToString(" / ")}",
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    color = palette.codeText,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 16.sp,
+                )
+            }
             if (source == null) {
                 Text(
                     "This reminder came from saved address history, but the exact originating screen is outside the recent local source window.",
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.5.sp,
                 )
             } else {
                 Text(
-                    "${source.platform} · captured ${addressDate(source.seenAt)}",
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    fontSize = 11.sp,
+                    "${source.platform} · captured ${addressDate(source.seenAt)}" +
+                        (source.customerName?.takeIf(String::isNotBlank)?.let { " · $it" } ?: ""),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
                 )
-                source.customerName?.takeIf(String::isNotBlank)?.let {
-                    Text(it, fontWeight = FontWeight.Medium, fontSize = 13.sp)
-                }
                 Text(
                     accessHintSourceExcerpt(source, codes),
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.5.sp,
+                    lineHeight = 17.sp,
                 )
             }
         }
@@ -602,95 +593,23 @@ private fun accessHintSourceExcerpt(
 
 @Composable
 private fun AddressMetric(label: String, value: String, modifier: Modifier = Modifier) {
-    Column(modifier.padding(horizontal = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Text(value, fontSize = 19.sp, fontWeight = FontWeight.Bold)
-        Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp, maxLines = 1)
-    }
-}
-
-@Composable
-private fun AddressSection(title: String, subtitle: String) {
-    Column(Modifier.padding(top = 4.dp)) {
-        Text(title, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
-        Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
-    }
-}
-
-@Composable
-private fun CompactMemoryRow(
-    title: String,
-    subtitle: String,
-    titleSize: Int = 15,
-    onDelete: (() -> Unit)? = null,
-    deleteDescription: String = "Delete saved item",
-) {
-    Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-        Row(
-            Modifier.fillMaxWidth().padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f).padding(vertical = 6.dp)) {
-                Text(title, fontWeight = FontWeight.SemiBold, fontSize = titleSize.sp)
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    subtitle,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 11.sp,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            if (onDelete != null) {
-                IconButton(onClick = onDelete) {
-                    Icon(
-                        Icons.Rounded.Delete,
-                        contentDescription = deleteDescription,
-                        tint = MaterialTheme.colorScheme.error,
-                    )
-                }
-            }
+    Surface(modifier = modifier, shape = RoundedCornerShape(14.dp), color = LocalCourierPalette.current.miniStatBg) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.5.sp, maxLines = 1)
+            Text(value, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1)
         }
     }
 }
 
 @Composable
-private fun ExpandCollapseButton(
-    expanded: Boolean,
-    collapsedLabel: String,
-    onClick: () -> Unit,
-) {
-    TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
-        Text(if (expanded) "Show less" else collapsedLabel)
-    }
-}
-
-@Composable
-private fun AddressInfoCard(
-    body: String,
-    onDelete: (() -> Unit)? = null,
-    deleteDescription: String = "Delete saved item",
-) {
-    Card(shape = RoundedCornerShape(16.dp)) {
-        Row(
-            Modifier.fillMaxWidth().padding(start = 14.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                body,
-                Modifier.weight(1f).padding(vertical = 6.dp),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                fontSize = 12.sp,
-            )
-            if (onDelete != null) {
-                IconButton(onClick = onDelete) {
-                    Icon(
-                        Icons.Rounded.Delete,
-                        contentDescription = deleteDescription,
-                        tint = MaterialTheme.colorScheme.error,
-                    )
-                }
-            }
-        }
+private fun DeleteButton(description: String, onClick: () -> Unit) {
+    IconButton(onClick = onClick, modifier = Modifier.size(40.dp)) {
+        Icon(
+            Icons.Rounded.Delete,
+            contentDescription = description,
+            tint = MaterialTheme.colorScheme.error.copy(alpha = 0.85f),
+            modifier = Modifier.size(20.dp),
+        )
     }
 }
 
