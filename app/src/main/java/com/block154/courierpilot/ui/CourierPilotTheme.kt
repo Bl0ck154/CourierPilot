@@ -8,6 +8,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -155,7 +156,12 @@ fun CourierPilotTheme(content: @Composable () -> Unit) {
         }
     }
     MaterialTheme(colorScheme = colors) {
-        CompositionLocalProvider(LocalCourierPalette provides if (dark) DarkPalette else LightPalette) {
+        CompositionLocalProvider(
+            LocalCourierPalette provides if (dark) DarkPalette else LightPalette,
+            // Screens without a Scaffold/Surface would otherwise draw text in the default black,
+            // invisible on the dark background.
+            LocalContentColor provides colors.onBackground,
+        ) {
             // CourierPilot targets API 35, where Android enforces edge-to-edge. Keep all interactive
             // Compose content inside safeDrawing so status/navigation bars and display cutouts never
             // cover titles, back buttons, bottom actions, or scrolling content. Nested Material 3

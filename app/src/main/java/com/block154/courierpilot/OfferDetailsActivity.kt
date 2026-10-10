@@ -48,10 +48,23 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.block154.courierpilot.ui.BrandBlue
+import androidx.compose.foundation.lazy.itemsIndexed
+import com.block154.courierpilot.ui.ActionRow
 import com.block154.courierpilot.ui.CourierPilotTheme
+import com.block154.courierpilot.ui.DetailHeader
+import com.block154.courierpilot.ui.EmptyBlock
+import com.block154.courierpilot.ui.Footnote
+import com.block154.courierpilot.ui.GroupedBlock
+import com.block154.courierpilot.ui.GroupedRow
+import com.block154.courierpilot.ui.LinkRow
 import com.block154.courierpilot.ui.LocalCourierPalette
-import com.block154.courierpilot.ui.Success
+import com.block154.courierpilot.ui.PlatformBadge
+import com.block154.courierpilot.ui.RateNumberFamily
+import com.block154.courierpilot.ui.RateText
+import com.block154.courierpilot.ui.SectionLabel
+import com.block154.courierpilot.ui.SquareIconButton
+import com.block154.courierpilot.ui.TextTile
+import com.block154.courierpilot.ui.VerdictEmoji
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -142,27 +155,28 @@ private data class OfferDetailsData(
 
 @Composable
 private fun LoadingOfferDetails() {
-    Column(
-        Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text("Loading offer…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        EmptyBlock("Loading offer…")
     }
 }
 
 @Composable
 private fun MissingOffer(onBack: () -> Unit) {
-    Column(
-        Modifier.fillMaxSize().padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 24.dp),
     ) {
-        Text("Offer not found", fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-        Spacer(Modifier.height(12.dp))
-        FilledTonalButton(onClick = onBack) { Text("Back") }
+        item { DetailHeader("Offer details", null, onBack) }
+        item { Spacer(Modifier.height(16.dp)); EmptyBlock("This offer is no longer in history.") }
     }
 }
+
+private data class OfferStop(
+    val tile: String,
+    val title: String,
+    val address: String?,
+    val saved: AddressRecord?,
+)
 
 @Composable
 private fun OfferDetailsScreen(
@@ -171,176 +185,98 @@ private fun OfferDetailsScreen(
     onBack: () -> Unit,
 ) {
     val context = LocalContext.current
+    val palette = LocalCourierPalette.current
     var rawExpanded by remember { mutableStateOf(false) }
-    val merchant = OfferPresentation.merchantSummary(offer)
+
+    fun stops(prefix: String, names: List<String>, addresses: List<String>, fallback: String): List<OfferStop> {
+        val count = if (addresses.isNotEmpty()) addresses.size else names.size
+        return (0 until count).map { index ->
+            val address = addresses.getOrNull(index)?.takeIf(String::isNotBlank)
+            OfferStop(
+                tile = prefix + if (count > 1) "${index + 1}" else "",
+                title = names.getOrNull(index)?.takeIf(String::isNotBlank) ?: fallback,
+                address = address,
+                saved = address?.trim()?.let(savedAddresses::get),
+            )
+        }
+    }
+    val pickups = stops("P", OfferPresentation.merchantTitles(offer), offer.pickupAddresses, "Pickup")
+    val dropoffs = stops("D", offer.customerNames, offer.dropoffAddresses, "Customer")
+    fun open(stop: OfferStop) {
+        val saved = stop.saved
+        if (saved != null) {
+            context.startActivity(
+                Intent(context, AddressDetailsActivity::class.java)
+                    .putExtra(AddressDetailsActivity.EXTRA_ADDRESS_ID, saved.id)
+            )
+        } else if (stop.address != null) {
+            context.openAddressInMaps(stop.address)
+        }
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 24.dp),
     ) {
+        item { DetailHeader("Offer details", offerDate(offer.capturedAt), onBack) }
         item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.Rounded.ArrowBack, contentDescription = "Back")
-                }
-                Column(Modifier.weight(1f)) {
-                    Text("Offer details", fontSize = 26.sp, fontWeight = FontWeight.SemiBold)
-                    Text(offerDate(offer.capturedAt), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+            Spacer(Modifier.height(16.dp))
+            OfferHero(offer)
+        }
+
+        if (pickups.isNotEmpty()) {
+            item { SectionLabel(if (pickups.size == 1) "Pickup" else "Pickups") }
+            itemsIndexed(pickups, key = { index, _ -> "p$index" }) { index, stop ->
+                OfferStopRow(stop, index, pickups.size, palette.pinBg, palette.pinText, onOpen = { open(stop) }) {
+                    stop.address?.let(context::openAddressInMaps)
                 }
             }
         }
+        if (dropoffs.isNotEmpty()) {
+            item { SectionLabel(if (dropoffs.size == 1) "Drop-off" else "Drop-offs") }
+            itemsIndexed(dropoffs, key = { index, _ -> "d$index" }) { index, stop ->
+                OfferStopRow(stop, index, dropoffs.size, palette.onlineBg, palette.onlineText, onOpen = { open(stop) }) {
+                    stop.address?.let(context::openAddressInMaps)
+                }
+            }
+        }
+        if (pickups.isEmpty() && dropoffs.isEmpty()) {
+            item {
+                Spacer(Modifier.height(16.dp))
+                EmptyBlock("Route details were not exposed clearly enough to classify this offer.")
+            }
+        }
 
+        item { SectionLabel("Captured data") }
+        val hasScreenshot = offer.screenshotUri.isNotBlank()
         item {
-            Card(shape = RoundedCornerShape(22.dp)) {
-                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(verticalAlignment = Alignment.Top) {
-                        Column(Modifier.weight(1f)) {
-                            Surface(
-                                shape = RoundedCornerShape(50),
-                                color = if (offer.platform == "Wolt") LocalCourierPalette.current.woltBg else LocalCourierPalette.current.boltBg,
-                            ) {
-                                Text(
-                                    offer.platform,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                                    color = if (offer.platform == "Wolt") BrandBlue else Success,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                            }
-                            Spacer(Modifier.height(10.dp))
-                            Text(merchant, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-                        }
-                        Spacer(Modifier.size(14.dp))
-                        Text(
-                            formatOfferMoney(offer),
-                            fontSize = 31.sp,
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
-
-                    val facts = buildList {
-                        val realRoute = offer.trustedMarketRouteDistanceMeters
-                        val platformDistance = offer.distanceMeters?.takeIf { it > 0 }
-                        platformDistance?.let { add("${offer.platform} %.2f km".format(it / 1000.0)) }
-                        if (realRoute != null && (platformDistance == null || kotlin.math.abs(realRoute - platformDistance) >= 100)) {
-                            add("Calculated %.2f km".format(realRoute / 1000.0))
-                        }
-                        offer.deliveryCount?.let { add("$it ${if (it == 1) "delivery" else "deliveries"}") }
-                        offerEta(offer)?.let { add("ETA $it") }
-                        offerMoneyPerKm(offer)?.let { add(formatOfferRate(offer.currencyCode, it)) }
-                    }
-                    if (facts.isNotEmpty()) {
-                        Text(
-                            facts.joinToString("  ·  "),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 12.sp,
-                        )
-                    }
-                }
-            }
-        }
-
-        if (offer.merchantNames.isNotEmpty() || offer.pickupAddresses.isNotEmpty()) {
-            item { OfferSection("Pickup", "Venues and pickup addresses") }
-            val count = if (offer.pickupAddresses.isNotEmpty()) offer.pickupAddresses.size else offer.merchantNames.size
-            items(count) { index ->
-                val address = offer.pickupAddresses.getOrNull(index)
-                val saved = address?.trim()?.let(savedAddresses::get)
-                OfferStopCard(
-                    badge = "P${if (count > 1) index + 1 else ""}",
-                    title = offer.merchantNames.getOrNull(index) ?: "Pickup",
-                    address = address,
-                    accent = BrandBlue,
-                    savedAddress = saved,
-                    onMap = { if (!address.isNullOrBlank()) context.openAddressInMaps(address) },
-                    onSavedAddress = {
-                        saved?.let {
-                            context.startActivity(
-                                Intent(context, AddressDetailsActivity::class.java)
-                                    .putExtra(AddressDetailsActivity.EXTRA_ADDRESS_ID, it.id)
-                            )
-                        }
-                    },
-                )
-            }
-        }
-
-        if (offer.customerNames.isNotEmpty() || offer.dropoffAddresses.isNotEmpty()) {
-            item { OfferSection("Drop-off", "Customer and destination") }
-            val count = if (offer.dropoffAddresses.isNotEmpty()) offer.dropoffAddresses.size else offer.customerNames.size
-            items(count) { index ->
-                val address = offer.dropoffAddresses.getOrNull(index)
-                val saved = address?.trim()?.let(savedAddresses::get)
-                OfferStopCard(
-                    badge = "D${if (count > 1) index + 1 else ""}",
-                    title = offer.customerNames.getOrNull(index) ?: "Customer",
-                    address = address,
-                    accent = Success,
-                    savedAddress = saved,
-                    onMap = { if (!address.isNullOrBlank()) context.openAddressInMaps(address) },
-                    onSavedAddress = {
-                        saved?.let {
-                            context.startActivity(
-                                Intent(context, AddressDetailsActivity::class.java)
-                                    .putExtra(AddressDetailsActivity.EXTRA_ADDRESS_ID, it.id)
-                            )
-                        }
-                    },
-                )
-            }
-        }
-
-        if (offer.customerNames.isEmpty() && offer.dropoffAddresses.isEmpty() && offer.pickupAddresses.isEmpty()) {
-            item {
-                Card(shape = RoundedCornerShape(18.dp)) {
-                    Text(
-                        "Route details were not exposed clearly enough to classify this offer.",
-                        modifier = Modifier.padding(16.dp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp,
-                    )
-                }
-            }
-        }
-
-        item { OfferSection("Captured data", "Original text and optional proof image") }
-        if (offer.screenshotUri.isNotBlank()) {
-            item {
-                FilledTonalButton(
-                    onClick = { openOfferScreenshot(context, offer.screenshotUri) },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Icon(Icons.Rounded.Image, contentDescription = null)
-                    Spacer(Modifier.size(8.dp))
-                    Text("Open saved screenshot")
-                }
-            }
-        } else {
-            item {
-                Card(shape = RoundedCornerShape(18.dp)) {
-                    Text(
-                        "Screenshot saving was disabled for this offer. OCR, when needed, was processed in memory only.",
-                        modifier = Modifier.padding(16.dp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp,
-                    )
-                }
-            }
+            LinkRow(
+                index = 0,
+                count = 2,
+                icon = Icons.Rounded.Image,
+                title = "Proof screenshot",
+                subtitle = if (hasScreenshot) "Open the saved image" else "Not saved for this offer",
+                onClick = if (hasScreenshot) ({ openOfferScreenshot(context, offer.screenshotUri) }) else null,
+            )
         }
         item {
-            TextButton(onClick = { rawExpanded = !rawExpanded }, modifier = Modifier.fillMaxWidth()) {
-                Text(if (rawExpanded) "Hide captured text" else "Show captured text")
+            ActionRow(index = 1, count = 2, text = if (rawExpanded) "Hide captured text" else "Show captured text") {
+                rawExpanded = !rawExpanded
             }
+        }
+        if (!hasScreenshot) {
+            item { Footnote("Screenshot saving was off. OCR, when needed, ran in memory only.") }
         }
         if (rawExpanded) {
             item {
-                Card(shape = RoundedCornerShape(18.dp)) {
+                Spacer(Modifier.height(10.dp))
+                GroupedBlock {
                     Text(
                         offer.rawText.ifBlank { "No raw text stored." },
                         modifier = Modifier.padding(16.dp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp,
+                        lineHeight = 17.sp,
                     )
                 }
             }
@@ -349,58 +285,105 @@ private fun OfferDetailsScreen(
 }
 
 @Composable
-private fun OfferStopCard(
-    badge: String,
-    title: String,
-    address: String?,
-    accent: Color,
-    savedAddress: AddressRecord?,
-    onMap: () -> Unit,
-    onSavedAddress: () -> Unit,
-) {
-    val openPrimary = if (savedAddress != null) onSavedAddress else onMap
-    Card(onClick = openPrimary, shape = RoundedCornerShape(18.dp)) {
-        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Surface(shape = RoundedCornerShape(50), color = accent.copy(alpha = 0.10f)) {
+private fun OfferHero(offer: OfferRecord) {
+    val palette = LocalCourierPalette.current
+    val rate = remember(offer) { OfferRowRatePolicy.rate(offer) }
+    GroupedBlock {
+        Column(Modifier.padding(horizontal = 18.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                PlatformBadge(offer.platform)
+                Spacer(Modifier.size(12.dp))
                 Text(
-                    badge,
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                    color = accent,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 11.sp,
+                    OfferPresentation.merchantSummary(offer),
+                    modifier = Modifier.weight(1f),
+                    fontSize = 17.sp,
+                    lineHeight = 22.sp,
+                    fontWeight = FontWeight.ExtraBold,
                 )
             }
-            Spacer(Modifier.size(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(title, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                address?.takeIf(String::isNotBlank)?.let {
-                    Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, maxLines = 2)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    formatOfferMoney(offer),
+                    fontFamily = RateNumberFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 40.sp,
+                    maxLines = 1,
+                )
+                Spacer(Modifier.weight(1f))
+                if (rate != null) {
+                    RateText(rate.value, rate.unit, rate.grade, valueSize = 28.sp, unitSize = 13.sp)
+                    Spacer(Modifier.size(6.dp))
+                    VerdictEmoji(rate.grade, size = 20.sp)
                 }
-                if (savedAddress != null) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.Place, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.size(4.dp))
-                        Text("Saved address", color = MaterialTheme.colorScheme.primary, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+            }
+            val facts = buildList {
+                val realRoute = offer.trustedMarketRouteDistanceMeters
+                val platformDistance = offer.distanceMeters?.takeIf { it > 0 }
+                platformDistance?.let { add(OfferFact(offer.platform, "%.1f km".format(Locale.US, it / 1000.0))) }
+                if (realRoute != null && (platformDistance == null || kotlin.math.abs(realRoute - platformDistance) >= 100)) {
+                    add(OfferFact("Calculated", "%.1f km".format(Locale.US, realRoute / 1000.0)))
+                }
+                offer.deliveryCount?.let { add(OfferFact(if (it == 1) "Delivery" else "Deliveries", it.toString())) }
+                offerEta(offer)?.let { add(OfferFact("ETA, min", it.removeSuffix(" min"))) }
+            }
+            if (facts.isNotEmpty()) {
+                facts.chunked(3).forEach { pair ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        pair.forEach { fact ->
+                            Surface(Modifier.weight(1f), shape = RoundedCornerShape(14.dp), color = palette.miniStatBg) {
+                                Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(fact.label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.5.sp, maxLines = 1)
+                                    Text(fact.value, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1)
+                                }
+                            }
+                        }
+                        repeat(3 - pair.size) { Spacer(Modifier.weight(1f)) }
                     }
                 }
-            }
-            if (!address.isNullOrBlank()) {
-                IconButton(onClick = onMap) {
-                    Icon(Icons.Rounded.Map, contentDescription = "Open in maps")
-                }
-            }
-            if (savedAddress != null) {
-                Icon(Icons.Rounded.ChevronRight, contentDescription = null)
             }
         }
     }
 }
 
+private data class OfferFact(val label: String, val value: String)
+
 @Composable
-private fun OfferSection(title: String, subtitle: String) {
-    Column {
-        Text(title, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
-        Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+private fun OfferStopRow(
+    stop: OfferStop,
+    index: Int,
+    count: Int,
+    tileBackground: Color,
+    tileForeground: Color,
+    onOpen: () -> Unit,
+    onMap: () -> Unit,
+) {
+    val palette = LocalCourierPalette.current
+    GroupedRow(
+        index = index,
+        count = count,
+        onClick = if (stop.saved != null || stop.address != null) onOpen else null,
+    ) {
+        TextTile(stop.tile, tileBackground, tileForeground)
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(stop.title, fontWeight = FontWeight.Bold, fontSize = 15.sp, lineHeight = 19.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            stop.address?.let {
+                Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.5.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+            if (stop.saved != null) {
+                Surface(shape = RoundedCornerShape(8.dp), color = palette.pinBg) {
+                    Text(
+                        "Saved address",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        color = palette.pinText,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+        }
+        if (stop.address != null) {
+            SquareIconButton(Icons.Rounded.Map, "Open in maps", onMap)
+        }
     }
 }
 
