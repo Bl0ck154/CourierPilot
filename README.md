@@ -133,6 +133,7 @@ Release signing is documented in [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNIN
 
 ## Releases and roadmap
 
+- **0.17.5** — every screen in the new design; wrapped Wolt venue names and OCR postcode duplicates fixed. See [`docs/RELEASE_0.17.5.md`](docs/RELEASE_0.17.5.md).
 - **0.17.4** — clean screenshots: the card is hidden during capture instead of painted over. See [`docs/RELEASE_0.17.4.md`](docs/RELEASE_0.17.4.md).
 - **0.17.3** — swiped card returns after reopening the courier app, smoother proof screenshots. See [`docs/RELEASE_0.17.3.md`](docs/RELEASE_0.17.3.md).
 - **0.17.2** — Wolt stacked routes read straight from the card (no drop-off click), clean proof screenshots. See [`docs/RELEASE_0.17.2.md`](docs/RELEASE_0.17.2.md).
