@@ -106,6 +106,19 @@ class LiveAdvisorPresentationTest {
     }
 
     @Test
+    fun lowRatedOffersStayLegibleOnTheDarkLiveCard() {
+        val bad = LiveAdvisorRateStylePolicy.style(OfferDecisionBand.BAD, estimate = false)
+        val terrible = LiveAdvisorRateStylePolicy.style(OfferDecisionBand.TERRIBLE, estimate = false)
+        // Both numbers are fully opaque and bright enough for the dark overlay, not ghost text.
+        assertEquals(255, (bad.color ushr 24) and 0xff)
+        assertEquals(255, (terrible.color ushr 24) and 0xff)
+        assertTrue(luminance(bad.color) >= 1600)
+        assertTrue(luminance(terrible.color) >= 1500)
+        assertTrue(bad.emojiAlpha >= 0.75f)
+        assertTrue(terrible.emojiAlpha >= 0.7f)
+    }
+
+    @Test
     fun estimatesStayNeutralWhateverTheBand() {
         val estimate = LiveAdvisorRateStylePolicy.style(OfferDecisionBand.FIRE, estimate = true)
         assertEquals(LiveAdvisorRateStylePolicy.style(OfferDecisionBand.UNKNOWN, estimate = false), estimate)
