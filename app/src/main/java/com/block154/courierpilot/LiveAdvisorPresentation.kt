@@ -58,7 +58,7 @@ internal data class LiveAdvisorRateParts(val value: String, val unit: String, va
 
 /**
  * Visual weight follows money/km: the best offers glow in saturated gold, worse ones fade towards
- * grey until a terrible offer is barely visible. The emoji is desaturated and faded the same way.
+ * grey while keeping even terrible offers legible at a glance. The emoji is desaturated too.
  */
 internal data class LiveAdvisorRateStyle(
     val color: Int,
@@ -97,8 +97,8 @@ internal object LiveAdvisorRateStylePolicy {
             OfferDecisionBand.FIRE -> LiveAdvisorRateStyle(argb(255, 255, 214, 10), argb(140, 255, 214, 10), 7f, 1.25f, 1f)
             OfferDecisionBand.GOOD -> LiveAdvisorRateStyle(argb(255, 242, 197, 61), argb(72, 242, 197, 61), 4f, 0.9f, 0.95f)
             OfferDecisionBand.OK -> LiveAdvisorRateStyle(argb(255, 189, 177, 138), 0, 0f, 0.45f, 0.8f)
-            OfferDecisionBand.BAD -> LiveAdvisorRateStyle(argb(255, 126, 130, 138), 0, 0f, 0.15f, 0.55f)
-            OfferDecisionBand.TERRIBLE -> LiveAdvisorRateStyle(argb(255, 75, 81, 92), 0, 0f, 0f, 0.32f)
+            OfferDecisionBand.BAD -> LiveAdvisorRateStyle(argb(255, 167, 173, 182), 0, 0f, 0.15f, 0.8f)
+            OfferDecisionBand.TERRIBLE -> LiveAdvisorRateStyle(argb(255, 150, 156, 167), 0, 0f, 0f, 0.75f)
             OfferDecisionBand.UNKNOWN -> LiveAdvisorRateStyle(argb(255, 203, 213, 225), 0, 0f, 0.6f, 0.8f)
         }
     }
