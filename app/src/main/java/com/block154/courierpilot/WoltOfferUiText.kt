@@ -12,6 +12,8 @@ internal object WoltOfferUiText {
     )
     val standaloneMultipleDropoffsRegex = Regex("(?i)^\\s*multiple\\s+drop[- ]?offs?\\s*$")
     val singleCustomerDropoffRegex = Regex("(?i)^\\s*customer\\s+drop[- ]?off\\s*$")
+    // Wolt can hand off two orders at ONE customer stop; this is not "2 drop-offs".
+    val sharedDropoffOrdersRegex = Regex("(?i)^\\s*drop\\s*off\\s*(\\d{1,2})\\s+orders?\\s*$")
     val standaloneStopsRegex = Regex("(?i)^\\s*(\\d+)\\s+stops?\\s*$")
     private val compactRouteStopCountRegex = Regex(
         "(?i)^\\s*\\+?\\s*(\\d+)\\s+stops?\\b(?:\\s*\\([^)]*\\))?.*$"
@@ -45,6 +47,7 @@ internal object WoltOfferUiText {
     fun isMerchantUiNoise(line: String): Boolean {
         val normalized = normalize(line)
         return normalized in MERCHANT_UI_NOISE ||
+            sharedDropoffOrdersRegex.matches(line) ||
             BOOST_METADATA_REGEX.containsMatchIn(normalized) ||
             normalized.startsWith("id check ") ||
             normalized.startsWith("id verification ") ||
