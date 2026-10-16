@@ -123,6 +123,7 @@ private fun OfferRecord.withCurrentParsedStructureUnchecked(): OfferRecord {
     val inferredDeliveryCount = maxOf(normalizedDropoffs.size, meaningfulCustomerCount)
         .takeIf { it > 0 }
     val correctedDeliveryCount = explicitDeliveryCount
+        ?: parsed?.takeIf { it.expectedDropoffStops != null }?.deliveryCount
         ?: inferredDeliveryCount
         ?: parsed?.deliveryCount
         ?: deliveryCount
