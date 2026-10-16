@@ -12,6 +12,11 @@ internal object WoltOfferUiText {
     )
     val standaloneMultipleDropoffsRegex = Regex("(?i)^\\s*multiple\\s+drop[- ]?offs?\\s*$")
     val singleCustomerDropoffRegex = Regex("(?i)^\\s*customer\\s+drop[- ]?off\\s*$")
+    // Wolt may combine two restaurant orders into a single physical customer handover.
+    val groupedDropoffOrdersRegex = Regex("(?i)^\\s*drop[- ]?off\\s+(\\d+)\\s+orders?\\s*$")
+    fun groupedDropoffOrderCount(line: String): Int? =
+        groupedDropoffOrdersRegex.matchEntire(line)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            ?.takeIf { it in 2..20 }
     val standaloneStopsRegex = Regex("(?i)^\\s*(\\d+)\\s+stops?\\s*$")
     private val compactRouteStopCountRegex = Regex(
         "(?i)^\\s*\\+?\\s*(\\d+)\\s+stops?\\b(?:\\s*\\([^)]*\\))?.*$"
@@ -38,7 +43,8 @@ internal object WoltOfferUiText {
                 modernRouteSummaryRegex.matches(line) ||
                 collapsedMultipleDropoffsRegex.matches(line) ||
                 standaloneMultipleDropoffsRegex.matches(line) ||
-                singleCustomerDropoffRegex.matches(line)
+                singleCustomerDropoffRegex.matches(line) ||
+                groupedDropoffOrdersRegex.matches(line)
         }
 
     /** Service/promo labels shown on Wolt cards are metadata, never venue names. */
@@ -46,6 +52,7 @@ internal object WoltOfferUiText {
         val normalized = normalize(line)
         return normalized in MERCHANT_UI_NOISE ||
             BOOST_METADATA_REGEX.containsMatchIn(normalized) ||
+            groupedDropoffOrdersRegex.matches(line) ||
             normalized.startsWith("id check ") ||
             normalized.startsWith("id verification ") ||
             normalized.startsWith("age verification ") ||
