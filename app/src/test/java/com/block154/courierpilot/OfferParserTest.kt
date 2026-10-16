@@ -9,6 +9,67 @@ import org.junit.Test
 class OfferParserTest {
 
     @Test
+    fun parsesTwoVenueOrdersWithOneSharedCustomerDropoff() {
+        // Real Wolt layout: three physical stops, but two orders handed to one customer.
+        val parsed = OfferParser.parse(
+            """
+            €8.25
+            3 stops (10.6 km) • 30–43 min
+            MOSS
+            Pylimo g. 47, Vilnius, LT-01137
+            Talutti Bakes'n'Shakes City
+            Vilniaus g. 35, Vilnius, LT01119
+            Customer drop-off
+            Viršuliškių gatvė 93, Vilnius, 05117
+            Drop off 2 orders
+            Accept
+            """.trimIndent()
+        )
+
+        assertEquals(825, parsed.priceCents)
+        assertEquals(10_600, parsed.distanceMeters)
+        assertEquals(30, parsed.estimatedMinutesMin)
+        assertEquals(43, parsed.estimatedMinutesMax)
+        assertEquals(listOf("MOSS", "Talutti Bakes'n'Shakes City"), parsed.merchantNames)
+        assertEquals(
+            listOf("Pylimo g. 47, Vilnius, LT-01137", "Vilniaus g. 35, Vilnius, LT01119"),
+            parsed.pickupAddresses,
+        )
+        assertEquals(listOf("Viršuliškių gatvė 93, Vilnius, 05117"), parsed.dropoffAddresses)
+        assertEquals(2, parsed.deliveryCount)
+        assertEquals(2, parsed.sharedDropoffOrderCount)
+        assertEquals(
+            listOf(ParsedRouteStopKind.PICKUP, ParsedRouteStopKind.PICKUP, ParsedRouteStopKind.DROPOFF),
+            parsed.orderedRouteStops.map { it.kind },
+        )
+        assertTrue(AutomaticWoltRouteCoordinator.routeFingerprint(parsed) != null)
+    }
+
+    @Test
+    fun sharedOrderButtonCannotHideAnUnresolvedSecondCustomerStop() {
+        val parsed = OfferParser.parse(
+            """
+            €8.25
+            4 stops (10.6 km) • 30–43 min
+            MOSS
+            Pylimo g. 47, Vilnius, LT-01137
+            Talutti Bakes'n'Shakes City
+            Vilniaus g. 35, Vilnius, LT01119
+            Customer drop-off
+            Viršuliškių gatvė 93, Vilnius, 05117
+            Drop off 2 orders
+            Multiple drop-offs (2 stops)
+            Accept
+            """.trimIndent()
+        )
+
+        assertEquals(2, parsed.deliveryCount)
+        assertNull(parsed.sharedDropoffOrderCount)
+        assertEquals(1, parsed.dropoffAddresses.size)
+        assertNull(AutomaticWoltRouteCoordinator.routeFingerprint(parsed))
+    }
+
+    @Test
     fun parsesRedesignedWoltSingleOffer() {
         val parsed = OfferParser.parse(
             """
