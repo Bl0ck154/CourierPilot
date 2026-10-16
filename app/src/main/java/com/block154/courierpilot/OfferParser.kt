@@ -447,7 +447,8 @@ internal object OfferParser {
             dropoffs.size == 1 &&
                 (collapsedCount ?: 0) <= 1 &&
                 (expandedCount ?: 0) <= 1 &&
-                (expectedTotalStops == null || expectedTotalStops == pickups.size + 1)
+                expectedTotalStops != null &&
+            expectedTotalStops == pickups.size + dropoffs.size
         }
         val deliveryCount = maxOf(
             collapsedCount ?: 0,
