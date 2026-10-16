@@ -26,14 +26,14 @@ internal data class ParsedOffer(
     val customerNames: List<String> = emptyList(),
     val dropoffAddresses: List<String> = emptyList(),
     val deliveryCount: Int? = null,
-    // Physical customer stops can be fewer than orders when several orders share one address.
-    // Null preserves the ordinary rule: every order needs a separate destination.
-    val expectedDropoffStops: Int? = null,
     val estimatedMinutesMin: Int? = null,
     val estimatedMinutesMax: Int? = null,
     val orderedRouteStops: List<ParsedRouteStop> = emptyList(),
     val isIncrementalOffer: Boolean = false,
     val incrementalStopCount: Int? = null,
+    // Physical customer stops can be fewer than orders when several orders share one address.
+    // Null preserves the ordinary rule: every order needs a separate destination.
+    val expectedDropoffStops: Int? = null,
 )
 
 internal object OfferParser {
