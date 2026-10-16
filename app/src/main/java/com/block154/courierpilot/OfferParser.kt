@@ -26,6 +26,9 @@ internal data class ParsedOffer(
     val customerNames: List<String> = emptyList(),
     val dropoffAddresses: List<String> = emptyList(),
     val deliveryCount: Int? = null,
+    // Physical customer stops can be fewer than orders when several orders share one address.
+    // Null preserves the ordinary rule: every order needs a separate destination.
+    val expectedDropoffStops: Int? = null,
     val estimatedMinutesMin: Int? = null,
     val estimatedMinutesMax: Int? = null,
     val orderedRouteStops: List<ParsedRouteStop> = emptyList(),
@@ -105,6 +108,7 @@ internal object OfferParser {
             customerNames = customers,
             dropoffAddresses = dropoffs,
             deliveryCount = deliveryCount,
+            expectedDropoffStops = modernWolt?.expectedDropoffStops,
             estimatedMinutesMin = estimate?.first,
             estimatedMinutesMax = estimate?.second,
             orderedRouteStops = orderedStops,
@@ -183,6 +187,7 @@ internal object OfferParser {
         val customerNames: List<String>,
         val dropoffAddresses: List<String>,
         val deliveryCount: Int?,
+        val expectedDropoffStops: Int?,
         val orderedRouteStops: List<ParsedRouteStop>,
         val isIncrementalOffer: Boolean,
         val incrementalStopCount: Int?,
@@ -435,9 +440,25 @@ internal object OfferParser {
                     ?.groupValues?.getOrNull(1)?.toIntOrNull()
             }
         }
+        val sharedDropoffOrderCount = lines.mapNotNull { line ->
+            WoltOfferUiText.sharedDropoffOrdersRegex.matchEntire(line)
+                ?.groupValues?.getOrNull(1)?.toIntOrNull()
+        }.filter { it in 2..20 }.maxOrNull()
+        // "Drop off 2 orders" describes the contents of the ONE visible customer handoff.
+        // Trust that physical-stop interpretation only when all announced stops have real
+        // addresses (e.g. 3 stops = 2 pickups + 1 customer), never on a partial OCR frame.
+        val expectedDropoffStops = if (
+            sharedDropoffOrderCount != null &&
+            collapsedDropoffIndexes.isEmpty() &&
+            expandedDropoffIndexes.isEmpty() &&
+            expectedTotalStops != null &&
+            pickups.size + dropoffs.size == expectedTotalStops &&
+            dropoffs.size == 1
+        ) 1 else null
         val deliveryCount = maxOf(
             collapsedCount ?: 0,
             expandedCount ?: 0,
+            sharedDropoffOrderCount ?: 0,
             dropoffs.size,
             customerDropoffIndexes.size,
         ).takeIf { it > 0 }
@@ -448,6 +469,7 @@ internal object OfferParser {
             customerNames = List(dropoffs.size) { "Customer" },
             dropoffAddresses = dropoffs,
             deliveryCount = deliveryCount,
+            expectedDropoffStops = expectedDropoffStops,
             orderedRouteStops = ordered,
             isIncrementalOffer = isIncrementalOffer,
             incrementalStopCount = incrementalStopCount,
