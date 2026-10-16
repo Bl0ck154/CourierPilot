@@ -329,13 +329,16 @@ class OfferDatabase private constructor(context: Context) :
         rawText: String,
     ): Long? {
         if (candidate.packageName != CourierSignals.WOLT_PACKAGE) return null
-        val expectedDropoffs = maxOf(parsed.deliveryCount ?: 0, parsed.dropoffAddresses.size)
+        val sharedCustomerStop = parsed.sharedDropoffOrderCount != null &&
+            parsed.sharedDropoffOrderCount == parsed.deliveryCount &&
+            parsed.dropoffAddresses.size == 1
+        val expectedDropoffs = if (sharedCustomerStop) 1
+        else maxOf(parsed.deliveryCount ?: 0, parsed.dropoffAddresses.size)
         if (expectedDropoffs <= 0 || parsed.dropoffAddresses.size < expectedDropoffs) return null
         if (AutomaticWoltRouteCoordinator.routeFingerprint(parsed) == null) return null
 
         val existing = findRecentDuplicate(candidate) ?: return null
-        val existingExpected = maxOf(existing.deliveryCount ?: 0, expectedDropoffs)
-        if (existing.dropoffAddresses.size >= existingExpected) return null
+        if (existing.dropoffAddresses.size >= expectedDropoffs) return null
 
         val values = ContentValues().apply {
             parsed.restaurant?.takeIf(String::isNotBlank)?.let { put("restaurant", it) }
@@ -343,7 +346,8 @@ class OfferDatabase private constructor(context: Context) :
             if (parsed.pickupAddresses.isNotEmpty()) put("pickup_addresses", encodeList(parsed.pickupAddresses))
             if (parsed.customerNames.isNotEmpty()) put("customer_names", encodeList(parsed.customerNames))
             put("dropoff_addresses", encodeList(parsed.dropoffAddresses))
-            put("delivery_count", expectedDropoffs)
+            // Order count and customer-stop count can differ for shared handoffs.
+            put("delivery_count", parsed.deliveryCount ?: expectedDropoffs)
             parsed.estimatedMinutesMin?.let { put("estimated_min", it) }
             parsed.estimatedMinutesMax?.let { put("estimated_max", it) }
             rawText.takeIf(String::isNotBlank)?.let { put("raw_text", it.take(12000)) }
