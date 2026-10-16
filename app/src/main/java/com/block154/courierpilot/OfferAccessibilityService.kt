@@ -435,7 +435,8 @@ class OfferAccessibilityService : AccessibilityService() {
         if (pending.packageName != CourierSignals.WOLT_PACKAGE) return false
         if (!LiveAdvisorSettings.automaticWoltRouting(this)) return false
 
-        val expectedDropoffs = parsed.deliveryCount?.coerceAtLeast(1) ?: return false
+        val expectedDropoffs = (parsed.expectedDropoffStops ?: parsed.deliveryCount)?.coerceAtLeast(1)
+            ?: return false
         val key = "${pending.packageName}|${pending.armedAt}|${pending.notificationKey}"
         // Once this exact capture has recovered a complete route, never touch Wolt's disclosure
         // again merely because the collapsed card hides those destinations on a later frame. A
