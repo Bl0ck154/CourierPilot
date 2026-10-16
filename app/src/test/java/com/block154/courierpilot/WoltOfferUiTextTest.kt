@@ -6,6 +6,14 @@ import org.junit.Test
 
 class WoltOfferUiTextTest {
     @Test
+    fun groupedOrderHandoverLabelIsNotAMerchantOrSecondDestination() {
+        assertTrue(WoltOfferUiText.groupedDropoffOrdersRegex.matches("Drop off 2 orders"))
+        assertTrue(WoltOfferUiText.groupedDropoffOrdersRegex.matches("Drop-off 2 orders"))
+        assertTrue(WoltOfferUiText.isMerchantUiNoise("Drop off 2 orders"))
+        assertFalse(WoltOfferUiText.groupedDropoffOrdersRegex.matches("Customer drop-off"))
+    }
+
+    @Test
     fun splitCollapsedDisclosureIsNotMistakenForOpenedSheet() {
         assertFalse(
             WoltOfferUiText.hasExpandedMultipleDropoffSheet(

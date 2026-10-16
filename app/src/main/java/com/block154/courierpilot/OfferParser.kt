@@ -31,6 +31,7 @@ internal data class ParsedOffer(
     val orderedRouteStops: List<ParsedRouteStop> = emptyList(),
     val isIncrementalOffer: Boolean = false,
     val incrementalStopCount: Int? = null,
+    val sharedDropoffOrderCount: Int? = null,
 )
 
 internal object OfferParser {
@@ -110,6 +111,7 @@ internal object OfferParser {
             orderedRouteStops = orderedStops,
             isIncrementalOffer = modernWolt?.isIncrementalOffer == true,
             incrementalStopCount = modernWolt?.incrementalStopCount,
+            sharedDropoffOrderCount = modernWolt?.sharedDropoffOrderCount,
         )
     }
 
@@ -183,6 +185,7 @@ internal object OfferParser {
         val customerNames: List<String>,
         val dropoffAddresses: List<String>,
         val deliveryCount: Int?,
+        val sharedDropoffOrderCount: Int?,
         val orderedRouteStops: List<ParsedRouteStop>,
         val isIncrementalOffer: Boolean,
         val incrementalStopCount: Int?,
@@ -435,9 +438,21 @@ internal object OfferParser {
                     ?.groupValues?.getOrNull(1)?.toIntOrNull()
             }
         }
+        val groupedDropoffOrderCount = lines.mapNotNull(WoltOfferUiText::groupedDropoffOrderCount)
+            .maxOrNull()
+        // "Drop off 2 orders" counts orders at this one customer stop, not two distinct
+        // destinations. Trust the shared-stop evidence for routing only when it agrees with
+        // the visible route shape; a genuinely incomplete two-customer batch must still wait.
+        val sharedDropoffOrderCount = groupedDropoffOrderCount?.takeIf {
+            dropoffs.size == 1 &&
+                (collapsedCount ?: 0) <= 1 &&
+                (expandedCount ?: 0) <= 1 &&
+                (expectedTotalStops == null || expectedTotalStops == pickups.size + 1)
+        }
         val deliveryCount = maxOf(
             collapsedCount ?: 0,
             expandedCount ?: 0,
+            groupedDropoffOrderCount ?: 0,
             dropoffs.size,
             customerDropoffIndexes.size,
         ).takeIf { it > 0 }
@@ -448,6 +463,7 @@ internal object OfferParser {
             customerNames = List(dropoffs.size) { "Customer" },
             dropoffAddresses = dropoffs,
             deliveryCount = deliveryCount,
+            sharedDropoffOrderCount = sharedDropoffOrderCount,
             orderedRouteStops = ordered,
             isIncrementalOffer = isIncrementalOffer,
             incrementalStopCount = incrementalStopCount,

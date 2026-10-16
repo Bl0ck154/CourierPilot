@@ -501,7 +501,10 @@ internal object AutomaticWoltRouteCoordinator {
         val pickupCount = specs.count { it.kind == WaypointKind.PICKUP }
         val dropoffCount = specs.count { it.kind == WaypointKind.DROPOFF }
         val expectedDropoffs = (parsed.deliveryCount ?: 1).coerceAtLeast(1)
-        if (pickupCount < 1 || dropoffCount < expectedDropoffs) return null
+        val confirmedSharedDropoff = expectedDropoffs > 1 &&
+            parsed.sharedDropoffOrderCount == expectedDropoffs &&
+            dropoffCount == 1
+        if (pickupCount < 1 || (dropoffCount < expectedDropoffs && !confirmedSharedDropoff)) return null
         val payload = specs.joinToString("|") { "${it.kind}:${normalizeAddress(it.address)}" }
         return MessageDigest.getInstance("SHA-256")
             .digest(payload.toByteArray(Charsets.UTF_8))
