@@ -23,11 +23,10 @@ internal object WoltOfferUiText {
     )
     // Wolt's cash-change reminder is not a merchant, destination, or payout.
     // It may appear before the first pickup as one OCR line or a split label/amount.
-    private val changeNeededRegex = Regex("""(?i)^change\\s+needed\\b.*$""")
+    private val changeNeededRegex = Regex("""(?i)^change\s+needed\b.*$""")
 
     fun isChangeNeededMetadata(line: String): Boolean =
         changeNeededRegex.matches(normalize(line))
-
 
     fun routeStopCount(line: String): Int? =
         modernRouteSummaryRegex.matchEntire(line)?.groupValues?.getOrNull(1)?.toIntOrNull()
