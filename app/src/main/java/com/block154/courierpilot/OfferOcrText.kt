@@ -92,7 +92,17 @@ internal object WoltEarningsSpatialOcr {
 
         val maxVertical = (imageHeight * maxVerticalFraction).toInt().coerceAtLeast(1)
         val candidates = mutableListOf<Candidate>()
+        // In cash orders Wolt puts "Change needed: €X" between the summary and
+        // merchant rows. ML Kit sometimes splits the label from the amount into two
+        // spatial lines, so reject money on or immediately below the reminder row.
+        val changeLabels = (lines + anchors).filter { WoltOfferUiText.isChangeNeededMetadata(it.text) }
         lines.forEach { line ->
+            if (WoltOfferUiText.isChangeNeededMetadata(line.text)) return@forEach
+            if (changeLabels.any { label ->
+                    line.centerY >= label.top - imageHeight / 120 &&
+                        line.centerY <= label.bottom + imageHeight / 30
+                }
+            ) return@forEach
             val money = MarketCurrencyParser.parse(line.text) ?: return@forEach
             anchors.forEach { anchor ->
                 if (!eligible(line, anchor)) return@forEach

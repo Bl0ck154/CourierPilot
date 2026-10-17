@@ -765,6 +765,16 @@ internal object OfferParser {
     }
 
     private fun parseMoney(text: String, lines: List<String>): MoneyAmount? {
+        // Cash-change instructions can sit directly after the compact route summary.
+        // The value is cash the courier must carry, not Wolt's offered earnings.
+        // OCR may emit "Change needed:" and its amount as separate lines.
+        fun isChangeAmount(index: Int): Boolean {
+            val candidate = lines.getOrNull(index) ?: return false
+            return WoltOfferUiText.isChangeNeededMetadata(candidate) ||
+                (index > 0 && WoltOfferUiText.isChangeNeededMetadata(lines[index - 1]) &&
+                    MarketCurrencyParser.containsMoney(candidate))
+        }
+
         val modernSummaryIndexes = lines.indices.filter { index ->
             WoltOfferUiText.modernRouteSummaryRegex.matches(lines[index])
         }
@@ -773,7 +783,9 @@ internal object OfferParser {
                 // New Wolt layout: the amount is the large line immediately above the compact
                 // "N stops (X km) • ETA" summary. Keep this anchored and never trust map money.
                 for (offset in listOf(-1, -2, 0, 1)) {
-                    val candidate = lines.getOrNull(summaryIndex + offset) ?: continue
+                    val index = summaryIndex + offset
+                    if (isChangeAmount(index)) continue
+                    val candidate = lines.getOrNull(index) ?: continue
                     MarketCurrencyParser.parse(candidate)?.let { return it }
                 }
             }
@@ -781,7 +793,9 @@ internal object OfferParser {
             // a conservative fallback. Spatial OCR handles the much larger real screen gap.
             lines.indices.filter { WoltOfferUiText.isModernEarningsLabel(lines[it]) }.forEach { earningsIndex ->
                 for (offset in listOf(-1, -2, 0, 1, 2)) {
-                    val candidate = lines.getOrNull(earningsIndex + offset) ?: continue
+                    val index = earningsIndex + offset
+                    if (isChangeAmount(index)) continue
+                    val candidate = lines.getOrNull(index) ?: continue
                     MarketCurrencyParser.parse(candidate)?.let { return it }
                 }
             }
@@ -797,7 +811,9 @@ internal object OfferParser {
             // missing the amount while the later OCR copy already contains it.
             earningsIndexes.forEach { earningsIndex ->
                 for (offset in listOf(-1, 0, 1, -2, 2)) {
-                    val candidate = lines.getOrNull(earningsIndex + offset) ?: continue
+                    val index = earningsIndex + offset
+                    if (isChangeAmount(index)) continue
+                    val candidate = lines.getOrNull(index) ?: continue
                     MarketCurrencyParser.parse(candidate)?.let { return it }
                 }
             }
@@ -805,7 +821,11 @@ internal object OfferParser {
             // also see unrelated balances/map/UI amounts; wait instead of accepting arbitrary money.
             return null
         }
-        return MarketCurrencyParser.parse(text)
+        // Old or partially captured cards may lack the modern summary entirely.
+        // Exclude the change reminder there as well before scanning for any currency token.
+        return MarketCurrencyParser.parse(
+            lines.filterIndexed { index, _ -> !isChangeAmount(index) }.joinToString("\n")
+        )
     }
 
     private fun parseDistanceMeters(text: String): Int? {

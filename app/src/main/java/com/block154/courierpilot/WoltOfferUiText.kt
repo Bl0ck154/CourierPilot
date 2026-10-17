@@ -21,6 +21,12 @@ internal object WoltOfferUiText {
     private val compactRouteStopCountRegex = Regex(
         "(?i)^\\s*\\+?\\s*(\\d+)\\s+stops?\\b(?:\\s*\\([^)]*\\))?.*$"
     )
+    // Wolt's cash-change reminder is not a merchant, destination, or payout.
+    // It may appear before the first pickup as one OCR line or a split label/amount.
+    private val changeNeededRegex = Regex("""(?i)^change\s+needed\b.*$""")
+
+    fun isChangeNeededMetadata(line: String): Boolean =
+        changeNeededRegex.matches(normalize(line))
 
     fun routeStopCount(line: String): Int? =
         modernRouteSummaryRegex.matchEntire(line)?.groupValues?.getOrNull(1)?.toIntOrNull()
@@ -51,6 +57,7 @@ internal object WoltOfferUiText {
     fun isMerchantUiNoise(line: String): Boolean {
         val normalized = normalize(line)
         return normalized in MERCHANT_UI_NOISE ||
+            isChangeNeededMetadata(line) ||
             BOOST_METADATA_REGEX.containsMatchIn(normalized) ||
             groupedDropoffOrdersRegex.matches(line) ||
             normalized.startsWith("id check ") ||
