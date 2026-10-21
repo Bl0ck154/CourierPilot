@@ -15,6 +15,28 @@ import org.robolectric.annotation.Config
 class BoltOfferRegressionTest {
 
     @Test
+    fun boltPriceAnchorRetainsDistanceAndEtaInLowerOfferFooter() {
+        // Real Bolt layout: price at ~68%, route distance / ETA at ~84-88%.
+        // The former 12%-height tail ended near 80%, losing both fields.
+        val screenHeight = 1536
+        val priceBottom = 1090
+        val routeDistanceY = 1290
+        val estimatedTimeY = 1350
+        val bottom = OfferOcrText.boltCardBottom(priceBottom, screenHeight)
+        assertTrue(bottom >= routeDistanceY)
+        assertTrue(bottom >= estimatedTimeY)
+        assertTrue(bottom <= screenHeight)
+
+        val parsed = OfferParser.parse(
+            "€6.83\\nHoly Donut (Vilniaus g.)\\nRoute distance\\n10.6 km\\nEstimated\\n21 - 34 min\\nAccept\\nDecline"
+        )
+        assertEquals(683, parsed.priceCents)
+        assertEquals(10600, parsed.distanceMeters)
+        assertEquals(21, parsed.estimatedMinutesMin)
+        assertEquals(34, parsed.estimatedMinutesMax)
+    }
+
+    @Test
     fun merchantOcrDriftDoesNotDuplicateOneBoltOffer() {
         val first = boltRecord(
             capturedAt = 1_000_000L,
