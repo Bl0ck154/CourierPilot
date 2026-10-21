@@ -240,8 +240,7 @@ internal object OfferOcrText {
         } else {
             maxOf(minimumTop, priceAnchor.top - (imageHeight * BOLT_NO_ADDRESS_LOOKBACK_FRACTION).toInt())
         }
-        val cardBottom = (priceAnchor.bottom + imageHeight * BOLT_AFTER_PRICE_FRACTION).toInt()
-            .coerceAtMost(imageHeight)
+        val cardBottom = boltCardBottom(priceAnchor.bottom, imageHeight)
 
         val cardLines = allLines
             .filter { it.centerY in cardTop..cardBottom }
@@ -253,6 +252,9 @@ internal object OfferOcrText {
         // service will retry while the live offer remains visible.
         return cardLines.joinToString("\n")
     }
+
+    internal fun boltCardBottom(priceBottom: Int, imageHeight: Int): Int =
+        (priceBottom + imageHeight * BOLT_AFTER_PRICE_FRACTION).toInt().coerceAtMost(imageHeight)
 
     private data class CardLine(
         val top: Int,
