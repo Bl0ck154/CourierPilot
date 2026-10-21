@@ -28,7 +28,7 @@ class BoltOfferRegressionTest {
         assertTrue(bottom <= screenHeight)
 
         val parsed = OfferParser.parse(
-            "€6.83\\nHoly Donut (Vilniaus g.)\\nRoute distance\\n10.6 km\\nEstimated\\n21 - 34 min\\nAccept\\nDecline"
+            "€6.83\nHoly Donut (Vilniaus g.)\nRoute distance\n10.6 km\nEstimated\n21 - 34 min\nAccept\nDecline"
         )
         assertEquals(683, parsed.priceCents)
         assertEquals(10600, parsed.distanceMeters)
