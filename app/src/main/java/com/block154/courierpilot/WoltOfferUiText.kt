@@ -40,7 +40,18 @@ internal object WoltOfferUiText {
     fun isModernEarningsLabel(line: String): Boolean =
         normalize(line).contains(MODERN_EARNINGS_LABEL)
 
-    fun hasEarningsLabel(text: String): Boolean = text.lineSequence().any(::isEarningsLabel)
+    /**
+     * Accessibility and ML Kit may split the earnings caption into adjacent lines.
+     * Only join up to three neighbouring lines, not arbitrary screen text.
+     */
+    fun hasEarningsLabel(text: String): Boolean {
+        val lines = text.lineSequence().map(String::trim).filter(String::isNotEmpty).toList()
+        return lines.indices.any { index ->
+            (1..3).any { count ->
+                index + count <= lines.size && isEarningsLabel(lines.subList(index, index + count).joinToString(" "))
+            }
+        }
+    }
 
     fun hasModernOfferStructure(text: String): Boolean = text.lineSequence()
         .map(String::trim)

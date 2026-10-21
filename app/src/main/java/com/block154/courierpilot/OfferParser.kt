@@ -803,14 +803,21 @@ internal object OfferParser {
         }
 
         val earningsIndexes = lines.indices.filter { index ->
-            lines[index].contains(WoltOfferUiText.LEGACY_EARNINGS_LABEL, ignoreCase = true)
+            // The old earnings caption can be split over up to three OCR lines.
+            // Anchor the price search on the final caption line for the split case.
+            (1..3).any { count ->
+                index - count + 1 >= 0 &&
+                    WoltOfferUiText.isEarningsLabel(
+                        lines.subList(index - count + 1, index + 1).joinToString(" ")
+                    )
+            }
         }
         if (earningsIndexes.isNotEmpty()) {
             // Accessibility text and OCR text are concatenated, so the same Wolt label can appear
             // twice. Search every anchored neighbourhood; the first Accessibility copy may still be
             // missing the amount while the later OCR copy already contains it.
             earningsIndexes.forEach { earningsIndex ->
-                for (offset in listOf(-1, 0, 1, -2, 2)) {
+                for (offset in listOf(-1, 0, 1, -2, -3, -4, 2)) {
                     val index = earningsIndex + offset
                     if (isChangeAmount(index)) continue
                     val candidate = lines.getOrNull(index) ?: continue
