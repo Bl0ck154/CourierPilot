@@ -817,7 +817,7 @@ internal object OfferParser {
             // twice. Search every anchored neighbourhood; the first Accessibility copy may still be
             // missing the amount while the later OCR copy already contains it.
             earningsIndexes.forEach { earningsIndex ->
-                for (offset in listOf(-1, 0, 1, -2, 2)) {
+                for (offset in listOf(-1, 0, 1, -2, -3, -4, 2)) {
                     val index = earningsIndex + offset
                     if (isChangeAmount(index)) continue
                     val candidate = lines.getOrNull(index) ?: continue
