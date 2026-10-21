@@ -135,7 +135,12 @@ internal object OfferOcrText {
     private const val BOLT_ADDRESS_LOOKBACK_FRACTION = 0.36
     private const val BOLT_TITLE_MARGIN_FRACTION = 0.14
     private const val BOLT_NO_ADDRESS_LOOKBACK_FRACTION = 0.28
-    private const val BOLT_AFTER_PRICE_FRACTION = 0.12
+    // The Bolt October 2026 sheet places the large price near 68% of screen height, while
+    // "Route distance", "Estimated" and the accept button sit below 82%. The old 12%-height
+    // tail silently discarded the distance and ETA, producing an empty €/km advisor.
+    // The anchor is still the lowest plausible currency in the lower screen, and cardTop
+    // still excludes map/account content; keep the *bottom* of the same offer sheet.
+    private const val BOLT_AFTER_PRICE_FRACTION = 0.34
 
     private val priceRegex = Regex(
         "(?i)(?:€\\s*|EUR\\s*)(\\d+(?:[.,]\\d{1,2})?)|(\\d+(?:[.,]\\d{1,2})?)\\s*(?:€|EUR)"
