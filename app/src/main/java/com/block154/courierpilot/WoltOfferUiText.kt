@@ -25,6 +25,12 @@ internal object WoltOfferUiText {
     // It may appear before the first pickup as one OCR line or a split label/amount.
     private val changeNeededRegex = Regex("""(?i)^change\s+needed\b.*$""")
 
+    // Optional loyalty badge may be injected below the earnings label on some Wolt builds.
+    // Never allow it to be treated as a venue name or a route stop.
+    private val rewardPointsRegex = Regex("""(?i)^(?:[☆★✦✧]\s*)?\d{1,6}\s+reward\s+points?\s*$""")
+
+    fun isRewardPointsMetadata(line: String): Boolean =
+        rewardPointsRegex.matches(normalize(line))
     fun isChangeNeededMetadata(line: String): Boolean =
         changeNeededRegex.matches(normalize(line))
 
@@ -58,6 +64,7 @@ internal object WoltOfferUiText {
         val normalized = normalize(line)
         return normalized in MERCHANT_UI_NOISE ||
             isChangeNeededMetadata(line) ||
+            isRewardPointsMetadata(line) ||
             BOOST_METADATA_REGEX.containsMatchIn(normalized) ||
             groupedDropoffOrdersRegex.matches(line) ||
             normalized.startsWith("id check ") ||

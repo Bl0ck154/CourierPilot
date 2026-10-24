@@ -138,6 +138,50 @@ class WoltChangeNeededOfferTest {
         assertEquals(444L, WoltEarningsSpatialOcr.findMoney(lines, 1536)?.amountMinor)
     }
 
+    @Test
+    fun legacyWoltOfferWithRewardPointsKeepsEarningsAndDistance() {
+        val parsed = OfferParser.parse(
+            """
+            €6.83
+            Expected earnings for the full delivery
+            10 reward points
+            Delivery from
+            Holy Donut (Vilniaus g.)
+            Vilniaus g. 18
+            Route distance
+            10.6 km
+            Estimated
+            21 - 34 min
+            Accept
+            """.trimIndent()
+        )
+        assertEquals(683, parsed.priceCents)
+        assertEquals(10_600, parsed.distanceMeters)
+        assertEquals(listOf("Holy Donut (Vilniaus g.)"), parsed.merchantNames)
+        assertTrue(WoltOfferUiText.isRewardPointsMetadata("10 reward points"))
+        assertTrue(WoltOfferUiText.isMerchantUiNoise("10 reward points"))
+        assertFalse(WoltOfferUiText.isMerchantUiNoise("Holy Donut (Vilniaus g.)"))
+    }
+
+    @Test
+    fun modernWoltOfferWithoutRewardPointsStaysSupported() {
+        val parsed = OfferParser.parse(
+            """
+            €4.44
+            2 stops (3.7 km) • 13–20 min
+            Aibė (Nemunas)
+            $pickup
+            Customer drop-off
+            $dropoff
+            Accept
+            """.trimIndent()
+        )
+        assertEquals(444, parsed.priceCents)
+        assertEquals(3_700, parsed.distanceMeters)
+        assertEquals(listOf("Aibė (Nemunas)"), parsed.merchantNames)
+        assertNotNull(AutomaticWoltRouteCoordinator.routeFingerprint(parsed))
+    }
+
     private fun spatialLines(includeEarnings: Boolean): List<OcrSpatialLine> = buildList {
         if (includeEarnings) add(spatialLine(680, 724, "€4.44"))
         add(spatialLine(740, 765, "2 stops (3.7 km) • 13–20 min"))
