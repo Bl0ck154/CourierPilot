@@ -148,7 +148,7 @@ Release signing is documented in [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNIN
 
 [**Download the latest release**](https://github.com/Bl0ck154/CourierPilot/releases/latest) · The notes below highlight selected earlier milestones.
 
-- **0.17.10** — clearer market source/currency indicators; new field reports and documentation. See [release notes](docs/RELEASE_0.17.10.md).
+- **0.17.10** — clearer market source/currency indicators, wrapped Wolt OCR earnings fix, and new field reports. See [release notes](docs/RELEASE_0.17.10.md).
 - **0.17.9** — private Android backups disabled; new setup, privacy, compatibility and market-analysis guides. See [release notes](docs/RELEASE_0.17.9.md).
 - **0.17.5** — every screen in the new design; wrapped Wolt venue names and OCR postcode duplicates fixed. See [`docs/RELEASE_0.17.5.md`](docs/RELEASE_0.17.5.md).
 - **0.17.4** — clean screenshots: the card is hidden during capture instead of painted over. See [`docs/RELEASE_0.17.4.md`](docs/RELEASE_0.17.4.md).

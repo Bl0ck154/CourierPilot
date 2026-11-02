@@ -7,6 +7,10 @@
 - Hide city medians/trends when the city profile has not passed its readiness gate; distinguish personal and city sample counts in the summary.
 - Add regression checks for money units and sample-source labels.
 
+## Wolt capture reliability
+
+- Recognize a legacy Wolt earnings caption split across adjacent OCR lines, including the trusted-offer classification path; regression test included (incorporated from PR #173).
+
 ## Repository and developer experience
 
 - Prevent redundant expensive signed release builds when a release with the same app version already exists. Normal Android CI still runs after source changes.

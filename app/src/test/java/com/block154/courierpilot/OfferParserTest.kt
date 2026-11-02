@@ -9,6 +9,33 @@ import org.junit.Test
 class OfferParserTest {
 
     @Test
+    fun recognizesWoltLegacyOfferWhenEarningsCaptionWrapsAcrossLines() {
+        val frame = """
+            €6.83
+            Expected earnings
+            for the full delivery
+            10 reward points
+            Delivery from
+            Holy Donut (Vilniaus g.)
+            Route distance
+            10.6 km
+            Estimated
+            21 - 34 min
+            Accept
+            Decline
+        """.trimIndent()
+        val parsed = OfferParser.parse(frame)
+        assertTrue(WoltOfferUiText.hasEarningsLabel(frame))
+        assertEquals(683, parsed.priceCents)
+        assertEquals(10600, parsed.distanceMeters)
+        assertEquals("Holy Donut (Vilniaus g.)", parsed.restaurant)
+        assertEquals(21, parsed.estimatedMinutesMin)
+        assertEquals(34, parsed.estimatedMinutesMax)
+        assertTrue(CourierSignals.isTrustedWoltOcrOffer(frame, parsed))
+    }
+
+
+    @Test
     fun parsesTwoVenueOrdersWithOneSharedCustomerDropoff() {
         // Real Wolt layout: three physical stops, but two orders handed to one customer.
         val parsed = OfferParser.parse(
