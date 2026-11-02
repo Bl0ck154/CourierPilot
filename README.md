@@ -30,7 +30,7 @@
 
 The card appears while the offer is on screen and disappears when the offer ends (accepted, declined, expired or replaced).
 
-- **Rate first.** `€1.43/km` is the price divided by a Valhalla route estimate, not the platform's advertised kilometres; real-world distance may differ.
+- **Rate first.** A provisional €/km uses the courier app's stated distance; a route-verified €/km uses the Valhalla route estimate. Real-world distance may differ.
 - **Colour = verdict.** The best offers glow in saturated gold; worse offers fade towards grey until a terrible one is barely visible. The emoji fades with it.
 - **Route on the right.** 🚶 walking and 🚲 cycling distance from your GPS position via every pickup to every customer.
 - **`≈` means estimate.** When a full route cannot be trusted, the card says so (`≈ €X/km ⏳` or `?/km`) instead of pretending.
@@ -123,16 +123,16 @@ Don't judge an offer by its headline fee alone. A €5 offer across a long detou
 
 Market metrics describe **seen offers**, not proven net earnings per hour. Real take-home pay also depends on waiting time, riding time, expenses and whether an offer was accepted. See [Market methodology and limits](docs/MARKET_ANALYSIS.md). There is **no automatic acceptance** — the courier remains in control.
 
-## Start here — no server required for offer history
+## Start using it: install and allow capture
 
 **[Download the latest signed APK](https://github.com/Bl0ck154/CourierPilot/releases/latest)** · [Quick start](docs/GETTING_STARTED.md) · [Privacy & permissions](docs/PRIVACY_AND_PERMISSIONS.md) · [Compatibility](docs/COMPATIBILITY.md)
 
 1. Install the APK on Android 11+.
 2. Enable **Notification access** and **Accessibility → CourierPilot screen capture** after reading the permission explanations.
-3. Use Wolt or Bolt Food. Offers with a plausible visible price can be archived locally even without Valhalla.
+3. Use Wolt or Bolt Food. The live card is enabled by default. Offers with a visible payout are archived; a **provisional €/km** estimate is shown when the platform also provides a distance.
 4. **Optional advanced routing:** grant foreground location, configure a protected Valhalla endpoint and its bearer token, then enable routing. Do not paste your own token into public issues.
 
-**Important:** automatic real-route €/km scoring requires a working protected Valhalla endpoint; CourierPilot does not currently provide a public shared routing token. Without it, offer capture/history still works, but a route-verified €/km rating is not available. The app never automatically taps Accept or Decline. Compatibility with every country, platform version or device is not guaranteed.
+**Important:** route-verified €/km scoring requires a working protected Valhalla endpoint; CourierPilot does not currently provide a public shared routing token. The main offer-capture/history flow and provisional platform-distance €/km still work without it. The app never automatically taps Accept or Decline. Compatibility with every country, platform version or device is not guaranteed.
 
 ## Build
 
@@ -148,6 +148,7 @@ Release signing is documented in [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNIN
 
 [**Download the latest release**](https://github.com/Bl0ck154/CourierPilot/releases/latest) · The notes below highlight selected earlier milestones.
 
+- **0.17.11** — direct Android permission shortcuts on Home and clearer basic/advanced routing setup. [Notes](docs/RELEASE_0.17.11.md).
 - **0.17.10** — clearer market source/currency indicators, wrapped Wolt OCR earnings fix, and new field reports. See [release notes](docs/RELEASE_0.17.10.md).
 - **0.17.9** — private Android backups disabled; new setup, privacy, compatibility and market-analysis guides. See [release notes](docs/RELEASE_0.17.9.md).
 - **0.17.5** — every screen in the new design; wrapped Wolt venue names and OCR postcode duplicates fixed. See [`docs/RELEASE_0.17.5.md`](docs/RELEASE_0.17.5.md).

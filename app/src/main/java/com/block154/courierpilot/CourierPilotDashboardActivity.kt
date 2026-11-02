@@ -490,18 +490,47 @@ private fun DashboardHome(
             item {
                 Spacer(Modifier.height(14.dp))
                 Surface(
-                    onClick = onSettings,
                     shape = RoundedCornerShape(20.dp),
                     color = MaterialTheme.colorScheme.errorContainer,
                 ) {
-                    Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Rounded.WarningAmber, contentDescription = null)
-                        Spacer(Modifier.size(12.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text("Capture needs attention", fontWeight = FontWeight.Bold)
-                            Text("Open settings to restore Android access.", fontSize = 12.sp)
+                    Column(
+                        Modifier.fillMaxWidth().padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Rounded.WarningAmber, contentDescription = null)
+                            Spacer(Modifier.size(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text("Finish Android capture setup", fontWeight = FontWeight.Bold)
+                                Text(
+                                    "Enable the missing permissions below to read Wolt and Bolt offers. " +
+                                        "No account or route server is needed.",
+                                    fontSize = 12.sp,
+                                )
+                            }
                         }
-                        Icon(Icons.Rounded.ChevronRight, contentDescription = null)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (!notificationOk) {
+                                FilledTonalButton(
+                                    onClick = {
+                                        context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                                    },
+                                ) { Text("Notifications") }
+                            }
+                            if (!accessibilityOk) {
+                                FilledTonalButton(
+                                    onClick = {
+                                        context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                                    },
+                                ) { Text("Accessibility") }
+                            }
+                        }
+                        Text(
+                            "Grant access only after reviewing Android's permission descriptions. " +
+                                "You can turn either permission off in system settings.",
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            fontSize = 11.sp,
+                        )
                     }
                 }
             }
@@ -1298,7 +1327,8 @@ private fun DashboardSettings(
             SettingsGroup {
                 SettingsSwitchRow(
                     "Wolt calculated route",
-                    if (routeReady) "Use phone GPS + visible Wolt stops for Valhalla comparison." else "Unavailable until the private route service is provisioned.",
+                    if (routeReady) "Use phone GPS + visible Wolt stops for Valhalla comparison." else
+                        "Optional advanced routing needs a private HTTPS Valhalla connection.",
                     woltRoute,
                     enabled = routeReady,
                 ) {
@@ -1308,7 +1338,8 @@ private fun DashboardSettings(
                 SettingsDivider()
                 SettingsSwitchRow(
                     "Bolt calculated route",
-                    if (routeReady) "Calculate to pickup and recover customer map point only when evidence is sufficient." else "Unavailable until the private route service is provisioned.",
+                    if (routeReady) "Calculate to pickup and recover customer map point only when evidence is sufficient." else
+                        "Optional advanced routing needs a private HTTPS Valhalla connection.",
                     boltRoute,
                     enabled = routeReady,
                 ) {
@@ -1317,7 +1348,8 @@ private fun DashboardSettings(
                 }
             }
         }
-        item { Footnote(if (routeReady) "Private route service ready." else "Route service needs developer provisioning.") }
+        item { Footnote(if (routeReady) "Advanced routes are ready. Offer capture also works without routing." else
+            "Advanced Valhalla routes are optional. Offer capture and platform-distance estimates work without a server.") }
 
         item { SectionLabel("Pay comparison") }
         item {
