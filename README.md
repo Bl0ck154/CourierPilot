@@ -128,7 +128,7 @@ Market metrics describe **seen offers**, not proven net earnings per hour. Real 
 **[Download the latest signed APK](https://github.com/Bl0ck154/CourierPilot/releases/latest)** · [Quick start](docs/GETTING_STARTED.md) · [Privacy & permissions](docs/PRIVACY_AND_PERMISSIONS.md) · [Compatibility](docs/COMPATIBILITY.md)
 
 1. Install the APK on Android 11+.
-2. Enable **Notification access** and **Accessibility → CourierPilot screen capture** after reading the permission explanations.
+2. Enable **Notification access** and **Accessibility → CourierPilot screen capture** after reading the permission explanations. On Android 13+, a sideloaded APK may show a [Restricted settings](docs/ANDROID_RESTRICTED_SETTINGS.md) warning.
 3. Use Wolt or Bolt Food. The live card is enabled by default. Offers with a visible payout are archived; a **provisional €/km** estimate is shown when the platform also provides a distance.
 4. **Optional advanced routing:** grant foreground location, configure a protected Valhalla endpoint and its bearer token, then enable routing. Do not paste your own token into public issues.
 
