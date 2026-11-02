@@ -238,6 +238,26 @@ class AddressEvidenceV0130Test {
     }
 
     @Test
+    fun revisionFiveForcedSecondReplayIsIdempotent() {
+        val house = uniqueHouse(1350)
+        val id = insertLegacy(
+            display = "ešvitrigailos $house",
+            raw = "Švitrigailos $house\nešvitrigailos $house",
+        )
+
+        rerunRepair()
+        val firstAddress = database.findAddressById(id)!!
+        val firstObservations = database.observationsForAddress(id)
+
+        // Simulate a future baseline replay test forcing the already-completed repair to execute
+        // again. Only the revision marker is rewound; the repaired database itself stays intact.
+        rerunRepair()
+
+        assertEquals(firstAddress, database.findAddressById(id))
+        assertEquals(firstObservations, database.observationsForAddress(id))
+    }
+
+    @Test
     fun directPersistenceRequiresEvidenceAndOcrEvidenceFailsClosed() {
         val house = uniqueHouse(1400)
         val address = "Rūdninkų gatvė $house"
