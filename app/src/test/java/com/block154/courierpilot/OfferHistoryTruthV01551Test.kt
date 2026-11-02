@@ -2,6 +2,7 @@ package com.block154.courierpilot
 
 import android.content.Context
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -229,7 +230,9 @@ class OfferHistoryTruthV01551Test {
     fun currentOfferRepairForcedSecondReplayIsIdempotent() {
         val context: Context = RuntimeEnvironment.getApplication()
         val database = OfferDatabase.get(context)
-        val now = System.currentTimeMillis()
+        // Another regression uses the same fixed Wolt add-on addresses and fee.
+        // Isolate this replay fixture from the ten-minute historical dedupe window.
+        val now = System.currentTimeMillis() - 24L * 60L * 60L * 1000L
         val unique = (System.nanoTime() and 0xfffffff).coerceAtLeast(40_000L)
         val raw = """
             +€2.78
@@ -268,6 +271,7 @@ class OfferHistoryTruthV01551Test {
                 captureKey = "repair-replay-$unique",
             )
         )
+        assertNotNull(database.findById(offerId))
         database.updateMarketRoute(
             offerId = offerId,
             routeDistanceMeters = 6_800,
