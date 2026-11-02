@@ -9,6 +9,10 @@
   <img src="https://img.shields.io/badge/data-local--first-1f6feb" alt="Local-first">
 </p>
 
+<p align="center">
+  <a href="https://github.com/Bl0ck154/CourierPilot/releases/latest"><strong>⬇ Download latest Android APK</strong></a> · <a href="docs/RELEASE_SIGNING.md">Release signing</a> · <a href="CONTRIBUTING.md">Contribute</a>
+</p>
+
 > **Unofficial project.** CourierPilot is not affiliated with, endorsed by, or sponsored by Wolt, Bolt, or their affiliates.
 
 ## What it is
@@ -129,7 +133,7 @@ gradle testDebugUnitTest assembleDebug
 
 Android 11+ · Kotlin · Android SDK 35 · Java 17 · Jetpack Compose / Material 3 · NotificationListenerService · AccessibilityService · ML Kit Text Recognition · self-hosted Valhalla · SQLite · JUnit/Robolectric · GitHub Actions.
 
-Release signing is documented in [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNING.md). Contributions: see [`CONTRIBUTING.md`](CONTRIBUTING.md) and never attach unredacted courier screenshots.
+Release signing is documented in [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNING.md). Contributions: see [`CONTRIBUTING.md`](CONTRIBUTING.md) and never attach unredacted courier screenshots. Source code is available under the [MIT License](LICENSE).
 
 ## Releases and roadmap
 
