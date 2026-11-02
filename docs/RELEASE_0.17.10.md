@@ -15,6 +15,7 @@
 
 - Prevent redundant expensive signed release builds when a release with the same app version already exists. Normal Android CI still runs after source changes.
 - Publish a privacy-preserving Android field-testing template and a contribution checklist.
+- Allow manual debug APK builds in the existing CI workflow without adding a duplicate push-triggered workflow.
 - Expand factual website FAQ and search metadata.
 
 ## Unchanged
