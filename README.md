@@ -89,6 +89,12 @@ Bolt does not show the customer address before you accept, only a map. CourierPi
 
 In developer mode the card also shows tiny debug lines (the pickup address and the recovered customer address), and accepted Bolt orders are compared with the real address Bolt reveals, so recovery accuracy is measured rather than guessed.
 
+### Offline-from-routing insight
+
+**No route server is needed** to see personal provisional offer-rate trends. The Pay screen separately groups your last 90 days of captured Wolt/Bolt offers with a platform-reported distance. The estimate is labelled as platform-supplied, and it is **not** mixed with Valhalla-verified city statistics. Stacked incremental add-ons are excluded because their extra distance is not a full-route denominator.
+
+For future optional worldwide routing, see the [routing alternatives and public beta design](docs/ROUTING_FOR_EVERYONE.md).
+
 ## Features
 
 | | |
@@ -122,6 +128,8 @@ Raw offer text, exact addresses, GPS points and Bolt samples stay out of the pri
 Don't judge an offer by its headline fee alone. A €5 offer across a long detour can be worse than a smaller payout nearby. CourierPilot estimates **pay per routed kilometre**, keeps the observed offer distribution, and compares your recent data with an eligible city baseline where available. It separates personal and city sources and shows confidence and insufficient-sample states instead of inventing a market average.
 
 Market metrics describe **seen offers**, not proven net earnings per hour. Real take-home pay also depends on waiting time, riding time, expenses and whether an offer was accepted. See [Market methodology and limits](docs/MARKET_ANALYSIS.md). There is **no automatic acceptance** — the courier remains in control.
+
+[Public routing research and hosting options](docs/ROUTING_FOR_EVERYONE.md) · [Market methodology](docs/MARKET_ANALYSIS.md)
 
 ## Start using it: install and allow capture
 

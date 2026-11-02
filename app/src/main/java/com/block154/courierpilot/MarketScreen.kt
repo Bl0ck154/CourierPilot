@@ -67,6 +67,8 @@ data class MarketScreenState(
     val period: MarketHistoryPeriod = MarketHistoryPeriod.WEEK,
     val personalHistory: List<MarketHistoryBucket> = emptyList(),
     val cityHistory: List<MarketHistoryBucket> = emptyList(),
+    val platformCurrencyCode: String = "EUR",
+    val platformHistory: List<MarketHistoryBucket> = emptyList(),
     val loading: Boolean = false,
     val offline: Boolean = false,
 ) {
@@ -133,7 +135,27 @@ fun MarketScreen(
                 }
             }
 
-            item { HistoryLabel("Your offers") }
+            item { HistoryLabel("Platform-distance offers · local only") }
+            item {
+                Text(
+                    "Past 90 days of your own captured offers, across locations. Distance and payout " +
+                        "come from Wolt/Bolt, not a verified walking/cycling route. " +
+                        "Add-on offers are excluded; no values are shared or used in city scoring.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(start = 4.dp, top = 4.dp, bottom = 10.dp),
+                )
+            }
+            if (state.platformHistory.isEmpty()) {
+                item { EmptyCard("No priced offers with a platform-reported distance yet.") }
+            } else {
+                itemsIndexed(state.platformHistory, key = { _, bucket -> "platform:${bucket.label}" }) { index, bucket ->
+                    PlatformDistanceHistoryRow(bucket, state.platformCurrencyCode, index, state.platformHistory.size)
+                }
+            }
+
+
+            item { HistoryLabel("Verified routes · your offers") }
             if (state.personalHistory.isEmpty()) {
                 item { EmptyCard("Not enough personal route data yet.") }
             } else {
@@ -142,7 +164,7 @@ fun MarketScreen(
                 }
             }
 
-            item { HistoryLabel("City") }
+            item { HistoryLabel("Verified routes · city") }
             if (state.cityHistory.isEmpty()) {
                 item { EmptyCard("City comparison is still learning.") }
             } else {
@@ -259,6 +281,26 @@ private fun HistoryRow(bucket: MarketHistoryBucket, currencyCode: String, index:
             RateText(OfferRowRatePolicy.formatValue(value, currencyCode), "/km", grade)
             VerdictEmoji(grade)
         }
+    }
+}
+
+/** No verdict colours or emoji for the weaker platform-distance source. */
+@Composable
+private fun PlatformDistanceHistoryRow(bucket: MarketHistoryBucket, currencyCode: String, index: Int, count: Int) {
+    GroupedRow(index = index, count = count) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(bucket.label, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            Text(
+                "${bucket.sampleCount} offers · typical ${marketRateRange(bucket.p25, bucket.p75, currencyCode)}",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp,
+            )
+        }
+        Text(
+            marketRate(bucket.median, currencyCode),
+            fontFamily = RateNumberFamily,
+            fontSize = 19.sp,
+        )
     }
 }
 

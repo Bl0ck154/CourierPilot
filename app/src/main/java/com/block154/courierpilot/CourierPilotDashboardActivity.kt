@@ -292,6 +292,8 @@ private data class DashboardMarketData(
     val local: LocalMarketProfile?,
     val personalHistory: List<MarketHistoryBucket>,
     val cityHistory: List<MarketHistoryBucket>,
+    val platformCurrencyCode: String,
+    val platformHistory: List<MarketHistoryBucket>,
 )
 
 private fun loadDashboardMarketData(
@@ -320,7 +322,20 @@ private fun loadDashboardMarketData(
             sampleCount = point.sampleCount,
         )
     }
-    return DashboardMarketData(platformName, periodKey, currencyCode, profile, local, personalHistory, cityHistory)
+    val recentOffers = OfferDatabase.get(context).recordsSince(
+        System.currentTimeMillis() - PlatformDistanceTrends.HISTORY_DAYS * 86_400_000L,
+        limit = 10_000,
+    )
+    val platformCurrencyCode = PlatformDistanceTrends.recentCurrency(recentOffers, platformName) ?: currencyCode
+    val platformHistory = PlatformDistanceTrends.buckets(
+        recentOffers, platformName, platformCurrencyCode,
+        MarketHistoryPeriod.valueOf(periodKey.uppercase(Locale.ROOT)),
+        System.currentTimeMillis(),
+    )
+    return DashboardMarketData(
+        platformName, periodKey, currencyCode, profile, local, personalHistory, cityHistory,
+        platformCurrencyCode, platformHistory,
+    )
 }
 
 @Composable
@@ -391,6 +406,8 @@ private fun DashboardMarket(padding: PaddingValues, refreshToken: Int) {
         period = period,
         personalHistory = loaded.personalHistory,
         cityHistory = loaded.cityHistory,
+        platformCurrencyCode = loaded.platformCurrencyCode,
+        platformHistory = loaded.platformHistory,
     )
     MarketScreen(
         state = state,
