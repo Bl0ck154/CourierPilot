@@ -5,7 +5,7 @@
 1. Open the [latest release](https://github.com/Bl0ck154/CourierPilot/releases/latest) and download the signed `CourierPilot-v*.apk`. The checksum is published beside it.
 2. Verify that you downloaded the release from **Bl0ck154/CourierPilot**, not an unofficial mirror. Android 11 or newer is required.
 3. Install the APK using Android's package installer. Your phone may ask you to allow installation from this source; enable this only for the source you trust.
-4. Open CourierPilot. The Home screen shows **Notifications** and **Accessibility** shortcuts for any missing Android access. Read [what these sensitive permissions expose](PRIVACY_AND_PERMISSIONS.md) before granting them.
+4. Open CourierPilot. The Home screen shows **Notifications** and **Accessibility** shortcuts for any missing Android access. Read [what these sensitive permissions expose](PRIVACY_AND_PERMISSIONS.md) before granting them. On Android 13+, read the [restricted-settings help](ANDROID_RESTRICTED_SETTINGS.md) if Android blocks a permission.
 5. Open Wolt Partner or Bolt Food and inspect **Home** and **History** after a priced offer. The app must not accept or decline orders for you.
 
 ## Basic: install, capture, and see an offer estimate
@@ -25,7 +25,7 @@ The local Home, History, Addresses and Stats screens work without Valhalla. Mark
 
 ## Troubleshooting
 
-- **No capture:** check Notification access, Accessibility service status, power/battery restrictions and that the courier app really shows a non-zero payout.
+- **No capture:** check Notification access, Accessibility service status, power/battery restrictions and that the courier app really shows a non-zero payout. If Android displays a restricted-setting warning for the GitHub APK, see the [Android 13+ instructions](ANDROID_RESTRICTED_SETTINGS.md) and review the security implications first.
 - **No provisional €/km:** a visible payout and valid platform-reported distance are both needed. Some Bolt offers omit the full distance before acceptance.
 - **No coloured route-verified verdict:** this is an advanced feature. Check routing opt-in, the private HTTPS endpoint/token, GPS and resolved route stops. The app refuses to invent a route.
 - **Incorrect Wolt/Bolt OCR:** use the **Reliability** diagnostics report and file a [redacted bug report](https://github.com/Bl0ck154/CourierPilot/issues/new/choose). Do not attach customer names, exact addresses, screenshots containing sensitive information, or access codes.
