@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/Bl0ck154/CourierPilot/actions/workflows/ci.yml"><img src="https://github.com/Bl0ck154/CourierPilot/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/version-0.16.1-53E09C" alt="Version 0.16.1">
+  <a href="https://github.com/Bl0ck154/CourierPilot/releases/latest"><img src="https://img.shields.io/github/v/release/Bl0ck154/CourierPilot?label=latest%20release" alt="Latest CourierPilot release"></a>
   <img src="https://img.shields.io/badge/Android-11%2B-3DDC84?logo=android&logoColor=white" alt="Android 11+">
   <img src="https://img.shields.io/badge/data-local--first-1f6feb" alt="Local-first">
 </p>
@@ -132,6 +132,8 @@ Android 11+ · Kotlin · Android SDK 35 · Java 17 · Jetpack Compose / Material
 Release signing is documented in [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNING.md). Contributions: see [`CONTRIBUTING.md`](CONTRIBUTING.md) and never attach unredacted courier screenshots.
 
 ## Releases and roadmap
+
+[**Download the latest release**](https://github.com/Bl0ck154/CourierPilot/releases/latest) · The notes below highlight selected earlier milestones.
 
 - **0.17.5** — every screen in the new design; wrapped Wolt venue names and OCR postcode duplicates fixed. See [`docs/RELEASE_0.17.5.md`](docs/RELEASE_0.17.5.md).
 - **0.17.4** — clean screenshots: the card is hidden during capture instead of painted over. See [`docs/RELEASE_0.17.4.md`](docs/RELEASE_0.17.4.md).
