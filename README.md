@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Bl0ck154/CourierPilot/releases/latest"><strong>⬇ Download latest Android APK</strong></a> · <a href="docs/index.html">Product overview</a> · <a href="docs/GETTING_STARTED.md">Quick start</a> · <a href="CONTRIBUTING.md">Contribute</a>
+  <a href="https://github.com/Bl0ck154/CourierPilot/releases/latest"><strong>⬇ Download latest Android APK</strong></a> · <a href="https://bl0ck154.github.io/CourierPilot/">Website</a> · <a href="docs/GETTING_STARTED.md">Quick start</a> · <a href="CONTRIBUTING.md">Contribute</a>
 </p>
 
 > **Unofficial project.** CourierPilot is not affiliated with, endorsed by, or sponsored by Wolt, Bolt, or their affiliates.
