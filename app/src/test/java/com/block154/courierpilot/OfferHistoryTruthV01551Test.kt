@@ -226,6 +226,76 @@ class OfferHistoryTruthV01551Test {
     }
 
     @Test
+    fun currentOfferRepairForcedSecondReplayIsIdempotent() {
+        val context: Context = RuntimeEnvironment.getApplication()
+        val database = OfferDatabase.get(context)
+        val now = System.currentTimeMillis()
+        val unique = (System.nanoTime() and 0xfffffff).coerceAtLeast(40_000L)
+        val raw = """
+            +€2.78
+            +2 stops (2.3 km) • 5–12 min extra
+            Replay Cafe (Mindaugo g.)
+            Mindaugo g. 11, Vilnius, LT03225
+            Customer drop-off
+            Cyber City, Vilnius, 03230
+            Customer drop-off
+            Pelėsos gatvė 10, Vilnius, 03225
+            Estimated earnings for the full delivery
+            Accept
+            Decline
+        """.trimIndent()
+        val offerId = database.insert(
+            OfferRecord(
+                capturedAt = now,
+                platform = "WoltReplay$unique",
+                packageName = CourierSignals.WOLT_PACKAGE,
+                priceCents = 322_500,
+                distanceMeters = 2_300,
+                restaurant = "Pickup · Mindaugo g. 11, Vilnius, LT03225",
+                screenshotUri = "",
+                screenshotFilename = "",
+                rawText = raw,
+                merchantNames = listOf("8 Customer drop-off", "Pickup"),
+                pickupAddresses = listOf(
+                    "Mindaugo g. 11, Vilnius, LT03225",
+                    "Pelėsos gatvė 10, Vilnius, 03225",
+                ),
+                customerNames = listOf("Customer"),
+                dropoffAddresses = listOf("Mindaugo g. 11, Vilnius, LT03225"),
+                deliveryCount = 1,
+                estimatedMinutesMin = 5,
+                estimatedMinutesMax = 12,
+                captureKey = "repair-replay-$unique",
+            )
+        )
+        database.updateMarketRoute(
+            offerId = offerId,
+            routeDistanceMeters = 6_800,
+            routeSource = "valhalla_mean",
+            city = MarketCity("replay-$unique", "Vilnius", "LT", now),
+        )
+        val repairPrefs = context.getSharedPreferences("courier_offer_repairs", Context.MODE_PRIVATE)
+        repairPrefs.edit().putInt("parser_repair_revision", 16).commit()
+
+        OfferDataRepair.runIfNeeded(context)
+        val first = database.findById(offerId)!!
+
+        // Force the current repair over its own output. This is deliberately stronger than the
+        // normal revision-marker short circuit and protects future baseline-to-current replay work.
+        repairPrefs.edit().putInt("parser_repair_revision", 16).commit()
+        OfferDataRepair.runIfNeeded(context)
+        val second = database.findById(offerId)!!
+
+        assertEquals(first, second)
+        assertEquals(278, second.priceCents)
+        assertEquals(
+            listOf("Cyber City, Vilnius, 03230", "Pelėsos gatvė 10, Vilnius, 03225"),
+            second.dropoffAddresses,
+        )
+        assertNull(second.marketRouteDistanceMeters)
+    }
+
+    @Test
     fun repairRevisionRemovesBoostMerchantAndRecoversSushiCityDropoff() {
         val context: Context = RuntimeEnvironment.getApplication()
         val database = OfferDatabase.get(context)
