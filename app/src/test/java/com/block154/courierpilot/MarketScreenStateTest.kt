@@ -28,4 +28,16 @@ class MarketScreenStateTest {
         assertTrue(MarketUiTrend(12.5, true).label.startsWith("↑"))
         assertTrue(MarketUiTrend(4.0, false).label.startsWith("↓"))
     }
+    @Test fun payUnitRespectsCurrentCurrency() {
+        assertEquals("€/km", MarketScreenState(currencyCode = "EUR").payRateUnit)
+        assertEquals("PLN/km", MarketScreenState(currencyCode = "PLN").payRateUnit)
+        assertEquals("CZK/km", MarketScreenState(currencyCode = "czk").payRateUnit)
+    }
+
+    @Test fun marketSampleCountIdentifiesItsSource() {
+        assertEquals("eligible personal offers", MarketScreenState(source = MarketSource.PERSONAL_AND_CITY).offerCountDescription)
+        assertEquals("eligible city offers", MarketScreenState(source = MarketSource.CITY).offerCountDescription)
+        assertEquals("eligible offers", MarketScreenState(source = MarketSource.LEARNING).offerCountDescription)
+    }
+
 }

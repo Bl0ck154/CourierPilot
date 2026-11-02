@@ -1,0 +1,68 @@
+name: Courier field test
+description: Report Wolt/Bolt compatibility from a real Android phone (no customer data)
+title: "[Field test] "
+labels: ["compatibility", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Help document where CourierPilot works and where it does not. **Do not attach unredacted courier app screenshots, customer locations, addresses, door codes or notifications.** Test only on your own device.
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [Wolt Partner, Bolt Food]
+    validations:
+      required: true
+  - type: input
+    id: region
+    attributes:
+      label: Country and city (no exact address)
+      placeholder: "Lithuania, Vilnius"
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Courier app and CourierPilot versions
+      placeholder: "Wolt Partner X.Y / CourierPilot 0.17.10"
+    validations:
+      required: true
+  - type: input
+    id: android
+    attributes:
+      label: Android version and phone model
+      placeholder: "Android 15 / Pixel 8"
+    validations:
+      required: true
+  - type: dropdown
+    id: offer_type
+    attributes:
+      label: Offer type tested
+      options: [Single pickup/drop-off, Stacked or add-on, Other]
+    validations:
+      required: true
+  - type: checkboxes
+    id: tested
+    attributes:
+      label: What did you verify?
+      options:
+        - label: The offer was archived once, and payout/currency were correct
+        - label: Pickup/drop-off count and order were correct
+        - label: The overlay did not obstruct Accept/Decline
+        - label: Route estimate was labeled accurately (or missing when unavailable)
+        - label: History and statistics showed no invented values
+  - type: textarea
+    id: observations
+    attributes:
+      label: Results and limitations
+      description: What worked or failed? Use synthetic examples and omit order/customer identifiers.
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy check
+      options:
+        - label: This report contains no customer identity, exact addresses, private screenshots, secret tokens, or door codes.
+          required: true

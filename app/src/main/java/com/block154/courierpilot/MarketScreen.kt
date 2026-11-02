@@ -69,7 +69,17 @@ data class MarketScreenState(
     val cityHistory: List<MarketHistoryBucket> = emptyList(),
     val loading: Boolean = false,
     val offline: Boolean = false,
-)
+) {
+    val payRateUnit: String
+        get() = if (currencyCode.equals("EUR", ignoreCase = true)) "€/km" else "${currencyCode.uppercase(java.util.Locale.ROOT)}/km"
+
+    val offerCountDescription: String
+        get() = when (source) {
+            MarketSource.PERSONAL, MarketSource.PERSONAL_AND_CITY -> "eligible personal offers"
+            MarketSource.CITY -> "eligible city offers"
+            MarketSource.LEARNING -> "eligible offers"
+        }
+}
 
 @Composable
 fun MarketScreen(
@@ -95,7 +105,7 @@ fun MarketScreen(
             item {
                 Column(Modifier.padding(start = 4.dp, top = 4.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text("Pay", fontSize = 26.sp, fontWeight = FontWeight.ExtraBold)
-                    Text("Your €/km compared with the city", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+                    Text("Your ${state.payRateUnit} compared with the city", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
                 }
             }
             item {
@@ -178,7 +188,7 @@ private fun PayOverviewCard(state: MarketScreenState) {
                         fontSize = 14.sp,
                     )
                     Text(
-                        "${state.sampleCount} eligible offers · ${state.confidence.displayName()}",
+                        "${state.sampleCount} ${state.offerCountDescription} · ${state.confidence.displayName()}",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.5.sp,
                     )
