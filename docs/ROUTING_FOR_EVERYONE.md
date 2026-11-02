@@ -34,13 +34,11 @@ FOSSGIS asks mobile/web developers to notify them through Valhalla GitHub Discus
 
 The current Android `RouteEndpointConfig` requires a valid HTTPS origin and private bearer token. To integrate a no-key demo, add a **distinct provider abstraction**, not a magic string or fake token that disables authentication on the private transport. The future opt-in UI must disclose that live GPS/stop coordinates are sent to an outside organisation; the user may decline without loss of local offer capture. It must apply global/per-install limits, use `X-Client-Id`, handle 429/retry, and fall back to platform-only estimates. No uncontrolled background requests to a demo.
 
-## Measured production snapshot (no stress testing)
+## Current routing coverage and readiness
 
-Production VPS `zivkr-ai` at inspection: ~7.7 GiB physical memory, ~4.3 GiB available, ~4.1 GiB used swap, **91% disk used**. Docker containers `courierpilot-valhalla` and `courierpilot-valhalla-gateway` were healthy with no restarts since 2026-10-19. Their observed CPU was ~0.19% for Valhalla and ~0% for nginx; Valhalla Docker Stats showed ~10.9 MiB charged memory. **Do not extrapolate from this low value**: cached/mapped routing tile pages consume OS page cache, and other VPS services share RAM. There are **no hard container CPU/RAM limits** currently.
+The private self-hosted Valhalla currently has **Lithuania-only** map extracts. It is not a worldwide routing service. Before a public beta it needs measured capacity under realistic load, strict resource budgets, coverage checks, abuse mitigation and operational isolation. Private server metrics, addresses, detailed gateway thresholds and storage headroom should stay out of this public repository; they are reviewed in owner-only operations reports.
 
-**The route graph covers Lithuania only.** It was built from `lithuania-latest.osm.pbf` (~212 MiB), with tile extract ~199 MiB, expanded tiles ~200 MiB. The route data folder is ~737 MiB including metadata and both graph representations. Country additions require new region extracts, compatible graph builds, storage, and revalidation. The current gateway accepts authenticated `POST /route` and `GET /status`, with nginx limit per IP 5 req/s + burst 20, max 10 connections/IP, request body max 64 KiB. These limits **do not** establish per-device/global quotas. Two low-volume local authenticated Vilnius bicycle tests returned HTTP 200 (approx. 328 ms, 22 ms sequentially); not a concurrency benchmark.
-
-Historical 7-day gateway log parsing found no attributable `POST /route` requests before this deliberate smoke test. That is not proof that there was no use through other paths/log retention. No location or user data was copied into this document.
+A short authenticated local smoke test succeeded, but a successful route calculation is not a capacity benchmark. Do not enable public requests on the production origin without a rate-limited edge gateway and kill switch.
 
 ## How to expose a private Lithuanian beta safely
 
