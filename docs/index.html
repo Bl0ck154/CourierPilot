@@ -5,11 +5,19 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#101722">
   <meta name="description" content="CourierPilot is a free, open-source Android companion for Wolt Partner and Bolt Food couriers. Understand offer payout per routed kilometre, compare market trends and keep a private offer history.">
-  <meta name="keywords" content="CourierPilot, Wolt Partner, Bolt Food, courier, delivery driver, €/km, offer analysis, courier earnings, Android, open source">
+  <meta name="keywords" content="Wolt courier assistant, Bolt Food courier, delivery earnings analysis, courier offer €/km, Android courier app, CourierPilot">
+  <meta name="robots" content="index, follow, max-image-preview:large">
+  <meta property="og:site_name" content="CourierPilot">
+  <meta property="og:url" content="https://bl0ck154.github.io/CourierPilot/">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="CourierPilot: review the pay per kilometre">
+  <meta name="twitter:description" content="Analyze Wolt and Bolt Food offers on Android. Compare route estimates and market pay trends.">
+  <meta name="twitter:image" content="https://raw.githubusercontent.com/Bl0ck154/CourierPilot/main/docs/assets/app-screens-light.png">
   <meta property="og:type" content="website">
   <meta property="og:title" content="CourierPilot — Work smarter, not longer">
   <meta property="og:description" content="Compare pay per routed kilometre, spot offer trends and make better courier decisions. No auto-accept.">
   <meta property="og:image" content="https://raw.githubusercontent.com/Bl0ck154/CourierPilot/main/docs/assets/app-screens-light.png">
+  <link rel="icon" type="image/svg+xml" href="assets/courierpilot-icon.svg">
   <link rel="canonical" href="https://bl0ck154.github.io/CourierPilot/">
   <title>CourierPilot — Wolt & Bolt Food courier offer insights for Android</title>
   <style>
@@ -44,11 +52,14 @@
     .steps p{margin:0;color:#b8cad9}
     .steps h3::before{counter-increment:step;content:counter(step) "  ";color:var(--mint)}
     .disclaimer{padding:20px 24px;background:#1e2c35;border-left:4px solid var(--mint);border-radius:8px}
+    .faq{max-width:850px}.faq details{border-bottom:1px solid var(--line);padding:17px 0}
+    .faq summary{cursor:pointer;font-weight:740;font-size:1.07rem}
+    .faq details p{color:#bdccda;margin-bottom:5px}
     footer{padding:32px 0 55px;display:flex;flex-wrap:wrap;justify-content:space-between;gap:15px;color:var(--muted);font-size:.88rem}
     footer a{color:#d3e8ef}
     @media(max-width:700px){main{padding-top:50px}.features,.steps{grid-template-columns:1fr}header{align-items:flex-start;flex-direction:column}section{padding:38px 0}}
   </style>
-  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"CourierPilot","description":"Local-first Android companion for Wolt Partner and Bolt Food couriers with offer history, route-aware money-per-kilometre estimates and market comparisons.","applicationCategory":"BusinessApplication","operatingSystem":"Android 11+","softwareVersion":"0.17.9","license":"https://github.com/Bl0ck154/CourierPilot/blob/main/LICENSE","downloadUrl":"https://github.com/Bl0ck154/CourierPilot/releases/latest","url":"https://bl0ck154.github.io/CourierPilot/","sameAs":"https://github.com/Bl0ck154/CourierPilot","offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}}</script>
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"SoftwareApplication","name":"CourierPilot","description":"Local-first Android companion for Wolt Partner and Bolt Food couriers with offer history, route-aware money-per-kilometre estimates and market comparisons.","applicationCategory":"BusinessApplication","operatingSystem":"Android 11+","softwareVersion":"0.17.10","license":"https://github.com/Bl0ck154/CourierPilot/blob/main/LICENSE","downloadUrl":"https://github.com/Bl0ck154/CourierPilot/releases/latest","url":"https://bl0ck154.github.io/CourierPilot/","sameAs":"https://github.com/Bl0ck154/CourierPilot","offers":{"@type":"Offer","price":"0","priceCurrency":"EUR"}}</script>
 </head>
 <body>
   <div class="container">
@@ -87,12 +98,22 @@
         </div>
         <p><a href="https://github.com/Bl0ck154/CourierPilot/blob/main/docs/GETTING_STARTED.md">Read the setup guide</a> · <a href="https://github.com/Bl0ck154/CourierPilot/blob/main/docs/MARKET_ANALYSIS.md">Market methodology</a> · <a href="https://github.com/Bl0ck154/CourierPilot/blob/main/docs/PRIVACY_AND_PERMISSIONS.md">Privacy & permissions</a></p>
       </section>
+      <section id="questions">
+        <h2>Questions couriers ask</h2>
+        <div class="faq">
+          <details><summary>Is CourierPilot free?</summary><p>The Android app and source code are available without a subscription under an MIT licence. It needs Android 11 or newer. Advanced route calculations need a Valhalla service and a private token; there is no shared public routing key in the APK.</p></details>
+          <details><summary>Does it work without a server?</summary><p>Yes, priced-offer capture and the private offer history work without Valhalla. Route-verified pay per kilometre and the routed-market statistics require a configured endpoint. Unknown routes are not presented as verified.</p></details>
+          <details><summary>Does it automatically accept high-paying deliveries?</summary><p>No. CourierPilot helps you judge the distance and payout yourself. A large payout can still be poor value if the route is long or involves extra stops.</p></details>
+          <details><summary>Which courier apps are supported?</summary><p>CourierPilot targets Wolt Partner and Bolt Food on Android. Compatibility depends on their current screen layouts, the country and your Android device. Check the field-test matrix and share redacted reports when something fails.</p></details>
+          <details><summary>What data leaves my phone?</summary><p>Offer records, delivery notes and access codes are stored locally. Enabling route calculations sends ordered coordinates to your configured HTTPS routing gateway. Remote diagnostics and market-data sharing have separate opt-in settings. Read the full privacy guide before enabling them.</p></details>
+        </div>
+      </section>
       <section>
         <h2>Designed for courier judgement</h2>
         <p class="disclaimer"><strong>No auto-accept. No magical profit promise.</strong> A higher €/km offer can still have poor net hourly earnings once waiting, unpaid return trips and vehicle costs are considered. The app shows measured evidence, confidence and uncertainty; you choose which orders make sense.</p>
       </section>
     </main>
-    <footer><span>© 2026 CourierPilot contributors · MIT-licensed source code</span><span><a href="https://github.com/Bl0ck154/CourierPilot/releases/latest">Releases</a> · <a href="https://github.com/Bl0ck154/CourierPilot/issues">Feedback</a> · <a href="https://github.com/Bl0ck154/CourierPilot/blob/main/SECURITY.md">Security</a></span></footer>
+    <footer><span>© 2026 CourierPilot contributors · MIT-licensed source code</span><span><a href="https://github.com/Bl0ck154/CourierPilot/releases/latest">Releases</a> · <a href="https://github.com/Bl0ck154/CourierPilot/discussions">Community</a> · <a href="https://github.com/Bl0ck154/CourierPilot/issues">Bug reports</a> · <a href="https://github.com/Bl0ck154/CourierPilot/blob/main/SECURITY.md">Security</a></span></footer>
   </div>
 </body>
 </html>

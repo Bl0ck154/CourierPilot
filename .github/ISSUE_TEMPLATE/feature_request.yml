@@ -1,7 +1,7 @@
 name: Feature request
 description: Suggest an improvement for CourierPilot
 title: "[Feature] "
-labels: []
+labels: ["enhancement", "needs-triage"]
 body:
   - type: markdown
     attributes:

@@ -4,13 +4,14 @@
 
 <p align="center">
   <a href="https://github.com/Bl0ck154/CourierPilot/actions/workflows/ci.yml"><img src="https://github.com/Bl0ck154/CourierPilot/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Bl0ck154/CourierPilot" alt="MIT license"></a>
   <a href="https://github.com/Bl0ck154/CourierPilot/releases/latest"><img src="https://img.shields.io/github/v/release/Bl0ck154/CourierPilot?label=latest%20release" alt="Latest CourierPilot release"></a>
   <img src="https://img.shields.io/badge/Android-11%2B-3DDC84?logo=android&logoColor=white" alt="Android 11+">
   <img src="https://img.shields.io/badge/data-local--first-1f6feb" alt="Local-first">
 </p>
 
 <p align="center">
-  <a href="https://github.com/Bl0ck154/CourierPilot/releases/latest"><strong>⬇ Download latest Android APK</strong></a> · <a href="https://bl0ck154.github.io/CourierPilot/">Website</a> · <a href="docs/GETTING_STARTED.md">Quick start</a> · <a href="CONTRIBUTING.md">Contribute</a>
+  <a href="https://github.com/Bl0ck154/CourierPilot/releases/latest"><strong>⬇ Download latest Android APK</strong></a> · <a href="https://bl0ck154.github.io/CourierPilot/">Website</a> · <a href="docs/GETTING_STARTED.md">Quick start</a> · <a href="https://github.com/Bl0ck154/CourierPilot/discussions">Community</a> · <a href="CONTRIBUTING.md">Contribute</a>
 </p>
 
 > **Unofficial project.** CourierPilot is not affiliated with, endorsed by, or sponsored by Wolt, Bolt, or their affiliates.
@@ -19,7 +20,7 @@
 
 **Work smarter, not longer.** CourierPilot is a local-first Android companion for Wolt Partner and Bolt Food couriers. When an offer rings, it reads the offer from the screen, estimates a **walking/cycling route** when its protected routing service is configured, and shows an offer-time estimate of **money per routed kilometre**, coloured by how good the offer is.
 
-**A high payout alone does not make an offer profitable:** distance, route, extra stops, and your local market baseline matter. CourierPilot never taps Accept or Decline for you; it helps you make the decision. It also keeps a private history of every priced offer, the addresses you visit and your platform presence, so you can understand your own work from your own data.
+**A high payout alone does not make an offer profitable.** The distance and route matter, and local market trends help put an offer in context. CourierPilot never taps Accept or Decline for you; it helps you make the decision. It also keeps a private history of every priced offer, the addresses you visit and your platform presence, so you can understand your own work from your own data.
 
 <p align="center">
   <img src="docs/assets/live-card-on-screen.svg" alt="The CourierPilot live card on a courier offer screen, with callouts" width="760" />
@@ -116,7 +117,7 @@ Raw offer text, exact addresses, GPS points and Bolt samples stay out of the pri
 
 **Remote diagnostics are optional and off by default.** When enabled in Reliability, only bounded technical metadata is uploaded (random install/session IDs, app/device version, platform, stage and a sanitized message) to the project's self-hosted endpoint. Notification text is redacted; screenshots, OCR frames, customer names, exact addresses and GPS coordinates are never included.
 
-## Market intelligence — better offers, not more orders
+## Market intelligence: find better offers
 
 Don't judge an offer by its headline fee alone. A €5 offer across a long detour can be worse than a smaller payout nearby. CourierPilot estimates **pay per routed kilometre**, keeps the observed offer distribution, and compares your recent data with an eligible city baseline where available. It separates personal and city sources and shows confidence and insufficient-sample states instead of inventing a market average.
 
@@ -147,6 +148,7 @@ Release signing is documented in [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNIN
 
 [**Download the latest release**](https://github.com/Bl0ck154/CourierPilot/releases/latest) · The notes below highlight selected earlier milestones.
 
+- **0.17.10** — clearer market source/currency indicators; new field reports and documentation. See [release notes](docs/RELEASE_0.17.10.md).
 - **0.17.9** — private Android backups disabled; new setup, privacy, compatibility and market-analysis guides. See [release notes](docs/RELEASE_0.17.9.md).
 - **0.17.5** — every screen in the new design; wrapped Wolt venue names and OCR postcode duplicates fixed. See [`docs/RELEASE_0.17.5.md`](docs/RELEASE_0.17.5.md).
 - **0.17.4** — clean screenshots: the card is hidden during capture instead of painted over. See [`docs/RELEASE_0.17.4.md`](docs/RELEASE_0.17.4.md).

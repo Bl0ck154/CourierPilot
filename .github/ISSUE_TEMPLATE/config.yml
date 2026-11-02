@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and setup help
+    url: https://github.com/Bl0ck154/CourierPilot/discussions
+    about: Ask a question or describe your setup without posting courier/customer data.
+  - name: Download the latest signed APK
+    url: https://github.com/Bl0ck154/CourierPilot/releases/latest
+    about: Use the official releases for Android installation.

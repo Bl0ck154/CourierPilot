@@ -17,8 +17,41 @@ on:
 permissions:
   contents: write
 
+# A regular commit to main should not rebuild/sign/publish the same version again.
+# The preflight is intentionally cheap; CI already tests every relevant source change.
 jobs:
+  release-check:
+    runs-on: ubuntu-latest
+    outputs:
+      required: ${{ steps.version.outputs.required }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check whether this version has a published release
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(sed -n 's/^[[:space:]]*versionName = "\([^"]*\)"/\1/p' app/build.gradle.kts | head -n1)"
+          test -n "$VERSION"
+          TAG="v$VERSION"
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "$TAG" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match versionName $VERSION" >&2
+            exit 1
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists: skipping the expensive signing workflow."
+            echo "required=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release $TAG does not exist: signed build required."
+            echo "required=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: release-check
+    if: needs.release-check.outputs.required == 'true'
     runs-on: ubuntu-latest
     env:
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
