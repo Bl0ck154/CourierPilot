@@ -15,7 +15,7 @@ on:
       - '.github/pull_request_template.md'
 
 permissions:
-  contents: write
+  contents: read
 
 # A regular commit to main should not rebuild/sign/publish the same version again.
 # The preflight is intentionally cheap; CI already tests every relevant source change.
@@ -53,6 +53,8 @@ jobs:
     needs: release-check
     if: needs.release-check.outputs.required == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
