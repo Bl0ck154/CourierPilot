@@ -10,16 +10,16 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Bl0ck154/CourierPilot/releases/latest"><strong>⬇ Download latest Android APK</strong></a> · <a href="docs/RELEASE_SIGNING.md">Release signing</a> · <a href="CONTRIBUTING.md">Contribute</a>
+  <a href="https://github.com/Bl0ck154/CourierPilot/releases/latest"><strong>⬇ Download latest Android APK</strong></a> · <a href="docs/index.html">Product overview</a> · <a href="docs/GETTING_STARTED.md">Quick start</a> · <a href="CONTRIBUTING.md">Contribute</a>
 </p>
 
 > **Unofficial project.** CourierPilot is not affiliated with, endorsed by, or sponsored by Wolt, Bolt, or their affiliates.
 
 ## What it is
 
-CourierPilot is a local-first Android companion for Wolt and Bolt couriers. When an offer rings, it reads the offer from the screen, works out the **real route** you would ride, and shows one number in a small floating card: **money per real kilometre**, coloured by how good the offer is.
+**Work smarter, not longer.** CourierPilot is a local-first Android companion for Wolt Partner and Bolt Food couriers. When an offer rings, it reads the offer from the screen, estimates a **walking/cycling route** when its protected routing service is configured, and shows an offer-time estimate of **money per routed kilometre**, coloured by how good the offer is.
 
-It never taps Accept or Decline for you. It also keeps a private history of every priced offer, the addresses you visit and your platform presence, so you can understand your own work from your own data.
+**A high payout alone does not make an offer profitable:** distance, route, extra stops, and your local market baseline matter. CourierPilot never taps Accept or Decline for you; it helps you make the decision. It also keeps a private history of every priced offer, the addresses you visit and your platform presence, so you can understand your own work from your own data.
 
 <p align="center">
   <img src="docs/assets/live-card-on-screen.svg" alt="The CourierPilot live card on a courier offer screen, with callouts" width="760" />
@@ -29,7 +29,7 @@ It never taps Accept or Decline for you. It also keeps a private history of ever
 
 The card appears while the offer is on screen and disappears when the offer ends (accepted, declined, expired or replaced).
 
-- **Rate first.** `€1.43/km` is the price divided by the real route distance, not by the platform's advertised kilometres.
+- **Rate first.** `€1.43/km` is the price divided by a Valhalla route estimate, not the platform's advertised kilometres; real-world distance may differ.
 - **Colour = verdict.** The best offers glow in saturated gold; worse offers fade towards grey until a terrible one is barely visible. The emoji fades with it.
 - **Route on the right.** 🚶 walking and 🚲 cycling distance from your GPS position via every pickup to every customer.
 - **`≈` means estimate.** When a full route cannot be trusted, the card says so (`≈ €X/km ⏳` or `?/km`) instead of pretending.
@@ -96,7 +96,7 @@ In developer mode the card also shows tiny debug lines (the pickup address and t
 | 🎯 **Live card** | Real-route €/km, colour-graded verdict, walking and cycling distance |
 | 🧭 **Wolt routing** | Timeline stop order (including stacked orders) → geocoder → Valhalla |
 | 🗺 **Bolt map recovery** | Customer pins from the offer map, ETA-anchored scale and sanity gate |
-| 📈 **Adaptive thresholds** | Verdict bands learned from your own local market history |
+| 📈 **Market analysis** | Personal offer €/km distributions, city comparison when enough privacy-safe observations exist, trend and confidence |
 | 🔐 **Access codes** | Remembers door codes and arrival hints per address |
 | 🛰 **Ride traces** | Explicit GPS recording of real rides for future personal route learning |
 | 🔊 **Voice** | Optional spoken offer summary, off by default |
@@ -110,20 +110,28 @@ In developer mode the card also shows tiny debug lines (the pickup address and t
 - `route_research.db` — route provenance, Bolt recovery accuracy, lifecycle research and GPS ride traces;
 - `Pictures/CourierOffers` — priced proof screenshots.
 
-Stops are resolved by the device geocoder and the ordered coordinates are sent only to your own protected Valhalla server. There is no CourierPilot account, cloud sync or `ACCESS_BACKGROUND_LOCATION`.
+Stops are resolved by the device geocoder; with routing enabled, ordered coordinates are sent to the configured protected Valhalla endpoint. There is no CourierPilot account or CourierPilot cloud sync. The APK currently declares optional `ACCESS_BACKGROUND_LOCATION` for arrival reminders; it is not requested by the normal setup flow, and the ETA fallback works without it. Android app-data backup is disabled to protect addresses and door codes. See [Privacy & permissions](docs/PRIVACY_AND_PERMISSIONS.md).
 
 Raw offer text, exact addresses, GPS points and Bolt samples stay out of the privacy-safe Reliability diagnostics. The on-card debug lines are on-screen only and are never logged.
 
 **Remote diagnostics are optional and off by default.** When enabled in Reliability, only bounded technical metadata is uploaded (random install/session IDs, app/device version, platform, stage and a sanitized message) to the project's self-hosted endpoint. Notification text is redacted; screenshots, OCR frames, customer names, exact addresses and GPS coordinates are never included.
 
-## Installation
+## Market intelligence — better offers, not more orders
 
-1. Install a release-signed CourierPilot APK (built automatically for every release tag).
-2. Enable **Notification access**.
-3. Enable **Accessibility → CourierPilot screen capture**.
-4. Grant foreground location for routing and ride traces.
-5. In the app, enable Wolt and/or Bolt routing and set your Valhalla endpoint.
-6. Optional: turn on **Developer mode** to see the debug lines on the card.
+Don't judge an offer by its headline fee alone. A €5 offer across a long detour can be worse than a smaller payout nearby. CourierPilot estimates **pay per routed kilometre**, keeps the observed offer distribution, and compares your recent data with an eligible city baseline where available. It separates personal and city sources and shows confidence and insufficient-sample states instead of inventing a market average.
+
+Market metrics describe **seen offers**, not proven net earnings per hour. Real take-home pay also depends on waiting time, riding time, expenses and whether an offer was accepted. See [Market methodology and limits](docs/MARKET_ANALYSIS.md). There is **no automatic acceptance** — the courier remains in control.
+
+## Start here — no server required for offer history
+
+**[Download the latest signed APK](https://github.com/Bl0ck154/CourierPilot/releases/latest)** · [Quick start](docs/GETTING_STARTED.md) · [Privacy & permissions](docs/PRIVACY_AND_PERMISSIONS.md) · [Compatibility](docs/COMPATIBILITY.md)
+
+1. Install the APK on Android 11+.
+2. Enable **Notification access** and **Accessibility → CourierPilot screen capture** after reading the permission explanations.
+3. Use Wolt or Bolt Food. Offers with a plausible visible price can be archived locally even without Valhalla.
+4. **Optional advanced routing:** grant foreground location, configure a protected Valhalla endpoint and its bearer token, then enable routing. Do not paste your own token into public issues.
+
+**Important:** automatic real-route €/km scoring requires a working protected Valhalla endpoint; CourierPilot does not currently provide a public shared routing token. Without it, offer capture/history still works, but a route-verified €/km rating is not available. The app never automatically taps Accept or Decline. Compatibility with every country, platform version or device is not guaranteed.
 
 ## Build
 
@@ -139,6 +147,7 @@ Release signing is documented in [`docs/RELEASE_SIGNING.md`](docs/RELEASE_SIGNIN
 
 [**Download the latest release**](https://github.com/Bl0ck154/CourierPilot/releases/latest) · The notes below highlight selected earlier milestones.
 
+- **0.17.9** — private Android backups disabled; new setup, privacy, compatibility and market-analysis guides. See [release notes](docs/RELEASE_0.17.9.md).
 - **0.17.5** — every screen in the new design; wrapped Wolt venue names and OCR postcode duplicates fixed. See [`docs/RELEASE_0.17.5.md`](docs/RELEASE_0.17.5.md).
 - **0.17.4** — clean screenshots: the card is hidden during capture instead of painted over. See [`docs/RELEASE_0.17.4.md`](docs/RELEASE_0.17.4.md).
 - **0.17.3** — swiped card returns after reopening the courier app, smoother proof screenshots. See [`docs/RELEASE_0.17.3.md`](docs/RELEASE_0.17.3.md).
