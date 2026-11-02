@@ -8,6 +8,16 @@ CourierPilot archives offers and can show a **provisional** payout / platform-re
 
 Version 0.17.12 also groups these provisional offers into separate **local-only 90-day personal trends** by selected platform/currency and Day/Week/Month, excluding Wolt incremental add-ons. No coordinates or samples are uploaded, no inferred distance is invented for a Bolt offer without distance, and no coloured verified-route verdict is derived from these rates.
 
+## Product priority: international from day one
+
+**The initial Lithuania-only route graph is an infrastructure legacy, not the target market.** CourierPilot should work for couriers across Europe and ultimately other supported regions. Prioritize usable coverage in **Germany and Poland** while retaining Lithuania; do not publish an "Europe supported" badge until the actual routed map regions have been tested.
+
+1. **Immediate international pilot:** build a provider adapter and explicit opt-in to a tightly capped public worldwide demo after notifying its maintainers. No automatic background bulk use; fall back to local platform-distance estimates.
+2. **Production path:** launch a dedicated, isolated routing server with a protected edge gateway, rotating per-install credentials, consent, quotas and reliable multi-country map coverage. Try an eligible Oracle Always Free VM for a bounded pilot, but plan paid backup capacity if it cannot provision or scale.
+3. **Long-term low-cost path:** evaluate BRouter offline regions with user-controlled map downloads and no location transmission; do not bundle Europe-wide graphs into the APK.
+
+"Install APK and forget it" is the user-experience goal. Provider selection and keys should be handled by CourierPilot's own backend rather than users copying private credentials. No public production server has yet been provisioned.
+
 ## Routing providers
 
 | Option | Global coverage | Keys / offline | Suitable default? |
@@ -40,7 +50,7 @@ The private self-hosted Valhalla currently has **Lithuania-only** map extracts. 
 
 A short authenticated local smoke test succeeded, but a successful route calculation is not a capacity benchmark. Do not enable public requests on the production origin without a rate-limited edge gateway and kill switch.
 
-## How to expose a private Lithuanian beta safely
+## How to launch an international beta safely
 
 1. **Do not bake a server secret into the APK**. Keep current privileged upstream token behind localhost/Cloudflare/nginx.
 2. Host a distinct public beta hostname (or `/beta/route`) at an edge gateway. Enrol clients with revocable per-install short-lived tokens; unauthenticated self-minted tokens alone cannot prevent Sybil abuse, so pair with IP and global budgets.
@@ -48,8 +58,8 @@ A short authenticated local smoke test succeeded, but a successful route calcula
 4. Enforce per-device e.g. **30 routes/day**, per-IP e.g. **2 requests/sec** with burst 5, global **1 request/sec** or low bounded concurrency for pilot only. These are **initial proposed conservative caps**, not proven capacity. Control edge and origin; prevent bypassing the edge.
 5. Add request timeout (~5 s edge, bounded upstream), 429 with Retry-After, bounded JSON response and no unbounded queues/retries. Add hard Docker resources after testing realistic route coverage. Protect OmniRoute and other services' RAM/CPU.
 6. Metrics should cover 2xx/4xx/429/5xx, cost profile, region, p50/p95/p99 latency, concurrent jobs, effective cache hits, CPU, RSS + page cache, swap, disk IO, bandwidth. Do not log precise coordinates, request bodies, customer addresses, or tokens.
-7. Canary: a handful of invited Lithuania couriers, kill switch at edge, separately measured week-long traffic, rollback. Only then increase caps. Keep the private production gateway entirely separate.
-8. For Europe-wide coverage, a **separate routing VM** is safer than colocating an unbounded multi-country graph with OmniRoute.
+7. Canary: invite a small group of couriers in several countries (prioritize Germany and Poland, alongside Lithuania where coverage already exists), measure real cross-border routing quality and latency, keep a kill switch, and roll back if needed. Do not treat the currently installed Lithuania tiles as a market strategy. Keep the private production gateway entirely separate.
+8. For broad European coverage, a **separate routing VM** is safer than colocating an unbounded multi-country graph with OmniRoute. Start with measured high-demand regions, not a claim that a small free VM can hold all of Europe.
 
 ## Free/low-cost hosting realities
 
